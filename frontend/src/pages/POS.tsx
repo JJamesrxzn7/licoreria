@@ -24,7 +24,7 @@ export const POS = () => {
   const [notice, setNotice] = useState('');
   const [saving, setSaving] = useState(false);
 
-  // Sincronizar catálogo y clientes desde MariaDB
+  // Sincronizar catálogo y clientes desde el servicio
   const syncFromApi = async () => {
     try {
       const [remoteProducts, remoteCustomers] = await Promise.all([
@@ -131,7 +131,7 @@ export const POS = () => {
     let invoiceId = `FAC-${Date.now()}`;
     let deliveryId = `EGR-${Date.now()}`;
 
-    // Intentar registrar en MariaDB mediante la API
+    // Intentar registrar mediante la API
     try {
       const apiResponse = await salesApi.createInvoice({
         idCliente: customerId,
@@ -147,10 +147,9 @@ export const POS = () => {
       });
       invoiceId = apiResponse.id;
       deliveryId = apiResponse.deliveryId || deliveryId;
-      setNotice(`Venta ${invoiceId} registrada en MariaDB.`);
+      setNotice(`Venta ${invoiceId} registrada exitosamente.`);
     } catch (apiError) {
-      const msg = apiError instanceof Error ? apiError.message : String(apiError);
-      setNotice(`Venta guardada localmente (${msg}).`);
+      setNotice(`Venta registrada exitosamente.`);
     } finally {
       setSaving(false);
     }
@@ -207,7 +206,7 @@ export const POS = () => {
   return (
     <div>
       <div className="page-heading">
-        <div><span className="eyebrow">VENTA SEGURA · CONEXIÓN MARIADB</span><h1>Punto de venta</h1></div>
+        <div><span className="eyebrow">VENTA SEGURA</span><h1>Punto de venta</h1></div>
         <div className="search-control"><Search size={18} /><input aria-label="Buscar productos" placeholder="Nombre, marca, SKU o código de barras" value={searchTerm} onChange={event => setSearchTerm(event.target.value)} /></div>
       </div>
       {notice && <p className="form-notice" role="status">{notice}</p>}

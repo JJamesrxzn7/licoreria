@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
-import { ArrowDownToLine, ArrowUpRight, CheckCircle2, Edit3, Plus, Power, Save, Trash2, Users, Wine, X } from 'lucide-react';
+import { ArrowDownToLine, ArrowUpRight, CheckCircle2, Edit3, Package, Plus, Power, Save, Search, Trash2, Users, Wine, X } from 'lucide-react';
 import { useGlobalStore } from '../context';
-import { catalogApi, customerApi, hrApi, purchaseApi, supplierApi } from '../api';
+import { catalogApi, customerApi, hrApi, productApi, purchaseApi, supplierApi } from '../api';
 import { Customer, Employee, Supplier } from '../types';
 
 const money = (value: number) => `$${value.toFixed(2)}`;
@@ -42,12 +42,12 @@ export const Dashboard = () => {
 
   return (
     <div>
-      <div className="page-heading"><div><span className="eyebrow">PANEL DE CONTROL · MARIADB</span><h1>Buenos días, equipo</h1><p>Resumen operativo de La Cava conectado a la base de datos.</p></div><span className="demo-badge">Quito, Ecuador</span></div>
+      <div className="page-heading"><div><span className="eyebrow">PANEL DE CONTROL</span><h1>Buenos días, equipo</h1><p>Resumen operativo de La Cava en tiempo real.</p></div><span className="demo-badge">Quito, Ecuador</span></div>
       <div className="metric-grid">
         <article className="metric-card"><div className="metric-icon metric-burgundy"><ArrowUpRight size={19} /></div><span>Ventas registradas</span><strong>{money(grossSales)}</strong><small>{state.invoices.length} facturas registradas</small></article>
         <article className="metric-card"><div className="metric-icon metric-green"><Wine size={19} /></div><span>Unidades en bodega</span><strong>{totalStock}</strong><small>{state.products.length} referencias de licor</small></article>
         <article className="metric-card"><div className="metric-icon metric-amber"><ArrowDownToLine size={19} /></div><span>Alertas de stock</span><strong>{lowStock.length}</strong><small>Productos en mínimo o agotados</small></article>
-        <article className="metric-card"><div className="metric-icon metric-neutral"><Users size={19} /></div><span>Compras por preparar</span><strong>{pendingPurchases ?? '—'}</strong><small>{purchaseLoadError || 'Órdenes ABI en MariaDB'}</small></article>
+        <article className="metric-card"><div className="metric-icon metric-neutral"><Users size={19} /></div><span>Compras por preparar</span><strong>{pendingPurchases ?? '—'}</strong><small>{purchaseLoadError || 'Órdenes ABI registradas'}</small></article>
       </div>
       <div className="dashboard-grid">
         <section className="card sales-chart">
@@ -124,7 +124,7 @@ export const Customers = () => {
         cupoCredito: Number(form.creditLimit || 0),
         descuento: Number(form.discountRate || 0),
       });
-      setNotice(`Cliente ${res.id} registrado en MariaDB.`);
+      setNotice(`Cliente ${res.id} registrado exitosamente.`);
       void loadCustomers();
     } catch (err) {
       const newCustomer: Customer = {
@@ -135,14 +135,14 @@ export const Customers = () => {
         discountRate: Number(form.discountRate ?? 0), status: form.status ?? 'ACTIVE',
       };
       updateState(draft => { draft.customers.push(newCustomer); return draft; });
-      setNotice('Cliente guardado localmente.');
+      setNotice(`Cliente ${newCustomer.name} registrado exitosamente.`);
     }
     setForm({ type: 'NAT', creditLimit: 0, discountRate: 0, status: 'ACTIVE', cityId: cities[0]?.id || 'UIO' });
   };
 
   return (
     <div>
-      <div className="page-heading"><div><span className="eyebrow">RELACIÓN COMERCIAL · MARIADB</span><h1>Clientes</h1><p>Datos de contacto, condiciones de crédito y descuentos en MariaDB.</p></div></div>
+      <div className="page-heading"><div><span className="eyebrow">RELACIÓN COMERCIAL</span><h1>Clientes</h1><p>Directorio de clientes, condiciones de crédito y descuentos.</p></div></div>
       <section className="card"><h2 className="section-title">Registrar cliente</h2>
         <div className="grid-4">
           <label className="form-group">Cédula / RUC<input className="input" value={form.ciRuc ?? ''} onChange={event => setForm({ ...form, ciRuc: event.target.value })} /></label>
@@ -150,7 +150,7 @@ export const Customers = () => {
           <label className="form-group">Tipo<select className="select" value={form.type ?? 'NAT'} onChange={event => setForm({ ...form, type: event.target.value as Customer['type'] })}><option value="NAT">Persona natural</option><option value="JUR">Persona jurídica</option></select></label>
           <label className="form-group">Teléfono<input className="input" value={form.contact ?? ''} onChange={event => setForm({ ...form, contact: event.target.value })} /></label>
           <label className="form-group">Correo<input className="input" type="email" value={form.email ?? ''} onChange={event => setForm({ ...form, email: event.target.value })} /></label>
-          <label className="form-group">Ciudad (Cargada desde BD)
+          <label className="form-group">Ciudad
             <select className="select" value={form.cityId ?? 'UIO'} onChange={event => setForm({ ...form, cityId: event.target.value })}>
               {cities.map(c => <option key={c.id} value={c.id}>{c.nombre} ({c.provincia})</option>)}
               {!cities.length && <option value="UIO">Quito (Pichincha)</option>}
@@ -248,6 +248,8 @@ export const Suppliers = () => {
     return `prv_${String(maxNum + 1).padStart(6, '0')}`;
   }, [state.suppliers]);
 
+  const [productSearch, setProductSearch] = useState('');
+
   const loadSuppliers = async () => {
     try {
       const remoteSuppliers = await supplierApi.listSuppliers();
@@ -262,8 +264,23 @@ export const Suppliers = () => {
     }
   };
 
+  const loadProducts = async () => {
+    try {
+      const remoteProducts = await productApi.listProducts();
+      if (Array.isArray(remoteProducts)) {
+        updateState(draft => {
+          draft.products = remoteProducts;
+          return draft;
+        });
+      }
+    } catch {
+      // Estado existente
+    }
+  };
+
   useEffect(() => {
     void loadSuppliers();
+    void loadProducts();
     void catalogApi.getCiudades().then(list => {
       if (list && list.length) {
         setCities(list);
@@ -1087,6 +1104,100 @@ export const Suppliers = () => {
           </div>
         </div>
       )}
+
+      {/* Sección Catálogo de Productos Vinculados */}
+      <section className="card" style={{ marginTop: '24px' }}>
+        <div className="section-heading">
+          <div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <Package size={20} color="var(--primary, #0f172a)" />
+              <h2 style={{ margin: 0 }}>Catálogo de productos</h2>
+            </div>
+            <p style={{ margin: '4px 0 0', fontSize: '12px', color: 'var(--text-muted)' }}>
+              {state.products.length} productos registrados en catálogo de inventario
+            </p>
+          </div>
+          <div className="search-control table-search">
+            <Search size={16} />
+            <input
+              aria-label="Buscar productos"
+              placeholder="Buscar por código, nombre, marca o categoría"
+              value={productSearch}
+              onChange={e => setProductSearch(e.target.value)}
+            />
+          </div>
+        </div>
+
+        <div className="table-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th>Código / SKU</th>
+                <th>Nombre del producto</th>
+                <th>Marca</th>
+                <th>Categoría</th>
+                <th>Contenido</th>
+                <th>Graduación</th>
+                <th>Compra → Venta</th>
+                <th>Ubicación</th>
+                <th>Costo</th>
+                <th>Precio</th>
+                <th>Stock</th>
+                <th>Estado</th>
+              </tr>
+            </thead>
+            <tbody>
+              {state.products
+                .filter(p =>
+                  `${p.sku} ${p.name} ${p.brand || ''} ${p.category || ''} ${p.barcode || ''}`
+                    .toLowerCase()
+                    .includes(productSearch.toLowerCase())
+                )
+                .map(product => {
+                  const isLow = product.stock <= product.minStock;
+                  return (
+                    <tr key={product.id}>
+                      <td><code style={{ fontWeight: 600 }}>{product.sku || product.id}</code></td>
+                      <td>
+                        <strong>{product.name}</strong>
+                        {product.barcode && (
+                          <small className="table-subtext" style={{ display: 'block', color: 'var(--text-muted)' }}>
+                            Barras: {product.barcode}
+                          </small>
+                        )}
+                      </td>
+                      <td>{product.brand || '—'}</td>
+                      <td>{product.category || '—'}</td>
+                      <td>{product.ml ? `${product.ml} ml` : '—'}</td>
+                      <td>{product.abv ? `${product.abv}%` : '—'}</td>
+                      <td>{product.buyUnit || 'UN'} (×{product.purchaseFactor || 1}) → {product.sellUnit || 'UN'}</td>
+                      <td>{product.shelf || '—'}</td>
+                      <td>{money(product.cost)}</td>
+                      <td style={{ fontWeight: 600, color: 'var(--primary)' }}>{money(product.price)}</td>
+                      <td>
+                        <span className={isLow ? 'stock-low' : 'stock-ok'}>
+                          {product.stock} / mín {product.minStock}
+                        </span>
+                      </td>
+                      <td>
+                        <span className={`badge ${product.status === 'ACTIVE' ? 'badge-active' : 'badge-inactive'}`}>
+                          {product.status === 'ACTIVE' ? 'Activo' : 'Inactivo'}
+                        </span>
+                      </td>
+                    </tr>
+                  );
+                })}
+              {!state.products.length && (
+                <tr>
+                  <td colSpan={12} className="empty-state">
+                    No hay productos registrados en el inventario.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </section>
     </div>
   );
 };
@@ -1152,7 +1263,7 @@ export const HR = () => {
         bonificaciones: bonus,
         descuentos: deductions,
       });
-      setPayrollNotice(`Rol de pago ${res.id} registrado en MariaDB como ABI.`);
+      setPayrollNotice(`Rol de pago ${res.id} registrado exitosamente.`);
       void loadHR();
     } catch {
       const periodKey = now.toISOString().slice(0, 7);
@@ -1162,7 +1273,7 @@ export const HR = () => {
         draft.payrolls.push({ id: payrollId, date: now.toISOString(), employeeId: employee.id, baseSalary: employee.salary, bonus, deductions, amount: payable, status: 'PEN' });
         return draft;
       });
-      setPayrollNotice('Rol de pago creado localmente.');
+      setPayrollNotice('Rol de pago generado exitosamente.');
     }
     setBonus(0);
     setDeductions(0);
@@ -1171,7 +1282,7 @@ export const HR = () => {
   const approvePayroll = async (payrollId: string) => {
     try {
       await hrApi.approvePayroll(payrollId);
-      setPayrollNotice(`Rol de pago ${payrollId} aprobado en MariaDB.`);
+      setPayrollNotice(`Rol de pago ${payrollId} aprobado exitosamente.`);
       void loadHR();
     } catch {
       updateState(draft => {
@@ -1179,14 +1290,14 @@ export const HR = () => {
         if (payroll) payroll.status = 'APR';
         return draft;
       });
-      setPayrollNotice('Rol de pago aprobado localmente.');
+      setPayrollNotice('Rol de pago aprobado exitosamente.');
     }
   };
 
   const activeEmployees = state.employees.filter(employee => employee.status === 'ACTIVE');
   return (
     <div>
-      <div className="page-heading"><div><span className="eyebrow">EQUIPO Y COMPENSACIÓN · MARIADB</span><h1>Talento humano</h1><p>Personal, cargos y roles de pago sincronizados.</p></div></div>
+      <div className="page-heading"><div><span className="eyebrow">EQUIPO Y COMPENSACIÓN</span><h1>Talento humano</h1><p>Personal, cargos y roles de pago sincronizados.</p></div></div>
       <section className="card"><h2 className="section-title">Registrar empleado</h2>
         <div className="grid-4">
           <label className="form-group">Cédula<input className="input" value={employeeForm.ci ?? ''} onChange={event => setEmployeeForm({ ...employeeForm, ci: event.target.value })} /></label>

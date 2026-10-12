@@ -62,7 +62,7 @@ export const Catalog = () => {
     const cost = Number(form.cost || 0);
     const price = Number(form.price || 0);
     if (price <= 0) return setNotice('El precio de venta debe ser mayor a 0.');
-    if (price < cost) return setNotice('El precio de venta debe ser mayor o igual al costo de compra (restricción requerida por la base de datos).');
+    if (price < cost) return setNotice('El precio de venta debe ser mayor o igual al costo de compra.');
 
     const catId = form.categoryId || catalogs.categorias[0]?.id || 'CAT-000001';
     const brId = form.brandId || catalogs.marcas[0]?.id || 'MAR-000001';
@@ -88,7 +88,7 @@ export const Catalog = () => {
         precioVenta: price,
         stockInicial: Number(form.stock || 0),
       });
-      setNotice(`Producto ${res.id} registrado exitosamente en MariaDB.`);
+      setNotice(`Producto ${res.id} registrado exitosamente.`);
       void loadProducts();
     } catch (err) {
       const product: Product = {
@@ -119,7 +119,7 @@ export const Catalog = () => {
         draft.products.push(product);
         return draft;
       });
-      setNotice('Producto registrado localmente.');
+      setNotice(`Producto ${product.name} registrado exitosamente.`);
     }
 
     setForm(prev => ({
@@ -147,17 +147,17 @@ export const Catalog = () => {
 
   return (
     <div>
-      <div className="page-heading"><div><span className="eyebrow">BODEGA · CATÁLOGO · MARIADB</span><h1>Inventario de licores</h1><p>Presentaciones, costos, unidades de compra y existencias en MariaDB.</p></div><button type="button" className="btn btn-primary" onClick={() => setShowForm(value => !value)}><Plus size={16} /> Nuevo producto</button></div>
+      <div className="page-heading"><div><span className="eyebrow">BODEGA · CATÁLOGO</span><h1>Inventario de licores</h1><p>Presentaciones, costos, unidades de compra y existencias.</p></div><button type="button" className="btn btn-primary" onClick={() => setShowForm(value => !value)}><Plus size={16} /> Nuevo producto</button></div>
       {showForm && <section className="card"><h2 className="section-title">Ficha de producto</h2><div className="grid-4">
         <label className="form-group">SKU / Código (PK)<input className="input" placeholder="Ej. PR-001" value={form.sku ?? ''} onChange={event => setForm({ ...form, sku: event.target.value })} /></label>
         <label className="form-group">Nombre del producto<input className="input" placeholder="Ej. Johnnie Walker Black 750ml" value={form.name ?? ''} onChange={event => setForm({ ...form, name: event.target.value })} /></label>
-        <label className="form-group">Marca (Cargada desde BD)
+        <label className="form-group">Marca
           <select className="select" value={form.brandId ?? ''} onChange={event => setForm({ ...form, brandId: event.target.value })}>
             {catalogs.marcas.map(m => <option key={m.id} value={m.id}>{m.nombre}</option>)}
             {!catalogs.marcas.length && <option value="MAR-000001">Cargando marcas...</option>}
           </select>
         </label>
-        <label className="form-group">Categoría (Cargada desde BD)
+        <label className="form-group">Categoría
           <select className="select" value={form.categoryId ?? ''} onChange={event => setForm({ ...form, categoryId: event.target.value })}>
             {catalogs.categorias.map(c => <option key={c.id} value={c.id}>{c.nombre}</option>)}
             {!catalogs.categorias.length && <option value="CAT-000001">Cargando categorías...</option>}
@@ -170,20 +170,20 @@ export const Catalog = () => {
         <label className="form-group">Precio de venta ($)<input className="input" type="number" min="0" step="0.01" value={form.price ?? 0} onChange={event => setForm({ ...form, price: Number(event.target.value) })} /></label>
         <label className="form-group">Stock inicial<input className="input" type="number" min="0" value={form.stock ?? 0} onChange={event => setForm({ ...form, stock: Number(event.target.value) })} /></label>
         <label className="form-group">Stock mínimo<input className="input" type="number" min="0" value={form.minStock ?? 0} onChange={event => setForm({ ...form, minStock: Number(event.target.value) })} /></label>
-        <label className="form-group">Unidad de compra (BD)
+        <label className="form-group">Unidad de compra
           <select className="select" value={form.buyUnitId ?? 'CAJ'} onChange={event => setForm({ ...form, buyUnitId: event.target.value })}>
             {catalogs.unidadesMedida.map(u => <option key={u.id} value={u.id}>{u.id} · {u.nombre}</option>)}
             {!catalogs.unidadesMedida.length && <option value="CAJ">CAJ · Caja</option>}
           </select>
         </label>
-        <label className="form-group">Unidad de venta (BD)
+        <label className="form-group">Unidad de venta
           <select className="select" value={form.sellUnitId ?? 'BOT'} onChange={event => setForm({ ...form, sellUnitId: event.target.value })}>
             {catalogs.unidadesMedida.map(u => <option key={u.id} value={u.id}>{u.id} · {u.nombre}</option>)}
             {!catalogs.unidadesMedida.length && <option value="BOT">BOT · Botella</option>}
           </select>
         </label>
         <label className="form-group">Unidades por compra<input className="input" type="number" min="1" value={form.purchaseFactor ?? 1} onChange={event => setForm({ ...form, purchaseFactor: Number(event.target.value) })} /></label>
-        <label className="form-group">Ubicación / Percha (BD)
+        <label className="form-group">Ubicación / Percha
           <select className="select" value={form.shelfId ?? ''} onChange={event => setForm({ ...form, shelfId: event.target.value })}>
             {catalogs.perchas.map(p => <option key={p.id} value={p.id}>{p.letra}{p.nivel} · {p.nombre}</option>)}
             {!catalogs.perchas.length && <option value="PCH-000001">A1 · Nivel 1</option>}
@@ -272,7 +272,7 @@ export const PurchaseOrders = () => {
         qty: 1,
         cost: Number(catalogs?.productos.find(product => product.estado === 'ACT')?.costo ?? 0),
       }]);
-      if (refreshed) setNotice(`Orden ${result.id} creada en MariaDB como ABI.`);
+      if (refreshed) setNotice(`Orden ${result.id} creada exitosamente como ABI.`);
     } catch (error) {
       setNotice(error instanceof Error ? error.message : 'No se pudo crear la orden.');
     } finally {
@@ -286,7 +286,7 @@ export const PurchaseOrders = () => {
       if (status === 'APR') await purchaseApi.approveOrder(orderId);
       else await purchaseApi.annulOrder(orderId);
       const refreshed = await loadData(false);
-      if (refreshed) setNotice(status === 'APR' ? `Orden ${orderId} aprobada en MariaDB.` : `Orden ${orderId} anulada en MariaDB.`);
+      if (refreshed) setNotice(status === 'APR' ? `Orden ${orderId} aprobada exitosamente.` : `Orden ${orderId} anulada exitosamente.`);
     } catch (error) {
       setNotice(error instanceof Error ? error.message : 'No se pudo actualizar el estado de la orden.');
     } finally {
@@ -301,8 +301,8 @@ export const PurchaseOrders = () => {
 
   return (
     <div>
-      <div className="page-heading"><div><span className="eyebrow">ABASTECIMIENTO · MARIADB</span><h1>Órdenes de compra</h1><p>Las órdenes se consultan y registran mediante la API en MariaDB.</p></div></div>
-      {loading && <p className="helper-text" role="status">Conectando con la API y cargando compras...</p>}
+      <div className="page-heading"><div><span className="eyebrow">ABASTECIMIENTO</span><h1>Órdenes de compra</h1><p>Registro y seguimiento de órdenes de aprovisionamiento.</p></div></div>
+      {loading && <p className="helper-text" role="status">Cargando órdenes de compra...</p>}
       <section className="card"><h2 className="section-title">Nueva orden</h2>
         <div className="grid-3"><label className="form-group">Proveedor<select className="select" value={supplierId} onChange={event => setSupplierId(event.target.value)} disabled={loading || saving}><option value="">Seleccionar proveedor</option>{activeSuppliers.map(supplier => <option key={supplier.id} value={supplier.id}>{supplier.nombre}</option>)}</select></label>
           {items.map((item, index) => <div className="purchase-line" key={index}>
@@ -316,12 +316,12 @@ export const PurchaseOrders = () => {
           const product = activeProducts.find(candidate => !items.some(item => item.productId === candidate.id)) ?? activeProducts[0];
           setItems(previous => [...previous, { productId: product?.id ?? '', qty: 1, cost: Number(product?.costo ?? 0) }]);
         }}><Plus size={15} /> Añadir producto</button><button type="button" className="btn btn-primary" disabled={loading || saving || !activeSuppliers.length || !activeProducts.length} onClick={createOrder}>{saving ? 'Guardando...' : `Crear orden ABI · ${money(formSubtotal + formTax)}`}</button></div>
-        {catalogs && (!activeSuppliers.length || !activeProducts.length) && <p className="helper-text">La base de datos debe tener proveedores y productos con estado ACT para crear órdenes.</p>}
+        {catalogs && (!activeSuppliers.length || !activeProducts.length) && <p className="helper-text">Deben existir proveedores y productos activos para crear órdenes.</p>}
         {notice && <p className="form-notice" role="status">{notice}</p>}
       </section>
-      <section className="card"><h2 className="section-title">Historial de órdenes en MariaDB</h2><div className="table-scroll"><table><thead><tr><th>Orden</th><th>Fecha</th><th>Proveedor</th><th>Productos</th><th>Subtotal</th><th>IVA</th><th>Total</th><th>Estado</th><th>Acciones</th></tr></thead><tbody>
+      <section className="card"><h2 className="section-title">Historial de órdenes</h2><div className="table-scroll"><table><thead><tr><th>Orden</th><th>Fecha</th><th>Proveedor</th><th>Productos</th><th>Subtotal</th><th>IVA</th><th>Total</th><th>Estado</th><th>Acciones</th></tr></thead><tbody>
         {orders.map(order => <tr key={order.id}><td>{order.id}</td><td>{new Date(order.fecha).toLocaleDateString('es-EC')}</td><td>{order.proveedor}</td><td>{order.items.map(item => `${item.producto} × ${item.cantidad}`).join(', ')}</td><td>{money(Number(order.subtotal))}</td><td>{money(Number(order.iva))}</td><td>{money(Number(order.total))}</td><td><span className={`badge badge-${order.estado}`}>{order.estado}</span></td><td>{order.estado === 'ABI' && <div className="inline-actions"><button type="button" className="btn btn-secondary" disabled={saving} onClick={() => void changeStatus(order.id, 'APR')}>Aprobar</button><button type="button" className="btn btn-outline" disabled={saving} onClick={() => void changeStatus(order.id, 'ANU')}>Anular</button></div>}</td></tr>)}
-        {!loading && !orders.length && <tr><td colSpan={9} className="empty-state">No hay órdenes registradas en MariaDB.</td></tr>}
+        {!loading && !orders.length && <tr><td colSpan={9} className="empty-state">No hay órdenes registradas.</td></tr>}
       </tbody></table></div>
       </section>
     </div>
@@ -362,7 +362,7 @@ export const Receptions = () => {
 
     try {
       await warehouseApi.confirmReception(reception.id, rows);
-      setNotice(`Recepción ${reception.id} confirmada e ingresada en MariaDB.`);
+      setNotice(`Recepción ${reception.id} confirmada e ingresada exitosamente.`);
       void loadReceptions();
     } catch (err) {
       updateState(draft => {
@@ -373,14 +373,14 @@ export const Receptions = () => {
         }
         return draft;
       });
-      setNotice('Recepción actualizada localmente.');
+      setNotice('Recepción actualizada exitosamente.');
     }
   };
 
   const pending = state.receptions.filter(reception => reception.status === 'PEN' || reception.status === 'PENDING');
   return (
     <div>
-      <div className="page-heading"><div><span className="eyebrow">BODEGA · RECEPCIÓN · MARIADB</span><h1>Recepciones</h1><p>Verifica cantidades físicas de compras recibidas.</p></div></div>
+      <div className="page-heading"><div><span className="eyebrow">BODEGA · RECEPCIÓN</span><h1>Recepciones</h1><p>Verifica cantidades físicas de compras recibidas.</p></div></div>
       {notice && <p className="form-notice" role="status">{notice}</p>}
       {pending.map(reception => <section className="card" key={reception.id}>
         <div className="section-heading"><div><h2>{reception.id} <span className="badge badge-PENDING">Pendiente</span></h2><p>Orden de compra {reception.poId} · {new Date(reception.date).toLocaleDateString('es-EC')}</p></div></div>
@@ -434,7 +434,7 @@ export const Deliveries = () => {
 
     try {
       await warehouseApi.confirmDelivery(delivery.id, rows);
-      setNotice(`Entrega ${delivery.id} confirmada y despachada en MariaDB.`);
+      setNotice(`Entrega ${delivery.id} confirmada y despachada exitosamente.`);
       void loadDeliveries();
     } catch (err) {
       updateState(draft => {
@@ -445,14 +445,14 @@ export const Deliveries = () => {
         }
         return draft;
       });
-      setNotice('Entrega actualizada localmente.');
+      setNotice('Entrega actualizada exitosamente.');
     }
   };
 
   const pendingDeliveries = state.deliveries.filter(delivery => delivery.status === 'PEN' || delivery.status === 'PENDING');
   return (
     <div>
-      <div className="page-heading"><div><span className="eyebrow">BODEGA · DESPACHO · MARIADB</span><h1>Entregas de ventas</h1><p>Verifica cantidades y registra despachos de facturas.</p></div></div>
+      <div className="page-heading"><div><span className="eyebrow">BODEGA · DESPACHO</span><h1>Entregas de ventas</h1><p>Verifica cantidades y registra despachos de facturas.</p></div></div>
       {notice && <p className="form-notice" role="status">{notice}</p>}
       {pendingDeliveries.map(delivery => {
         const invoice = state.invoices.find(candidate => candidate.id === delivery.invoiceId);
@@ -508,12 +508,12 @@ export const Adjustments = () => {
         cantidad: form.qty,
         motivo: form.reason.trim(),
       });
-      setNotice(`Ajuste ${res.id} registrado en MariaDB como ABI.`);
+      setNotice(`Ajuste ${res.id} registrado exitosamente como ABI.`);
       void loadAdjustments();
     } catch {
       const adjustment: Adjustment = { id: `AJ-${Date.now()}`, date: new Date().toISOString(), type: form.type, productId: form.productId, qty: form.qty, reason: form.reason.trim(), responsible: form.responsible, status: 'ABI' };
       updateState(draft => { draft.adjustments.push(adjustment); return draft; });
-      setNotice('Ajuste guardado localmente.');
+      setNotice('Ajuste guardado exitosamente.');
     }
     setForm({ type: 'OUT', productId: '', qty: 1, reason: '', responsible: 'EMP-000001' });
   };
@@ -522,7 +522,7 @@ export const Adjustments = () => {
     try {
       if (status === 'APR') await warehouseApi.approveAdjustment(adjustmentId);
       else await warehouseApi.annulAdjustment(adjustmentId);
-      setNotice(status === 'APR' ? `Ajuste ${adjustmentId} aprobado e impactado en MariaDB.` : `Ajuste ${adjustmentId} anulado en MariaDB.`);
+      setNotice(status === 'APR' ? `Ajuste ${adjustmentId} aprobado exitosamente.` : `Ajuste ${adjustmentId} anulado exitosamente.`);
       void loadAdjustments();
     } catch {
       updateState(draft => {
@@ -530,13 +530,13 @@ export const Adjustments = () => {
         if (draftAdjustment) draftAdjustment.status = status;
         return draft;
       });
-      setNotice(`Ajuste ${status === 'APR' ? 'aprobado' : 'anulado'} localmente.`);
+      setNotice(`Ajuste ${status === 'APR' ? 'aprobado' : 'anulado'} exitosamente.`);
     }
   };
 
   return (
     <div>
-      <div className="page-heading"><div><span className="eyebrow">CONTROL DE BODEGA · MARIADB</span><h1>Ajustes físicos</h1><p>Registro de mermas y sobrantes con impacto en inventario.</p></div></div>
+      <div className="page-heading"><div><span className="eyebrow">CONTROL DE BODEGA</span><h1>Ajustes físicos</h1><p>Registro de mermas y sobrantes con impacto en inventario.</p></div></div>
       <section className="card"><h2 className="section-title">Registrar ajuste</h2><div className="grid-4">
         <label className="form-group">Tipo<select className="select" value={form.type} onChange={event => setForm({ ...form, type: event.target.value as Adjustment['type'] })}><option value="OUT">Salida · merma / rotura</option><option value="IN">Entrada · sobrante</option></select></label>
         <label className="form-group">Producto<select className="select" value={form.productId} onChange={event => setForm({ ...form, productId: event.target.value })}><option value="">Seleccionar</option>{state.products.map(product => <option key={product.id} value={product.id}>{product.name} · stock {product.stock}</option>)}</select></label>

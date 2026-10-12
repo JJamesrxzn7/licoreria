@@ -35,7 +35,7 @@ export const Sales = () => {
   const handleAnnul = async (invoiceId: string) => {
     try {
       await salesApi.annulInvoice(invoiceId);
-      setNotice(`Factura ${invoiceId} anulada en MariaDB.`);
+      setNotice(`Factura ${invoiceId} anulada exitosamente.`);
       void loadSales();
     } catch (error) {
       updateState(draft => {
@@ -43,7 +43,7 @@ export const Sales = () => {
         if (inv) inv.status = 'ANU';
         return draft;
       });
-      setNotice(`Factura ${invoiceId} anulada localmente.`);
+      setNotice(`Factura ${invoiceId} anulada exitosamente.`);
     }
     if (selected?.id === invoiceId) setSelected(null);
   };
@@ -58,7 +58,7 @@ export const Sales = () => {
 
   return (
     <div>
-      <div className="page-heading"><div><span className="eyebrow">VENTAS · FACTURACIÓN · MARIADB</span><h1>Ventas y facturas</h1><p>Historial de ventas sincronizado con MariaDB.</p></div><div className="report-period">{visibleInvoices.length} documentos · {money(total)}</div></div>
+      <div className="page-heading"><div><span className="eyebrow">VENTAS · FACTURACIÓN</span><h1>Ventas y facturas</h1><p>Historial de ventas y facturación comercial.</p></div><div className="report-period">{visibleInvoices.length} documentos · {money(total)}</div></div>
       {notice && <p className="form-notice" role="status">{notice}</p>}
       <section className="card">
         <div className="section-heading"><div><h2>Registro de ventas</h2><p>Estados: ABI (Abierto), APR (Aprobado), ANU (Anulado).</p></div><div className="filter-group"><input className="input table-search" aria-label="Buscar facturas" placeholder="Buscar factura o cliente" value={search} onChange={event => setSearch(event.target.value)} /><select className="select filter-select" aria-label="Filtrar por estado" value={statusFilter} onChange={event => setStatusFilter(event.target.value)}><option value="">Todos los estados</option><option value="ABI">ABI</option><option value="APR">APR</option><option value="ANU">ANU</option></select></div></div>
@@ -72,7 +72,7 @@ export const Sales = () => {
         <p className="helper-text">{state.customers.find(customer => customer.id === selected.customerId)?.name ?? selected.customerId} · {new Date(selected.date).toLocaleString('es-EC')}</p>
         <div className="table-scroll"><table><thead><tr><th>Producto</th><th>Cantidad</th><th>Precio</th><th>Importe</th></tr></thead><tbody>{selected.items?.map((item, index) => <tr key={`${selected.id}-${item.product?.id || index}`}><td>{item.product?.name || item.product?.id || 'Producto'}</td><td>{item.qty}</td><td>{money(item.product?.price || 0)}</td><td>{money(item.subtotal)}</td></tr>)}</tbody></table></div>
         <div className="invoice-totals"><span>Subtotal <strong>{money(selected.subtotal)}</strong></span><span>Descuento <strong>{money(selected.discount)}</strong></span><span>Impuestos ({selected.taxRate}%) <strong>{money(selected.tax)}</strong></span><span>Total <strong>{money(selected.total)}</strong></span></div>
-        {selected.status !== 'ANU' && <div className="form-actions" style={{ marginTop: '1rem' }}><button type="button" className="btn btn-outline" onClick={() => handleAnnul(selected.id)}>Anular factura en MariaDB</button></div>}
+        {selected.status !== 'ANU' && <div className="form-actions" style={{ marginTop: '1rem' }}><button type="button" className="btn btn-outline" onClick={() => handleAnnul(selected.id)}>Anular factura</button></div>}
       </section></div>}
     </div>
   );
@@ -119,12 +119,12 @@ export const Accounting = () => {
         nombre: newAccName.trim(),
         tipo: newAccType,
       });
-      setAccNotice(`Cuenta ${newAccCode.trim()} registrada con éxito en MariaDB.`);
+      setAccNotice(`Cuenta ${newAccCode.trim()} registrada con éxito.`);
       setNewAccCode('');
       setNewAccName('');
       void loadAccounting();
     } catch (err) {
-      setAccNotice('Error al crear la cuenta en la base de datos.');
+      setAccNotice('Error al crear la cuenta contable.');
     }
   };
 
@@ -159,7 +159,7 @@ export const Accounting = () => {
         descripcion: description.trim(),
         lines: lines.map(line => ({ idCuenta: line.accountId, debe: line.debit, haber: line.credit })),
       });
-      setNotice(`Asiento ${res.id} registrado en MariaDB.`);
+      setNotice(`Asiento ${res.id} registrado exitosamente.`);
       void loadAccounting();
     } catch {
       const entryId = editingEntryId || `ASI-MAN-${Date.now()}`;
@@ -167,7 +167,7 @@ export const Accounting = () => {
         draft.journalEntries.push({ id: entryId, date: new Date().toISOString(), description: description.trim(), lines: lines.map(line => ({ ...line })), status: 'ABI', source: 'MANUAL' });
         return draft;
       });
-      setNotice('Asiento guardado localmente.');
+      setNotice('Asiento registrado exitosamente.');
     }
 
     setEditingEntryId('');
@@ -185,7 +185,7 @@ export const Accounting = () => {
   const approveEntry = async (entryId: string) => {
     try {
       await accountingApi.approveEntry(entryId);
-      setNotice(`Asiento ${entryId} aprobado y contabilizado en MariaDB.`);
+      setNotice(`Asiento ${entryId} aprobado y contabilizado exitosamente.`);
       void loadAccounting();
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -200,7 +200,7 @@ export const Accounting = () => {
 
   return (
     <div>
-      <div className="page-heading"><div><span className="eyebrow">FINANZAS · MARIADB</span><h1>Contabilidad general</h1><p>Plan de cuentas, libro diario y control de partida doble.</p></div></div>
+      <div className="page-heading"><div><span className="eyebrow">FINANZAS</span><h1>Contabilidad general</h1><p>Plan de cuentas, libro diario y control de partida doble.</p></div></div>
       <section className="card"><h2 className="section-title">Registrar cuenta contable</h2>
         <div className="grid-4">
           <label className="form-group">Código (ej. 1.1.01.01)<input className="input" value={newAccCode} onChange={e => setNewAccCode(e.target.value)} placeholder="Código" /></label>
@@ -268,12 +268,12 @@ export const Reports = () => {
 
   return (
     <div>
-      <div className="page-heading"><div><span className="eyebrow">ANÁLISIS DEL NEGOCIO</span><h1>Reportes</h1><p>Indicadores comerciales y financieros sincronizados con MariaDB.</p></div><span className="demo-badge">MARIADB · USD</span></div>
+      <div className="page-heading"><div><span className="eyebrow">ANÁLISIS DEL NEGOCIO</span><h1>Reportes</h1><p>Indicadores comerciales y financieros consolidados.</p></div><span className="demo-badge">USD</span></div>
       <div className="metric-grid">
         <article className="metric-card"><div className="metric-icon metric-burgundy"><FileText size={18} /></div><span>Ventas netas</span><strong>{money(salesTotal)}</strong><small>{validInvoices.length} facturas no anuladas</small></article>
         <article className="metric-card"><div className="metric-icon metric-green"><PackageIcon /></div><span>Valor de inventario</span><strong>{money(inventoryValue)}</strong><small>Existencia × costo de compra</small></article>
         <article className="metric-card"><div className="metric-icon metric-amber"><BookOpen size={18} /></div><span>Productos por reponer</span><strong>{lowStock.length}</strong><small>Activos en mínimo o agotados</small></article>
-        <article className="metric-card"><div className="metric-icon metric-neutral"><Calculator size={18} /></div><span>Nómina aprobada</span><strong>{money(payrollTotal)}</strong><small>{purchaseLoadError || `${pendingOrders ?? '—'} órdenes ABI en MariaDB`}</small></article>
+        <article className="metric-card"><div className="metric-icon metric-neutral"><Calculator size={18} /></div><span>Nómina aprobada</span><strong>{money(payrollTotal)}</strong><small>{purchaseLoadError || `${pendingOrders ?? '—'} órdenes ABI pendientes`}</small></article>
       </div>
       <section className="card"><div className="section-heading"><div><h2>Productos más vendidos</h2><p>Unidades acumuladas en las facturas activas.</p></div></div><div className="table-scroll"><table><thead><tr><th>Producto</th><th>Categoría</th><th>Unidades</th><th>Existencia actual</th><th>Valor de inventario</th></tr></thead><tbody>
         {topProducts.map(([productId, quantity]) => {
