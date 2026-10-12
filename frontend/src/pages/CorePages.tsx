@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { ArrowDownToLine, ArrowUpRight, CheckCircle2, Edit3, Plus, Power, PowerOff, Save, Trash2, Users, Wine, X } from 'lucide-react';
+import { ArrowDownToLine, ArrowUpRight, CheckCircle2, Edit3, Plus, Power, PowerOff, Save, Users, Wine, X } from 'lucide-react';
 import { useGlobalStore } from '../context';
 import { catalogApi, customerApi, hrApi, purchaseApi, supplierApi } from '../api';
 import { Customer, Employee, Supplier } from '../types';
@@ -607,16 +607,6 @@ export const Suppliers = () => {
     setConfirmModal({ isOpen: false, supplier: null, targetStatus: 'INACTIVE' });
   };
 
-  // Eliminar completamente registros de prueba/basura
-  const deleteSupplierRecord = (id: string) => {
-    updateState(draft => {
-      draft.suppliers = draft.suppliers.filter(s => s.id !== id);
-      return draft;
-    });
-    setNoticeType('success');
-    setNotice('Registro de proveedor eliminado del sistema.');
-  };
-
   // Filtrado de proveedores
   const visibleSuppliers = state.suppliers.filter(supplier => {
     const matchesSearch = `${supplier.id} ${supplier.name} ${supplier.ruc} ${supplier.city || ''} ${supplier.mobile || ''}`
@@ -883,17 +873,6 @@ export const Suppliers = () => {
                             <Power size={13} /> Habilitar
                           </button>
                         )}
-
-                        {/* Opción para purgar registro basura */}
-                        <button
-                          type="button"
-                          className="btn btn-outline"
-                          title="Eliminar completamente este registro"
-                          style={{ padding: '5px 7px', color: '#94a3b8' }}
-                          onClick={() => deleteSupplierRecord(supplier.id)}
-                        >
-                          <Trash2 size={13} />
-                        </button>
                       </div>
                     </td>
                   </tr>
