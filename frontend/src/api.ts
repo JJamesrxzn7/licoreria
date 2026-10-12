@@ -188,12 +188,19 @@ export const supplierApi = {
     nombre: string;
     ruc: string;
     telefono?: string;
+    celular?: string;
     email?: string;
+    idCiudad?: string;
     direccion?: string;
   }) => request<{ id: string; mensaje: string }>(`/api/proveedores/${encodeURIComponent(id)}`, {
     method: 'PUT',
     body: JSON.stringify(supplier),
   }),
+  changeStatus: (id: string, estado: 'ACTIVE' | 'INACTIVE') =>
+    request<{ id: string; estado: string; mensaje: string }>(`/api/proveedores/${encodeURIComponent(id)}/estado`, {
+      method: 'PATCH',
+      body: JSON.stringify({ estado }),
+    }),
 };
 
 // 5. Módulo Ventas

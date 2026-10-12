@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { ArrowDownToLine, ArrowUpRight, Plus, Save, Trash2, Users, Wine } from 'lucide-react';
+import { ArrowDownToLine, ArrowUpRight, CheckCircle2, Edit3, Plus, Power, PowerOff, Save, Trash2, Users, Wine, X } from 'lucide-react';
 import { useGlobalStore } from '../context';
 import { catalogApi, customerApi, hrApi, purchaseApi, supplierApi } from '../api';
 import { Customer, Employee, Supplier } from '../types';
@@ -175,9 +175,12 @@ export const Customers = () => {
 export const Suppliers = () => {
   const { state, updateState } = useGlobalStore();
   const [search, setSearch] = useState('');
+  const [statusFilter, setStatusFilter] = useState<'ALL' | 'ACTIVE' | 'INACTIVE'>('ALL');
   const [notice, setNotice] = useState('');
   const [noticeType, setNoticeType] = useState<'success' | 'error'>('success');
   const [cities, setCities] = useState<Array<{ id: string; nombre: string; provincia: string }>>([]);
+
+  // Formulario de registro (creación)
   const [form, setForm] = useState<{
     ruc: string;
     name: string;
@@ -192,12 +195,45 @@ export const Suppliers = () => {
     contact: '',
     mobile: '',
     email: '',
-    cityId: 'UIO',
+    cityId: '',
     address: '',
   });
 
   const [touched, setTouched] = useState<Record<string, boolean>>({});
   const [errors, setErrors] = useState<Record<string, string>>({});
+
+  // Estado para Edición
+  const [editingSupplier, setEditingSupplier] = useState<Supplier | null>(null);
+  const [editForm, setEditForm] = useState<{
+    name: string;
+    ruc: string;
+    contact: string;
+    mobile: string;
+    email: string;
+    cityId: string;
+    address: string;
+  }>({
+    name: '',
+    ruc: '',
+    contact: '',
+    mobile: '',
+    email: '',
+    cityId: '',
+    address: '',
+  });
+  const [editTouched, setEditTouched] = useState<Record<string, boolean>>({});
+  const [editErrors, setEditErrors] = useState<Record<string, string>>({});
+
+  // Estado para Confirmación de activación/desactivación
+  const [confirmModal, setConfirmModal] = useState<{
+    isOpen: boolean;
+    supplier: Supplier | null;
+    targetStatus: 'ACTIVE' | 'INACTIVE';
+  }>({
+    isOpen: false,
+    supplier: null,
+    targetStatus: 'INACTIVE',
+  });
 
   const nextSupplierId = useMemo(() => {
     let maxNum = 0;
@@ -231,7 +267,6 @@ export const Suppliers = () => {
     void catalogApi.getCiudades().then(list => {
       if (list && list.length) {
         setCities(list);
-        if (!form.cityId) setForm(prev => ({ ...prev, cityId: list[0].id }));
       }
     }).catch(() => null);
   }, []);
@@ -261,6 +296,9 @@ export const Suppliers = () => {
         if (!val.includes('@') || !val.includes('.')) return 'El correo debe contener "@" y un punto "." obligatoriamente.';
         if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(val)) return 'Formato de correo no válido (ej: proveedor@empresa.com).';
         return '';
+      case 'cityId':
+        if (!val) return 'Por favor seleccione una ciudad de la lista.';
+        return '';
       case 'address':
         if (!val) return 'La dirección es obligatoria.';
         if (!/\bav/i.test(val)) return 'La dirección debe incluir la palabra o abreviatura "Av" (ej: Av. Amazonas).';
@@ -270,6 +308,7 @@ export const Suppliers = () => {
     }
   };
 
+  // Manejo de blur y change en Formulario Principal
   const handleBlur = (field: string) => {
     setTouched(prev => ({ ...prev, [field]: true }));
     const errorMsg = validateField(field, (form as any)[field] ?? '');
@@ -279,46 +318,39 @@ export const Suppliers = () => {
   const handleRucChange = (val: string) => {
     const digitsOnly = val.replace(/\D/g, '').slice(0, 13);
     setForm(prev => ({ ...prev, ruc: digitsOnly }));
-    if (touched.ruc) {
-      setErrors(prev => ({ ...prev, ruc: validateField('ruc', digitsOnly) }));
-    }
+    if (touched.ruc) setErrors(prev => ({ ...prev, ruc: validateField('ruc', digitsOnly) }));
   };
 
   const handlePhoneChange = (val: string) => {
     const digitsOnly = val.replace(/\D/g, '').slice(0, 10);
     setForm(prev => ({ ...prev, contact: digitsOnly }));
-    if (touched.contact) {
-      setErrors(prev => ({ ...prev, contact: validateField('contact', digitsOnly) }));
-    }
+    if (touched.contact) setErrors(prev => ({ ...prev, contact: validateField('contact', digitsOnly) }));
   };
 
   const handleMobileChange = (val: string) => {
     const digitsOnly = val.replace(/\D/g, '').slice(0, 10);
     setForm(prev => ({ ...prev, mobile: digitsOnly }));
-    if (touched.mobile) {
-      setErrors(prev => ({ ...prev, mobile: validateField('mobile', digitsOnly) }));
-    }
+    if (touched.mobile) setErrors(prev => ({ ...prev, mobile: validateField('mobile', digitsOnly) }));
   };
 
   const handleNameChange = (val: string) => {
     setForm(prev => ({ ...prev, name: val }));
-    if (touched.name) {
-      setErrors(prev => ({ ...prev, name: validateField('name', val) }));
-    }
+    if (touched.name) setErrors(prev => ({ ...prev, name: validateField('name', val) }));
   };
 
   const handleEmailChange = (val: string) => {
     setForm(prev => ({ ...prev, email: val }));
-    if (touched.email) {
-      setErrors(prev => ({ ...prev, email: validateField('email', val) }));
-    }
+    if (touched.email) setErrors(prev => ({ ...prev, email: validateField('email', val) }));
+  };
+
+  const handleCityChange = (val: string) => {
+    setForm(prev => ({ ...prev, cityId: val }));
+    if (touched.cityId) setErrors(prev => ({ ...prev, cityId: validateField('cityId', val) }));
   };
 
   const handleAddressChange = (val: string) => {
     setForm(prev => ({ ...prev, address: val }));
-    if (touched.address) {
-      setErrors(prev => ({ ...prev, address: validateField('address', val) }));
-    }
+    if (touched.address) setErrors(prev => ({ ...prev, address: validateField('address', val) }));
   };
 
   const validateAll = () => {
@@ -328,6 +360,7 @@ export const Suppliers = () => {
       contact: validateField('contact', form.contact),
       mobile: validateField('mobile', form.mobile),
       email: validateField('email', form.email),
+      cityId: validateField('cityId', form.cityId),
       address: validateField('address', form.address),
     };
     setErrors(newErrors);
@@ -337,11 +370,81 @@ export const Suppliers = () => {
       contact: true,
       mobile: true,
       email: true,
+      cityId: true,
       address: true,
     });
     return Object.values(newErrors).every(err => !err);
   };
 
+  // Manejo de blur y change en Formulario de Edición
+  const handleEditBlur = (field: string) => {
+    setEditTouched(prev => ({ ...prev, [field]: true }));
+    const errorMsg = validateField(field, (editForm as any)[field] ?? '');
+    setEditErrors(prev => ({ ...prev, [field]: errorMsg }));
+  };
+
+  const handleEditRucChange = (val: string) => {
+    const digitsOnly = val.replace(/\D/g, '').slice(0, 13);
+    setEditForm(prev => ({ ...prev, ruc: digitsOnly }));
+    if (editTouched.ruc) setEditErrors(prev => ({ ...prev, ruc: validateField('ruc', digitsOnly) }));
+  };
+
+  const handleEditPhoneChange = (val: string) => {
+    const digitsOnly = val.replace(/\D/g, '').slice(0, 10);
+    setEditForm(prev => ({ ...prev, contact: digitsOnly }));
+    if (editTouched.contact) setEditErrors(prev => ({ ...prev, contact: validateField('contact', digitsOnly) }));
+  };
+
+  const handleEditMobileChange = (val: string) => {
+    const digitsOnly = val.replace(/\D/g, '').slice(0, 10);
+    setEditForm(prev => ({ ...prev, mobile: digitsOnly }));
+    if (editTouched.mobile) setEditErrors(prev => ({ ...prev, mobile: validateField('mobile', digitsOnly) }));
+  };
+
+  const handleEditNameChange = (val: string) => {
+    setEditForm(prev => ({ ...prev, name: val }));
+    if (editTouched.name) setEditErrors(prev => ({ ...prev, name: validateField('name', val) }));
+  };
+
+  const handleEditEmailChange = (val: string) => {
+    setEditForm(prev => ({ ...prev, email: val }));
+    if (editTouched.email) setEditErrors(prev => ({ ...prev, email: validateField('email', val) }));
+  };
+
+  const handleEditCityChange = (val: string) => {
+    setEditForm(prev => ({ ...prev, cityId: val }));
+    if (editTouched.cityId) setEditErrors(prev => ({ ...prev, cityId: validateField('cityId', val) }));
+  };
+
+  const handleEditAddressChange = (val: string) => {
+    setEditForm(prev => ({ ...prev, address: val }));
+    if (editTouched.address) setEditErrors(prev => ({ ...prev, address: validateField('address', val) }));
+  };
+
+  const validateEditAll = () => {
+    const newErrors: Record<string, string> = {
+      ruc: validateField('ruc', editForm.ruc),
+      name: validateField('name', editForm.name),
+      contact: validateField('contact', editForm.contact),
+      mobile: validateField('mobile', editForm.mobile),
+      email: validateField('email', editForm.email),
+      cityId: validateField('cityId', editForm.cityId),
+      address: validateField('address', editForm.address),
+    };
+    setEditErrors(newErrors);
+    setEditTouched({
+      ruc: true,
+      name: true,
+      contact: true,
+      mobile: true,
+      email: true,
+      cityId: true,
+      address: true,
+    });
+    return Object.values(newErrors).every(err => !err);
+  };
+
+  // Guardar nuevo proveedor
   const save = async () => {
     if (!validateAll()) {
       setNoticeType('error');
@@ -393,25 +496,141 @@ export const Suppliers = () => {
       contact: '',
       mobile: '',
       email: '',
-      cityId: cities[0]?.id || 'UIO',
+      cityId: '',
       address: '',
     });
     setTouched({});
     setErrors({});
   };
 
-  const deleteSupplier = (id: string) => {
+  // Abrir modal de edición
+  const startEdit = (supplier: Supplier) => {
+    setEditingSupplier(supplier);
+    setEditForm({
+      name: supplier.name,
+      ruc: supplier.ruc,
+      contact: supplier.contact || '',
+      mobile: supplier.mobile || '',
+      email: supplier.email || '',
+      cityId: supplier.cityId || (cities.find(c => c.nombre.toLowerCase() === supplier.city?.toLowerCase())?.id || 'UIO'),
+      address: supplier.address || '',
+    });
+    setEditTouched({});
+    setEditErrors({});
+  };
+
+  // Guardar edición
+  const saveEdit = async () => {
+    if (!editingSupplier) return;
+    if (!validateEditAll()) {
+      setNoticeType('error');
+      setNotice('Por favor corrige los campos marcados en rojo en el formulario de edición.');
+      return;
+    }
+
+    const selectedCity = cities.find(c => c.id === editForm.cityId);
+
+    try {
+      await supplierApi.updateSupplier(editingSupplier.id, {
+        nombre: editForm.name.trim(),
+        ruc: editForm.ruc.trim(),
+        telefono: editForm.contact?.trim() || '',
+        celular: editForm.mobile?.trim() || '',
+        email: editForm.email?.trim() || '',
+        idCiudad: editForm.cityId || 'UIO',
+        direccion: editForm.address?.trim() || '',
+      });
+      setNoticeType('success');
+      setNotice(`Proveedor ${editingSupplier.id} actualizado exitosamente.`);
+      void loadSuppliers();
+    } catch {
+      updateState(draft => {
+        const found = draft.suppliers.find(s => s.id === editingSupplier.id);
+        if (found) {
+          found.name = editForm.name.trim();
+          found.ruc = editForm.ruc.trim();
+          found.contact = editForm.contact?.trim() || '';
+          found.mobile = editForm.mobile?.trim() || '';
+          found.email = editForm.email?.trim() || '';
+          found.cityId = editForm.cityId || 'UIO';
+          found.city = selectedCity?.nombre || found.city;
+          found.address = editForm.address?.trim() || '';
+        }
+        return draft;
+      });
+      setNoticeType('success');
+      setNotice(`Proveedor ${editingSupplier.id} actualizado exitosamente.`);
+    }
+
+    setEditingSupplier(null);
+  };
+
+  // Solicitar confirmación para cambiar estado (Eliminación inteligente / Inhabilitar o Habilitar)
+  const requestToggleStatus = (supplier: Supplier, targetStatus: 'ACTIVE' | 'INACTIVE') => {
+    setConfirmModal({
+      isOpen: true,
+      supplier,
+      targetStatus,
+    });
+  };
+
+  // Confirmar cambio de estado
+  const executeToggleStatus = async () => {
+    const { supplier, targetStatus } = confirmModal;
+    if (!supplier) return;
+
+    try {
+      await supplierApi.changeStatus(supplier.id, targetStatus);
+      setNoticeType('success');
+      setNotice(
+        targetStatus === 'ACTIVE'
+          ? `Proveedor ${supplier.name} habilitado correctamente.`
+          : `Proveedor ${supplier.name} inhabilitado correctamente.`
+      );
+      void loadSuppliers();
+    } catch {
+      updateState(draft => {
+        const found = draft.suppliers.find(s => s.id === supplier.id);
+        if (found) {
+          found.status = targetStatus;
+        }
+        return draft;
+      });
+      setNoticeType('success');
+      setNotice(
+        targetStatus === 'ACTIVE'
+          ? `Proveedor ${supplier.name} habilitado correctamente.`
+          : `Proveedor ${supplier.name} inhabilitado correctamente.`
+      );
+    }
+
+    setConfirmModal({ isOpen: false, supplier: null, targetStatus: 'INACTIVE' });
+  };
+
+  // Eliminar completamente registros de prueba/basura
+  const deleteSupplierRecord = (id: string) => {
     updateState(draft => {
       draft.suppliers = draft.suppliers.filter(s => s.id !== id);
       return draft;
     });
     setNoticeType('success');
-    setNotice('Registro de proveedor eliminado.');
+    setNotice('Registro de proveedor eliminado del sistema.');
   };
 
-  const visibleSuppliers = state.suppliers.filter(supplier =>
-    `${supplier.id} ${supplier.name} ${supplier.ruc} ${supplier.city || ''} ${supplier.mobile || ''}`.toLowerCase().includes(search.toLowerCase())
-  );
+  // Filtrado de proveedores
+  const visibleSuppliers = state.suppliers.filter(supplier => {
+    const matchesSearch = `${supplier.id} ${supplier.name} ${supplier.ruc} ${supplier.city || ''} ${supplier.mobile || ''}`
+      .toLowerCase()
+      .includes(search.toLowerCase());
+
+    const isSupplierActive = (supplier.status ?? 'ACTIVE') === 'ACTIVE';
+    if (statusFilter === 'ACTIVE' && !isSupplierActive) return false;
+    if (statusFilter === 'INACTIVE' && isSupplierActive) return false;
+    return matchesSearch;
+  });
+
+  const activeCount = state.suppliers.filter(s => (s.status ?? 'ACTIVE') === 'ACTIVE').length;
+  const inactiveCount = state.suppliers.filter(s => s.status === 'INACTIVE').length;
 
   return (
     <div>
@@ -499,19 +718,21 @@ export const Suppliers = () => {
           </label>
 
           <label className="form-group">
-            <span>Ciudad</span>
+            <span>Ciudad <strong style={{ color: '#ef4444' }}>*</strong></span>
             <select
-              className="select"
+              className={`select ${touched.cityId && errors.cityId ? 'is-invalid' : ''}`}
               value={form.cityId}
-              onChange={e => setForm(prev => ({ ...prev, cityId: e.target.value }))}
+              onChange={e => handleCityChange(e.target.value)}
+              onBlur={() => handleBlur('cityId')}
             >
+              <option value="">-- Por favor, seleccione una ciudad --</option>
               {cities.map(c => (
                 <option key={c.id} value={c.id}>
                   {c.nombre} ({c.provincia})
                 </option>
               ))}
-              {!cities.length && <option value="UIO">Quito (Pichincha)</option>}
             </select>
+            {touched.cityId && errors.cityId && <span className="field-error">{errors.cityId}</span>}
           </label>
 
           <label className="form-group" style={{ gridColumn: 'span 2' }}>
@@ -553,16 +774,46 @@ export const Suppliers = () => {
         <div className="section-heading">
           <div>
             <h2>Directorio de proveedores</h2>
-            <p>{visibleSuppliers.length} registros</p>
+            <p>{visibleSuppliers.length} registros visibles</p>
           </div>
-          <input
-            className="input table-search"
-            aria-label="Buscar proveedores"
-            placeholder="Buscar por ID, RUC o razón social"
-            value={search}
-            onChange={event => setSearch(event.target.value)}
-          />
+
+          <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
+            {/* Filtros Inteligentes de Estado */}
+            <div style={{ display: 'flex', gap: '6px' }}>
+              <button
+                type="button"
+                className={`filter-badge-btn ${statusFilter === 'ALL' ? 'active' : ''}`}
+                onClick={() => setStatusFilter('ALL')}
+              >
+                Todos ({state.suppliers.length})
+              </button>
+              <button
+                type="button"
+                className={`filter-badge-btn ${statusFilter === 'ACTIVE' ? 'active' : ''}`}
+                onClick={() => setStatusFilter('ACTIVE')}
+              >
+                Activos ({activeCount})
+              </button>
+              <button
+                type="button"
+                className={`filter-badge-btn ${statusFilter === 'INACTIVE' ? 'active' : ''}`}
+                onClick={() => setStatusFilter('INACTIVE')}
+              >
+                Inactivos ({inactiveCount})
+              </button>
+            </div>
+
+            <input
+              className="input table-search"
+              aria-label="Buscar proveedores"
+              placeholder="Buscar por ID, RUC o razón social"
+              value={search}
+              onChange={event => setSearch(event.target.value)}
+              style={{ width: '260px' }}
+            />
+          </div>
         </div>
+
         <div className="table-scroll">
           <table>
             <thead>
@@ -575,37 +826,87 @@ export const Suppliers = () => {
                 <th>Correo</th>
                 <th>Ciudad</th>
                 <th>Dirección</th>
-                <th style={{ width: '48px', textAlign: 'center' }}>Acción</th>
+                <th>Estado</th>
+                <th style={{ minWidth: '150px', textAlign: 'center' }}>Acciones</th>
               </tr>
             </thead>
             <tbody>
-              {visibleSuppliers.map(supplier => (
-                <tr key={supplier.id}>
-                  <td><code style={{ fontWeight: 600 }}>{supplier.id}</code></td>
-                  <td>{supplier.ruc}</td>
-                  <td>{supplier.name}</td>
-                  <td>{supplier.contact || '—'}</td>
-                  <td>{supplier.mobile || '—'}</td>
-                  <td>{supplier.email || '—'}</td>
-                  <td>{supplier.city || '—'}</td>
-                  <td>{supplier.address || '—'}</td>
-                  <td style={{ textAlign: 'center' }}>
-                    <button
-                      type="button"
-                      className="btn btn-outline"
-                      title="Eliminar registro"
-                      style={{ padding: '4px 8px', color: '#ef4444', borderColor: '#fca5a5' }}
-                      onClick={() => deleteSupplier(supplier.id)}
-                    >
-                      <Trash2 size={14} />
-                    </button>
-                  </td>
-                </tr>
-              ))}
+              {visibleSuppliers.map(supplier => {
+                const isActive = (supplier.status ?? 'ACTIVE') === 'ACTIVE';
+                return (
+                  <tr key={supplier.id} style={{ opacity: isActive ? 1 : 0.65 }}>
+                    <td><code style={{ fontWeight: 600 }}>{supplier.id}</code></td>
+                    <td>{supplier.ruc}</td>
+                    <td>{supplier.name}</td>
+                    <td>{supplier.contact || '—'}</td>
+                    <td>{supplier.mobile || '—'}</td>
+                    <td>{supplier.email || '—'}</td>
+                    <td>{supplier.city || '—'}</td>
+                    <td>{supplier.address || '—'}</td>
+                    <td>
+                      <span className={`badge ${isActive ? 'badge-active' : 'badge-inactive'}`}>
+                        {isActive ? 'Activo' : 'Inactivo'}
+                      </span>
+                    </td>
+                    <td>
+                      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px' }}>
+                        {/* Botón Editar */}
+                        <button
+                          type="button"
+                          className="btn btn-outline"
+                          title="Editar datos del proveedor"
+                          style={{ padding: '5px 9px', fontSize: '11px' }}
+                          onClick={() => startEdit(supplier)}
+                        >
+                          <Edit3 size={13} /> Editar
+                        </button>
+
+                        {/* Botón Inhabilitar / Habilitar (Eliminación Inteligente) */}
+                        {isActive ? (
+                          <button
+                            type="button"
+                            className="btn btn-outline"
+                            title="Inhabilitar proveedor"
+                            style={{ padding: '5px 9px', fontSize: '11px', color: '#b42318', borderColor: '#fca5a5' }}
+                            onClick={() => requestToggleStatus(supplier, 'INACTIVE')}
+                          >
+                            <PowerOff size={13} /> Inhabilitar
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            className="btn btn-secondary"
+                            title="Habilitar proveedor"
+                            style={{ padding: '5px 9px', fontSize: '11px' }}
+                            onClick={() => requestToggleStatus(supplier, 'ACTIVE')}
+                          >
+                            <Power size={13} /> Habilitar
+                          </button>
+                        )}
+
+                        {/* Opción para purgar registro basura */}
+                        <button
+                          type="button"
+                          className="btn btn-outline"
+                          title="Eliminar completamente este registro"
+                          style={{ padding: '5px 7px', color: '#94a3b8' }}
+                          onClick={() => deleteSupplierRecord(supplier.id)}
+                        >
+                          <Trash2 size={13} />
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
               {!visibleSuppliers.length && (
                 <tr>
-                  <td colSpan={9} className="empty-state">
-                    No hay proveedores registrados.
+                  <td colSpan={10} className="empty-state">
+                    {statusFilter === 'INACTIVE'
+                      ? 'No hay proveedores inactivos registrados.'
+                      : statusFilter === 'ACTIVE'
+                      ? 'No hay proveedores activos registrados.'
+                      : 'No hay proveedores registrados.'}
                   </td>
                 </tr>
               )}
@@ -613,6 +914,188 @@ export const Suppliers = () => {
           </table>
         </div>
       </section>
+
+      {/* Modal de Edición de Proveedor */}
+      {editingSupplier && (
+        <div className="modal-backdrop">
+          <div className="modal-card">
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '18px' }}>
+              <div>
+                <h2 style={{ margin: 0, fontSize: '18px' }}>Editar Proveedor</h2>
+                <p style={{ margin: '3px 0 0', fontSize: '12px', color: 'var(--text-muted)' }}>
+                  ID asignado: <strong style={{ fontFamily: 'monospace' }}>{editingSupplier.id}</strong> (El ID no se puede modificar)
+                </p>
+              </div>
+              <button
+                type="button"
+                className="icon-button"
+                onClick={() => setEditingSupplier(null)}
+                style={{ border: 'none' }}
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="grid-2">
+              <label className="form-group">
+                <span>RUC (13 dígitos) <strong style={{ color: '#ef4444' }}>*</strong></span>
+                <input
+                  className={`input ${editTouched.ruc && editErrors.ruc ? 'is-invalid' : ''}`}
+                  maxLength={13}
+                  value={editForm.ruc}
+                  onChange={e => handleEditRucChange(e.target.value)}
+                  onBlur={() => handleEditBlur('ruc')}
+                />
+                {editTouched.ruc && editErrors.ruc && <span className="field-error">{editErrors.ruc}</span>}
+              </label>
+
+              <label className="form-group">
+                <span>Razón social <strong style={{ color: '#ef4444' }}>*</strong></span>
+                <input
+                  className={`input ${editTouched.name && editErrors.name ? 'is-invalid' : ''}`}
+                  value={editForm.name}
+                  onChange={e => handleEditNameChange(e.target.value)}
+                  onBlur={() => handleEditBlur('name')}
+                />
+                {editTouched.name && editErrors.name && <span className="field-error">{editErrors.name}</span>}
+              </label>
+
+              <label className="form-group">
+                <span>Teléfono fijo</span>
+                <input
+                  className={`input ${editTouched.contact && editErrors.contact ? 'is-invalid' : ''}`}
+                  maxLength={10}
+                  value={editForm.contact}
+                  onChange={e => handleEditPhoneChange(e.target.value)}
+                  onBlur={() => handleEditBlur('contact')}
+                />
+                {editTouched.contact && editErrors.contact && <span className="field-error">{editErrors.contact}</span>}
+              </label>
+
+              <label className="form-group">
+                <span>Celular (10 dígitos, empieza con 09) <strong style={{ color: '#ef4444' }}>*</strong></span>
+                <input
+                  className={`input ${editTouched.mobile && editErrors.mobile ? 'is-invalid' : ''}`}
+                  maxLength={10}
+                  value={editForm.mobile}
+                  onChange={e => handleEditMobileChange(e.target.value)}
+                  onBlur={() => handleEditBlur('mobile')}
+                />
+                {editTouched.mobile && editErrors.mobile && <span className="field-error">{editErrors.mobile}</span>}
+              </label>
+
+              <label className="form-group">
+                <span>Correo electrónico <strong style={{ color: '#ef4444' }}>*</strong></span>
+                <input
+                  className={`input ${editTouched.email && editErrors.email ? 'is-invalid' : ''}`}
+                  type="email"
+                  value={editForm.email}
+                  onChange={e => handleEditEmailChange(e.target.value)}
+                  onBlur={() => handleEditBlur('email')}
+                />
+                {editTouched.email && editErrors.email && <span className="field-error">{editErrors.email}</span>}
+              </label>
+
+              <label className="form-group">
+                <span>Ciudad <strong style={{ color: '#ef4444' }}>*</strong></span>
+                <select
+                  className={`select ${editTouched.cityId && editErrors.cityId ? 'is-invalid' : ''}`}
+                  value={editForm.cityId}
+                  onChange={e => handleEditCityChange(e.target.value)}
+                  onBlur={() => handleEditBlur('cityId')}
+                >
+                  <option value="">-- Por favor, seleccione una ciudad --</option>
+                  {cities.map(c => (
+                    <option key={c.id} value={c.id}>
+                      {c.nombre} ({c.provincia})
+                    </option>
+                  ))}
+                </select>
+                {editTouched.cityId && editErrors.cityId && <span className="field-error">{editErrors.cityId}</span>}
+              </label>
+
+              <label className="form-group" style={{ gridColumn: 'span 2' }}>
+                <span>Dirección (Debe incluir "Av") <strong style={{ color: '#ef4444' }}>*</strong></span>
+                <input
+                  className={`input ${editTouched.address && editErrors.address ? 'is-invalid' : ''}`}
+                  value={editForm.address}
+                  onChange={e => handleEditAddressChange(e.target.value)}
+                  onBlur={() => handleEditBlur('address')}
+                />
+                {editTouched.address && editErrors.address && <span className="field-error">{editErrors.address}</span>}
+              </label>
+            </div>
+
+            <div style={{ marginTop: '20px', display: 'flex', justifyContent: 'flex-end', gap: '10px' }}>
+              <button
+                type="button"
+                className="btn btn-outline"
+                onClick={() => setEditingSupplier(null)}
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={saveEdit}
+              >
+                <Save size={15} /> Actualizar datos
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal de Confirmación para Inhabilitar / Habilitar */}
+      {confirmModal.isOpen && confirmModal.supplier && (
+        <div className="modal-backdrop">
+          <div className="modal-card" style={{ maxWidth: '480px' }}>
+            <h2 style={{ margin: '0 0 10px', fontSize: '18px' }}>
+              {confirmModal.targetStatus === 'INACTIVE' ? '¿Inhabilitar proveedor?' : '¿Habilitar proveedor?'}
+            </h2>
+            <p style={{ margin: '0 0 16px', fontSize: '13px', color: '#475569', lineHeight: 1.5 }}>
+              {confirmModal.targetStatus === 'INACTIVE' ? (
+                <>
+                  ¿Estás seguro de que deseas inhabilitar al proveedor <strong>{confirmModal.supplier.name}</strong> ({confirmModal.supplier.id})?
+                  <br />
+                  <span style={{ display: 'block', marginTop: '8px', color: '#b42318', fontSize: '12px' }}>
+                    ⚠️ Los proveedores inactivos no podrán seleccionarse para generar nuevas órdenes de compra hasta que sean habilitados nuevamente.
+                  </span>
+                </>
+              ) : (
+                <>
+                  ¿Deseas volver a habilitar al proveedor <strong>{confirmModal.supplier.name}</strong> ({confirmModal.supplier.id}) para que vuelva a estar disponible en compras?
+                </>
+              )}
+            </p>
+
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px' }}>
+              <button
+                type="button"
+                className="btn btn-outline"
+                onClick={() => setConfirmModal({ isOpen: false, supplier: null, targetStatus: 'INACTIVE' })}
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                className={confirmModal.targetStatus === 'INACTIVE' ? 'btn btn-danger' : 'btn btn-secondary'}
+                onClick={executeToggleStatus}
+              >
+                {confirmModal.targetStatus === 'INACTIVE' ? (
+                  <>
+                    <PowerOff size={14} /> Sí, inhabilitar
+                  </>
+                ) : (
+                  <>
+                    <CheckCircle2 size={14} /> Sí, habilitar
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

@@ -251,7 +251,12 @@ export const PurchaseOrders = () => {
   }));
 
   const createOrder = async () => {
-    if (!supplierId || !items.length || items.some(item => !item.productId || !Number.isInteger(item.qty) || item.qty < 1 || item.cost < 0 || !Number.isFinite(item.qty + item.cost))) return setNotice('Selecciona proveedor y productos con cantidades enteras y costos válidos.');
+    if (!supplierId) return setNotice('Selecciona un proveedor para continuar.');
+    const selectedSupplier = catalogs?.proveedores.find(s => s.id === supplierId);
+    if (selectedSupplier && selectedSupplier.estado !== 'ACT') {
+      return setNotice('No se puede realizar una compra a un proveedor inactivo. Debes activarlo primero en el directorio de proveedores.');
+    }
+    if (!items.length || items.some(item => !item.productId || !Number.isInteger(item.qty) || item.qty < 1 || item.cost < 0 || !Number.isFinite(item.qty + item.cost))) return setNotice('Selecciona proveedor y productos con cantidades enteras y costos válidos.');
     if (new Set(items.map(item => item.productId)).size !== items.length) return setNotice('Cada producto debe aparecer una sola vez en la orden.');
     setSaving(true);
     try {

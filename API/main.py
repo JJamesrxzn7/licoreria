@@ -915,7 +915,9 @@ def actualizar_proveedor(supplier_id: str, prv: SupplierInput):
             SET prv_Nombre = %s,
                 prv_RUC_CED = %s,
                 prv_Telefono = %s,
+                prv_Celular = %s,
                 prv_Mail = %s,
+                id_Ciudad = %s,
                 prv_Direccion = %s
             WHERE id_Proveedor = %s
             """,
@@ -923,19 +925,52 @@ def actualizar_proveedor(supplier_id: str, prv: SupplierInput):
                 prv.name[:40],
                 prv.ruc[:13],
                 prv.phone[:10],
+                prv.mobile[:10],
                 prv.email[:60],
+                prv.city_id[:3],
                 prv.address[:60],
                 supplier_id,
             ),
         )
         conn.commit()
-        return {"id": supplier_id, "mensaje": "Proveedor actualizado."}
+        return {"id": supplier_id, "mensaje": "Proveedor actualizado exitosamente."}
     except mysql.connector.Error as error:
         if conn: conn.rollback()
         raise_database_error(error)
     finally:
         if cur: cur.close()
         if conn and conn.is_connected(): conn.close()
+
+
+@app.patch("/api/proveedores/{supplier_id}/estado")
+def cambiar_estado_proveedor(supplier_id: str, payload: dict):
+    nuevo_estado = payload.get("estado", "INA")
+    if nuevo_estado in ["ACTIVE", "ACT"]:
+        db_estado = "ACT"
+    else:
+        db_estado = "INA"
+
+    conn, cur = None, None
+    try:
+        conn = mysql.connector.connect(**get_db_config())
+        cur = conn.cursor()
+        cur.execute(
+            "UPDATE PROVEEDORES SET ESTADO_PRV = %s WHERE id_Proveedor = %s",
+            (db_estado, supplier_id),
+        )
+        conn.commit()
+        return {
+            "id": supplier_id,
+            "estado": "ACTIVE" if db_estado == "ACT" else "INACTIVE",
+            "mensaje": f"Estado del proveedor actualizado a {'Activo' if db_estado == 'ACT' else 'Inactivo'}.",
+        }
+    except mysql.connector.Error as error:
+        if conn: conn.rollback()
+        raise_database_error(error)
+    finally:
+        if cur: cur.close()
+        if conn and conn.is_connected(): conn.close()
+
 
 
 # ==========================================
