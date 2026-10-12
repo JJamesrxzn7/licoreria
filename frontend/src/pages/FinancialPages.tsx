@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { BookOpen, Calculator, FileText, X } from 'lucide-react';
+import { BookOpen, Calculator, FileText, Plus, X } from 'lucide-react';
 import { useGlobalStore } from '../context';
 import { accountingApi, purchaseApi, salesApi } from '../api';
 import { Invoice, JournalEntry, JournalEntryLine } from '../types';
@@ -85,21 +85,46 @@ export const Accounting = () => {
   const [editingEntryId, setEditingEntryId] = useState('');
   const [notice, setNotice] = useState('');
 
+  const [newAccCode, setNewAccCode] = useState('');
+  const [newAccName, setNewAccName] = useState('');
+  const [newAccType, setNewAccType] = useState('COR');
+  const [accNotice, setAccNotice] = useState('');
+
   const loadAccounting = async () => {
     try {
       const [remoteAccounts, remoteEntries] = await Promise.all([
         accountingApi.listAccounts().catch(() => null),
         accountingApi.listEntries().catch(() => null),
       ]);
-      if (remoteAccounts || remoteEntries) {
+      if (remoteAccounts !== null || remoteEntries !== null) {
         updateState(draft => {
-          if (remoteAccounts && remoteAccounts.length) draft.accounts = remoteAccounts;
-          if (remoteEntries && remoteEntries.length) draft.journalEntries = remoteEntries;
+          if (Array.isArray(remoteAccounts)) draft.accounts = remoteAccounts;
+          if (Array.isArray(remoteEntries)) draft.journalEntries = remoteEntries;
           return draft;
         });
       }
     } catch {
       // Conserva estado local
+    }
+  };
+
+  const saveAccount = async () => {
+    if (!newAccCode.trim() || !newAccName.trim()) {
+      setAccNotice('Ingresa código y nombre de la cuenta.');
+      return;
+    }
+    try {
+      await accountingApi.createAccount({
+        idCuenta: newAccCode.trim(),
+        nombre: newAccName.trim(),
+        tipo: newAccType,
+      });
+      setAccNotice(`Cuenta ${newAccCode.trim()} registrada con éxito en MariaDB.`);
+      setNewAccCode('');
+      setNewAccName('');
+      void loadAccounting();
+    } catch (err) {
+      setAccNotice('Error al crear la cuenta en la base de datos.');
     }
   };
 
@@ -176,9 +201,19 @@ export const Accounting = () => {
   return (
     <div>
       <div className="page-heading"><div><span className="eyebrow">FINANZAS · MARIADB</span><h1>Contabilidad general</h1><p>Plan de cuentas, libro diario y control de partida doble.</p></div></div>
-      <section className="card"><div className="section-heading"><div><h2>Plan de cuentas</h2><p>Cuentas registradas en el sistema contable.</p></div></div>
+      <section className="card"><h2 className="section-title">Registrar cuenta contable</h2>
+        <div className="grid-4">
+          <label className="form-group">Código (ej. 1.1.01.01)<input className="input" value={newAccCode} onChange={e => setNewAccCode(e.target.value)} placeholder="Código" /></label>
+          <label className="form-group">Nombre de la cuenta<input className="input" value={newAccName} onChange={e => setNewAccName(e.target.value)} placeholder="Ej. Caja General" /></label>
+          <label className="form-group">Tipo de cuenta<select className="select" value={newAccType} onChange={e => setNewAccType(e.target.value)}><option value="COR">Corriente / Normal</option><option value="AHO">Ahorros</option></select></label>
+          <div className="form-action"><button type="button" className="btn btn-primary" onClick={saveAccount}><Plus size={16} /> Guardar cuenta</button></div>
+        </div>
+        {accNotice && <p className="form-notice" role="status">{accNotice}</p>}
+      </section>
+      <section className="card"><div className="section-heading"><div><h2>Plan de cuentas</h2><p>Cuentas registradas en el sistema contable ({state.accounts.length} cuentas).</p></div></div>
         <div className="table-scroll"><table><thead><tr><th>Código</th><th>Cuenta</th><th>Tipo</th><th>Saldo</th></tr></thead><tbody>
           {state.accounts.map(account => <tr key={account.id}><td>{account.code}</td><td>{account.name}</td><td>{account.type}</td><td>{money(account.balance)}</td></tr>)}
+          {!state.accounts.length && <tr><td colSpan={4} className="empty-state">No hay cuentas registradas. Agrega una cuenta arriba para comenzar.</td></tr>}
         </tbody></table></div>
       </section>
       <section className="card"><div className="section-heading"><div><h2>Nuevo asiento manual</h2><p>Guarda el asiento y luego apruébalo desde el libro diario.</p></div><span className={`balance-indicator ${balanced ? 'is-balanced' : 'is-unbalanced'}`}>Debe {money(totalDebit)} · Haber {money(totalCredit)}</span></div>

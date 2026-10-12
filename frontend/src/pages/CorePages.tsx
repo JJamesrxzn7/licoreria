@@ -86,7 +86,7 @@ export const Customers = () => {
   const loadCustomers = async () => {
     try {
       const remoteCustomers = await customerApi.listCustomers();
-      if (remoteCustomers && remoteCustomers.length) {
+      if (Array.isArray(remoteCustomers)) {
         updateState(draft => {
           draft.customers = remoteCustomers;
           return draft;
@@ -166,7 +166,7 @@ export const Suppliers = () => {
   const loadSuppliers = async () => {
     try {
       const remoteSuppliers = await supplierApi.listSuppliers();
-      if (remoteSuppliers && remoteSuppliers.length) {
+      if (Array.isArray(remoteSuppliers)) {
         updateState(draft => {
           draft.suppliers = remoteSuppliers;
           return draft;
@@ -242,13 +242,13 @@ export const HR = () => {
         hrApi.listEmployees().catch(() => null),
         hrApi.listPayrolls().catch(() => null),
       ]);
-      if (remoteEmployees || remotePayrolls) {
+      if (remoteEmployees !== null || remotePayrolls !== null) {
         updateState(draft => {
-          if (remoteEmployees && remoteEmployees.length) {
+          if (Array.isArray(remoteEmployees)) {
             draft.employees = remoteEmployees;
             if (!employeeId && remoteEmployees[0]) setEmployeeId(remoteEmployees[0].id);
           }
-          if (remotePayrolls && remotePayrolls.length) draft.payrolls = remotePayrolls;
+          if (Array.isArray(remotePayrolls)) draft.payrolls = remotePayrolls;
           return draft;
         });
       }

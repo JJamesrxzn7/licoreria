@@ -258,6 +258,14 @@ export const hrApi = {
 // 8. Módulo Contabilidad
 export const accountingApi = {
   listAccounts: () => request<Account[]>('/api/contabilidad/cuentas'),
+  createAccount: (account: {
+    idCuenta: string;
+    nombre: string;
+    tipo?: string;
+  }) => request<{ id: string; mensaje: string }>('/api/contabilidad/cuentas', {
+    method: 'POST',
+    body: JSON.stringify(account),
+  }),
   listEntries: () => request<JournalEntry[]>('/api/contabilidad/asientos'),
   createEntry: (entry: {
     descripcion: string;

@@ -31,10 +31,10 @@ export const POS = () => {
         productApi.listProducts().catch(() => null),
         customerApi.listCustomers().catch(() => null),
       ]);
-      if (remoteProducts || remoteCustomers) {
+      if (remoteProducts !== null || remoteCustomers !== null) {
         updateState(draft => {
-          if (remoteProducts && remoteProducts.length) draft.products = remoteProducts;
-          if (remoteCustomers && remoteCustomers.length) {
+          if (Array.isArray(remoteProducts)) draft.products = remoteProducts;
+          if (Array.isArray(remoteCustomers)) {
             draft.customers = remoteCustomers;
             if (!customerId && remoteCustomers[0]) setCustomerId(remoteCustomers[0].id);
           }

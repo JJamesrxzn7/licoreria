@@ -19,7 +19,7 @@ export const Catalog = () => {
   const loadProducts = async () => {
     try {
       const remoteProducts = await productApi.listProducts();
-      if (remoteProducts && remoteProducts.length) {
+      if (Array.isArray(remoteProducts)) {
         updateState(draft => {
           draft.products = remoteProducts;
           return draft;

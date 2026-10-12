@@ -220,6 +220,12 @@ class PayrollInput(BaseModel):
     deductions: Decimal = Field(default=Decimal("0"), alias="descuentos")
 
 
+class AccountInput(BaseModel):
+    id: str = Field(alias="idCuenta", min_length=1, max_length=15)
+    name: str = Field(alias="nombre", min_length=2, max_length=60)
+    type: str = Field(default="COR", alias="tipo")
+
+
 # ==========================================
 # 1. MÓDULO ABASTECIMIENTO / COMPRAS
 # ==========================================
@@ -1520,22 +1526,50 @@ def listar_cuentas():
             """
             SELECT 
                 TRIM(C.id_Cuenta) AS id,
-                TRIM(C.cta_Codigo) AS code,
-                TRIM(C.cta_Nombre) AS name,
+                TRIM(C.id_Cuenta) AS code,
+                TRIM(C.cue_Descripcion) AS name,
                 CASE 
-                    WHEN C.id_Tipo_Cuenta IN ('ACT', '1') THEN 'ASSET'
-                    WHEN C.id_Tipo_Cuenta IN ('PAS', '2') THEN 'LIABILITY'
-                    WHEN C.id_Tipo_Cuenta IN ('PAT', '3') THEN 'EQUITY'
-                    WHEN C.id_Tipo_Cuenta IN ('ING', '4') THEN 'REVENUE'
+                    WHEN C.id_Cuenta LIKE '1%' THEN 'ASSET'
+                    WHEN C.id_Cuenta LIKE '2%' THEN 'LIABILITY'
+                    WHEN C.id_Cuenta LIKE '3%' THEN 'EQUITY'
+                    WHEN C.id_Cuenta LIKE '4%' THEN 'REVENUE'
                     ELSE 'EXPENSE'
                 END AS type,
-                C.cta_Saldo AS balance
+                COALESCE(C.cue_DEBE00, 0) - COALESCE(C.cue_HABER00, 0) AS balance
             FROM CUENTAS C
-            ORDER BY C.cta_Codigo
+            WHERE C.ESTADO_CUE = 'ACT' OR C.ESTADO_CUE IS NULL
+            ORDER BY C.id_Cuenta
             """
         )
         return cur.fetchall()
     except mysql.connector.Error as error:
+        raise_database_error(error)
+    finally:
+        if cur: cur.close()
+        if conn and conn.is_connected(): conn.close()
+
+
+@app.post("/api/contabilidad/cuentas")
+def crear_cuenta(acc: AccountInput):
+    conn, cur = None, None
+    try:
+        conn = mysql.connector.connect(**get_db_config())
+        cur = conn.cursor()
+        cur.execute("SELECT id_Tipo_Cta FROM tipo_cuenta WHERE id_Tipo_Cta = %s", (acc.type[:3],))
+        if not cur.fetchone():
+            cur.execute("INSERT IGNORE INTO tipo_cuenta (id_Tipo_Cta, tip_Descripcion) VALUES (%s, %s)", (acc.type[:3], acc.type[:10]))
+        cur.execute(
+            """
+            INSERT INTO CUENTAS (id_Cuenta, cue_Descripcion, cue_Tipo, cue_DEBE00, cue_HABER00, ESTADO_CUE)
+            VALUES (%s, %s, %s, 0, 0, 'ACT')
+            ON DUPLICATE KEY UPDATE cue_Descripcion = VALUES(cue_Descripcion)
+            """,
+            (acc.id[:15], acc.name[:60], acc.type[:3]),
+        )
+        conn.commit()
+        return {"id": acc.id, "mensaje": f"Cuenta {acc.id} creada exitosamente."}
+    except mysql.connector.Error as error:
+        if conn: conn.rollback()
         raise_database_error(error)
     finally:
         if cur: cur.close()
