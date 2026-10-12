@@ -843,7 +843,7 @@ def listar_proveedores():
                 IF(P.ESTADO_PRV = 'ACT', 'ACTIVE', 'INACTIVE') AS status
             FROM PROVEEDORES P
             LEFT JOIN CIUDADES CI ON P.id_Ciudad = CI.id_Ciudad
-            ORDER BY P.prv_Nombre
+            ORDER BY P.id_Proveedor DESC
             """
         )
         return cur.fetchall()

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { ArrowDownToLine, ArrowUpRight, CheckCircle2, Edit3, Plus, Power, PowerOff, Save, Users, Wine, X } from 'lucide-react';
+import { ArrowDownToLine, ArrowUpRight, CheckCircle2, Edit3, Plus, Power, Save, Trash2, Users, Wine, X } from 'lucide-react';
 import { useGlobalStore } from '../context';
 import { catalogApi, customerApi, hrApi, purchaseApi, supplierApi } from '../api';
 import { Customer, Employee, Supplier } from '../types';
@@ -585,7 +585,7 @@ export const Suppliers = () => {
       setNotice(
         targetStatus === 'ACTIVE'
           ? `Proveedor ${supplier.name} habilitado correctamente.`
-          : `Proveedor ${supplier.name} inhabilitado correctamente.`
+          : `Proveedor ${supplier.name} eliminado (inhabilitado) correctamente.`
       );
       void loadSuppliers();
     } catch {
@@ -600,24 +600,36 @@ export const Suppliers = () => {
       setNotice(
         targetStatus === 'ACTIVE'
           ? `Proveedor ${supplier.name} habilitado correctamente.`
-          : `Proveedor ${supplier.name} inhabilitado correctamente.`
+          : `Proveedor ${supplier.name} eliminado (inhabilitado) correctamente.`
       );
     }
 
     setConfirmModal({ isOpen: false, supplier: null, targetStatus: 'INACTIVE' });
   };
 
-  // Filtrado de proveedores
-  const visibleSuppliers = state.suppliers.filter(supplier => {
-    const matchesSearch = `${supplier.id} ${supplier.name} ${supplier.ruc} ${supplier.city || ''} ${supplier.mobile || ''}`
-      .toLowerCase()
-      .includes(search.toLowerCase());
+  // Filtrado y ordenamiento de proveedores (el más reciente arriba)
+  const visibleSuppliers = state.suppliers
+    .filter(supplier => {
+      const matchesSearch = `${supplier.id} ${supplier.name} ${supplier.ruc} ${supplier.city || ''} ${supplier.mobile || ''}`
+        .toLowerCase()
+        .includes(search.toLowerCase());
 
-    const isSupplierActive = (supplier.status ?? 'ACTIVE') === 'ACTIVE';
-    if (statusFilter === 'ACTIVE' && !isSupplierActive) return false;
-    if (statusFilter === 'INACTIVE' && isSupplierActive) return false;
-    return matchesSearch;
-  });
+      const isSupplierActive = (supplier.status ?? 'ACTIVE') === 'ACTIVE';
+
+      // En "Todos" o "Activos", no se muestran los eliminados/inactivos
+      if (statusFilter === 'ALL' || statusFilter === 'ACTIVE') {
+        if (!isSupplierActive) return false;
+      } else if (statusFilter === 'INACTIVE') {
+        if (isSupplierActive) return false;
+      }
+      return matchesSearch;
+    })
+    .sort((a, b) => {
+      // Orden por ID descendente (ej: prv_000003 antes que prv_000001)
+      const numA = parseInt(a.id?.match(/(\d+)/)?.[1] || '0', 10);
+      const numB = parseInt(b.id?.match(/(\d+)/)?.[1] || '0', 10);
+      return numB - numA;
+    });
 
   const activeCount = state.suppliers.filter(s => (s.status ?? 'ACTIVE') === 'ACTIVE').length;
   const inactiveCount = state.suppliers.filter(s => s.status === 'INACTIVE').length;
@@ -851,16 +863,16 @@ export const Suppliers = () => {
                           <Edit3 size={13} /> Editar
                         </button>
 
-                        {/* Botón Inhabilitar / Habilitar (Eliminación Inteligente) */}
+                        {/* Botón Eliminar (Inteligente) / Habilitar */}
                         {isActive ? (
                           <button
                             type="button"
                             className="btn btn-outline"
-                            title="Inhabilitar proveedor"
+                            title="Eliminar proveedor"
                             style={{ padding: '5px 9px', fontSize: '11px', color: '#b42318', borderColor: '#fca5a5' }}
                             onClick={() => requestToggleStatus(supplier, 'INACTIVE')}
                           >
-                            <PowerOff size={13} /> Inhabilitar
+                            <Trash2 size={13} /> Eliminar
                           </button>
                         ) : (
                           <button
@@ -1025,20 +1037,20 @@ export const Suppliers = () => {
         </div>
       )}
 
-      {/* Modal de Confirmación para Inhabilitar / Habilitar */}
+      {/* Modal de Confirmación para Eliminar (Inteligente) / Habilitar */}
       {confirmModal.isOpen && confirmModal.supplier && (
         <div className="modal-backdrop">
           <div className="modal-card" style={{ maxWidth: '480px' }}>
             <h2 style={{ margin: '0 0 10px', fontSize: '18px' }}>
-              {confirmModal.targetStatus === 'INACTIVE' ? '¿Inhabilitar proveedor?' : '¿Habilitar proveedor?'}
+              {confirmModal.targetStatus === 'INACTIVE' ? '¿Eliminar proveedor?' : '¿Habilitar proveedor?'}
             </h2>
             <p style={{ margin: '0 0 16px', fontSize: '13px', color: '#475569', lineHeight: 1.5 }}>
               {confirmModal.targetStatus === 'INACTIVE' ? (
                 <>
-                  ¿Estás seguro de que deseas inhabilitar al proveedor <strong>{confirmModal.supplier.name}</strong> ({confirmModal.supplier.id})?
+                  ¿Estás seguro de que deseas eliminar al proveedor <strong>{confirmModal.supplier.name}</strong> ({confirmModal.supplier.id})?
                   <br />
                   <span style={{ display: 'block', marginTop: '8px', color: '#b42318', fontSize: '12px' }}>
-                    ⚠️ Los proveedores inactivos no podrán seleccionarse para generar nuevas órdenes de compra hasta que sean habilitados nuevamente.
+                    ⚠️ El proveedor dejará de mostrarse en la lista activa y no podrá usarse en compras (podrás consultarlo o reactivarlo desde la pestaña "Inactivos").
                   </span>
                 </>
               ) : (
@@ -1063,7 +1075,7 @@ export const Suppliers = () => {
               >
                 {confirmModal.targetStatus === 'INACTIVE' ? (
                   <>
-                    <PowerOff size={14} /> Sí, inhabilitar
+                    <Trash2 size={14} /> Sí, eliminar
                   </>
                 ) : (
                   <>
