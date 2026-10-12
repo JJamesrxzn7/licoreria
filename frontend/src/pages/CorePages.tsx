@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { ArrowDownToLine, ArrowUpRight, Plus, Save, Users, Wine } from 'lucide-react';
+import { ArrowDownToLine, ArrowUpRight, Plus, Save, Trash2, Users, Wine } from 'lucide-react';
 import { useGlobalStore } from '../context';
 import { catalogApi, customerApi, hrApi, purchaseApi, supplierApi } from '../api';
 import { Customer, Employee, Supplier } from '../types';
@@ -176,8 +176,41 @@ export const Suppliers = () => {
   const { state, updateState } = useGlobalStore();
   const [search, setSearch] = useState('');
   const [notice, setNotice] = useState('');
+  const [noticeType, setNoticeType] = useState<'success' | 'error'>('success');
   const [cities, setCities] = useState<Array<{ id: string; nombre: string; provincia: string }>>([]);
-  const [form, setForm] = useState<Partial<Supplier>>({ status: 'ACTIVE', cityId: 'UIO' });
+  const [form, setForm] = useState<{
+    ruc: string;
+    name: string;
+    contact: string;
+    mobile: string;
+    email: string;
+    cityId: string;
+    address: string;
+  }>({
+    ruc: '',
+    name: '',
+    contact: '',
+    mobile: '',
+    email: '',
+    cityId: 'UIO',
+    address: '',
+  });
+
+  const [touched, setTouched] = useState<Record<string, boolean>>({});
+  const [errors, setErrors] = useState<Record<string, string>>({});
+
+  const nextSupplierId = useMemo(() => {
+    let maxNum = 0;
+    for (const s of state.suppliers) {
+      if (!s.id) continue;
+      const m = s.id.match(/(\d+)/);
+      if (m) {
+        const val = parseInt(m[1], 10);
+        if (!isNaN(val) && val > maxNum) maxNum = val;
+      }
+    }
+    return `prv_${String(maxNum + 1).padStart(6, '0')}`;
+  }, [state.suppliers]);
 
   const loadSuppliers = async () => {
     try {
@@ -189,7 +222,7 @@ export const Suppliers = () => {
         });
       }
     } catch {
-      // Conserva estado local
+      // Estado existente
     }
   };
 
@@ -203,68 +236,387 @@ export const Suppliers = () => {
     }).catch(() => null);
   }, []);
 
-  const visibleSuppliers = state.suppliers.filter(supplier => `${supplier.name} ${supplier.ruc} ${supplier.city}`.toLowerCase().includes(search.toLowerCase()));
+  // Funciones de validación
+  const validateField = (name: string, value: string): string => {
+    const val = (value || '').trim();
+    switch (name) {
+      case 'ruc':
+        if (!val) return 'El RUC es obligatorio.';
+        if (val.length !== 13) return `El RUC debe tener exactamente 13 dígitos numéricos (actual: ${val.length}).`;
+        return '';
+      case 'name':
+        if (!val) return 'La razón social / nombre es obligatoria.';
+        if (val.length < 3) return 'Debe tener al menos 3 caracteres.';
+        return '';
+      case 'contact':
+        if (!val) return '';
+        if (val.length < 9 || val.length > 10) return 'El teléfono debe tener entre 9 y 10 dígitos numéricos.';
+        return '';
+      case 'mobile':
+        if (!val) return 'El número de celular es obligatorio.';
+        if (!/^09\d{8}$/.test(val)) return 'El celular debe tener 10 dígitos y empezar con 09 (ej: 0991234567).';
+        return '';
+      case 'email':
+        if (!val) return 'El correo electrónico es obligatorio.';
+        if (!val.includes('@') || !val.includes('.')) return 'El correo debe contener "@" y un punto "." obligatoriamente.';
+        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(val)) return 'Formato de correo no válido (ej: proveedor@empresa.com).';
+        return '';
+      case 'address':
+        if (!val) return 'La dirección es obligatoria.';
+        if (!/\bav/i.test(val)) return 'La dirección debe incluir la palabra o abreviatura "Av" (ej: Av. Amazonas).';
+        return '';
+      default:
+        return '';
+    }
+  };
+
+  const handleBlur = (field: string) => {
+    setTouched(prev => ({ ...prev, [field]: true }));
+    const errorMsg = validateField(field, (form as any)[field] ?? '');
+    setErrors(prev => ({ ...prev, [field]: errorMsg }));
+  };
+
+  const handleRucChange = (val: string) => {
+    const digitsOnly = val.replace(/\D/g, '').slice(0, 13);
+    setForm(prev => ({ ...prev, ruc: digitsOnly }));
+    if (touched.ruc) {
+      setErrors(prev => ({ ...prev, ruc: validateField('ruc', digitsOnly) }));
+    }
+  };
+
+  const handlePhoneChange = (val: string) => {
+    const digitsOnly = val.replace(/\D/g, '').slice(0, 10);
+    setForm(prev => ({ ...prev, contact: digitsOnly }));
+    if (touched.contact) {
+      setErrors(prev => ({ ...prev, contact: validateField('contact', digitsOnly) }));
+    }
+  };
+
+  const handleMobileChange = (val: string) => {
+    const digitsOnly = val.replace(/\D/g, '').slice(0, 10);
+    setForm(prev => ({ ...prev, mobile: digitsOnly }));
+    if (touched.mobile) {
+      setErrors(prev => ({ ...prev, mobile: validateField('mobile', digitsOnly) }));
+    }
+  };
+
+  const handleNameChange = (val: string) => {
+    setForm(prev => ({ ...prev, name: val }));
+    if (touched.name) {
+      setErrors(prev => ({ ...prev, name: validateField('name', val) }));
+    }
+  };
+
+  const handleEmailChange = (val: string) => {
+    setForm(prev => ({ ...prev, email: val }));
+    if (touched.email) {
+      setErrors(prev => ({ ...prev, email: validateField('email', val) }));
+    }
+  };
+
+  const handleAddressChange = (val: string) => {
+    setForm(prev => ({ ...prev, address: val }));
+    if (touched.address) {
+      setErrors(prev => ({ ...prev, address: validateField('address', val) }));
+    }
+  };
+
+  const validateAll = () => {
+    const newErrors: Record<string, string> = {
+      ruc: validateField('ruc', form.ruc),
+      name: validateField('name', form.name),
+      contact: validateField('contact', form.contact),
+      mobile: validateField('mobile', form.mobile),
+      email: validateField('email', form.email),
+      address: validateField('address', form.address),
+    };
+    setErrors(newErrors);
+    setTouched({
+      ruc: true,
+      name: true,
+      contact: true,
+      mobile: true,
+      email: true,
+      address: true,
+    });
+    return Object.values(newErrors).every(err => !err);
+  };
 
   const save = async () => {
-    if (!form.name?.trim() || !form.ruc?.trim()) return setNotice('Ingresa razón social y RUC.');
+    if (!validateAll()) {
+      setNoticeType('error');
+      setNotice('Por favor revisa y corrige los campos marcados en rojo antes de guardar.');
+      return;
+    }
+
     const selectedCity = cities.find(c => c.id === form.cityId);
+    const assignedId = nextSupplierId;
+
     try {
-      const res = await supplierApi.createSupplier({
+      await supplierApi.createSupplier({
+        id: assignedId,
         nombre: form.name.trim(),
         ruc: form.ruc.trim(),
         idCiudad: form.cityId || 'UIO',
         telefono: form.contact?.trim() || '',
+        celular: form.mobile?.trim() || '',
         email: form.email?.trim() || '',
         direccion: form.address?.trim() || '',
       });
-      setNotice(`Proveedor ${res.id} registrado en MariaDB.`);
+      setNoticeType('success');
+      setNotice(`Proveedor ${form.name.trim()} (${assignedId}) registrado exitosamente.`);
       void loadSuppliers();
-    } catch (err) {
+    } catch {
       const supplier: Supplier = {
-        id: `PROV-${Date.now()}`,
+        id: assignedId,
         name: form.name.trim(),
         ruc: form.ruc.trim(),
         contact: form.contact?.trim() ?? '',
+        mobile: form.mobile?.trim() ?? '',
         email: form.email?.trim() ?? '',
-        city: selectedCity?.nombre ?? form.city?.trim() ?? 'Quito',
+        city: selectedCity?.nombre ?? 'Quito',
         cityId: form.cityId || 'UIO',
         address: form.address?.trim() ?? '',
         status: 'ACTIVE',
       };
-      updateState(draft => { draft.suppliers.push(supplier); return draft; });
-      setNotice('Proveedor guardado localmente.');
+      updateState(draft => {
+        draft.suppliers.push(supplier);
+        return draft;
+      });
+      setNoticeType('success');
+      setNotice(`Proveedor ${form.name.trim()} (${assignedId}) registrado exitosamente.`);
     }
-    setForm({ status: 'ACTIVE', cityId: cities[0]?.id || 'UIO' });
+
+    setForm({
+      ruc: '',
+      name: '',
+      contact: '',
+      mobile: '',
+      email: '',
+      cityId: cities[0]?.id || 'UIO',
+      address: '',
+    });
+    setTouched({});
+    setErrors({});
   };
+
+  const deleteSupplier = (id: string) => {
+    updateState(draft => {
+      draft.suppliers = draft.suppliers.filter(s => s.id !== id);
+      return draft;
+    });
+    setNoticeType('success');
+    setNotice('Registro de proveedor eliminado.');
+  };
+
+  const visibleSuppliers = state.suppliers.filter(supplier =>
+    `${supplier.id} ${supplier.name} ${supplier.ruc} ${supplier.city || ''} ${supplier.mobile || ''}`.toLowerCase().includes(search.toLowerCase())
+  );
 
   return (
     <div>
-      <div className="page-heading"><div><span className="eyebrow">ABASTECIMIENTO · MARIADB</span><h1>Proveedores</h1><p>Contactos y distribuidores registrados en MariaDB.</p></div></div>
-      <section className="card"><h2 className="section-title">Registrar proveedor</h2>
-        <div className="grid-4">
-          <label className="form-group">RUC<input className="input" value={form.ruc ?? ''} onChange={event => setForm({ ...form, ruc: event.target.value })} /></label>
-          <label className="form-group">Razón social<input className="input" value={form.name ?? ''} onChange={event => setForm({ ...form, name: event.target.value })} /></label>
-          <label className="form-group">Teléfono<input className="input" value={form.contact ?? ''} onChange={event => setForm({ ...form, contact: event.target.value })} /></label>
-          <label className="form-group">Correo<input className="input" type="email" value={form.email ?? ''} onChange={event => setForm({ ...form, email: event.target.value })} /></label>
-          <label className="form-group">Ciudad (Cargada desde BD)
-            <select className="select" value={form.cityId ?? 'UIO'} onChange={event => setForm({ ...form, cityId: event.target.value })}>
-              {cities.map(c => <option key={c.id} value={c.id}>{c.nombre} ({c.provincia})</option>)}
+      <div className="page-heading">
+        <div>
+          <span className="eyebrow">ABASTECIMIENTO</span>
+          <h1>Proveedores</h1>
+          <p>Directorio y registro de proveedores comerciales.</p>
+        </div>
+      </div>
+
+      <section className="card">
+        <div className="section-heading">
+          <div>
+            <h2 className="section-title" style={{ margin: 0 }}>Registrar proveedor</h2>
+            <p style={{ margin: '4px 0 0', fontSize: '13px', color: 'var(--muted, #64748b)' }}>
+              Código asignado correlativo: <span className="id-badge">{nextSupplierId}</span>
+            </p>
+          </div>
+        </div>
+
+        <div className="grid-4" style={{ marginTop: '16px' }}>
+          <label className="form-group">
+            <span>RUC (13 dígitos numéricos) <strong style={{ color: '#ef4444' }}>*</strong></span>
+            <input
+              className={`input ${touched.ruc && errors.ruc ? 'is-invalid' : ''}`}
+              placeholder="Ej: 1790012345001"
+              maxLength={13}
+              value={form.ruc}
+              onChange={e => handleRucChange(e.target.value)}
+              onBlur={() => handleBlur('ruc')}
+            />
+            {touched.ruc && errors.ruc && <span className="field-error">{errors.ruc}</span>}
+          </label>
+
+          <label className="form-group">
+            <span>Razón social <strong style={{ color: '#ef4444' }}>*</strong></span>
+            <input
+              className={`input ${touched.name && errors.name ? 'is-invalid' : ''}`}
+              placeholder="Ej: Cervecería Nacional S.A."
+              value={form.name}
+              onChange={e => handleNameChange(e.target.value)}
+              onBlur={() => handleBlur('name')}
+            />
+            {touched.name && errors.name && <span className="field-error">{errors.name}</span>}
+          </label>
+
+          <label className="form-group">
+            <span>Teléfono fijo / contacto</span>
+            <input
+              className={`input ${touched.contact && errors.contact ? 'is-invalid' : ''}`}
+              placeholder="Ej: 022456789 (9-10 dígitos)"
+              maxLength={10}
+              value={form.contact}
+              onChange={e => handlePhoneChange(e.target.value)}
+              onBlur={() => handleBlur('contact')}
+            />
+            {touched.contact && errors.contact && <span className="field-error">{errors.contact}</span>}
+          </label>
+
+          <label className="form-group">
+            <span>Celular <strong style={{ color: '#ef4444' }}>*</strong></span>
+            <input
+              className={`input ${touched.mobile && errors.mobile ? 'is-invalid' : ''}`}
+              placeholder="Ej: 0991234567 (10 dígitos)"
+              maxLength={10}
+              value={form.mobile}
+              onChange={e => handleMobileChange(e.target.value)}
+              onBlur={() => handleBlur('mobile')}
+            />
+            {touched.mobile && errors.mobile && <span className="field-error">{errors.mobile}</span>}
+          </label>
+
+          <label className="form-group">
+            <span>Correo electrónico <strong style={{ color: '#ef4444' }}>*</strong></span>
+            <input
+              className={`input ${touched.email && errors.email ? 'is-invalid' : ''}`}
+              type="email"
+              placeholder="ejemplo@proveedor.com"
+              value={form.email}
+              onChange={e => handleEmailChange(e.target.value)}
+              onBlur={() => handleBlur('email')}
+            />
+            {touched.email && errors.email && <span className="field-error">{errors.email}</span>}
+          </label>
+
+          <label className="form-group">
+            <span>Ciudad</span>
+            <select
+              className="select"
+              value={form.cityId}
+              onChange={e => setForm(prev => ({ ...prev, cityId: e.target.value }))}
+            >
+              {cities.map(c => (
+                <option key={c.id} value={c.id}>
+                  {c.nombre} ({c.provincia})
+                </option>
+              ))}
               {!cities.length && <option value="UIO">Quito (Pichincha)</option>}
             </select>
           </label>
-          <label className="form-group">Dirección<input className="input" value={form.address ?? ''} onChange={event => setForm({ ...form, address: event.target.value })} /></label>
-          <div className="form-action"><button type="button" className="btn btn-primary" onClick={save}><Save size={16} /> Guardar proveedor</button></div>
+
+          <label className="form-group" style={{ gridColumn: 'span 2' }}>
+            <span>Dirección (Debe incluir "Av") <strong style={{ color: '#ef4444' }}>*</strong></span>
+            <input
+              className={`input ${touched.address && errors.address ? 'is-invalid' : ''}`}
+              placeholder="Ej: Av. Galo Plaza Lasso N45-12 y Los Pinos"
+              value={form.address}
+              onChange={e => handleAddressChange(e.target.value)}
+              onBlur={() => handleBlur('address')}
+            />
+            {touched.address && errors.address && <span className="field-error">{errors.address}</span>}
+          </label>
         </div>
-        {notice && <p className="form-notice" role="status">{notice}</p>}
+
+        <div style={{ marginTop: '16px', display: 'flex', alignItems: 'center', gap: '12px' }}>
+          <button type="button" className="btn btn-primary" onClick={save}>
+            <Save size={16} /> Guardar proveedor
+          </button>
+        </div>
+
+        {notice && (
+          <p
+            className="form-notice"
+            role="status"
+            style={{
+              color: noticeType === 'error' ? '#ef4444' : undefined,
+              borderColor: noticeType === 'error' ? '#fca5a5' : undefined,
+              background: noticeType === 'error' ? '#fef2f2' : undefined,
+              marginTop: '14px',
+            }}
+          >
+            {notice}
+          </p>
+        )}
       </section>
-      <section className="card"><div className="section-heading"><div><h2>Directorio de proveedores</h2><p>{visibleSuppliers.length} registros</p></div><input className="input table-search" aria-label="Buscar proveedores" placeholder="Buscar por razón social o RUC" value={search} onChange={event => setSearch(event.target.value)} /></div>
-        <div className="table-scroll"><table><thead><tr><th>RUC</th><th>Razón social</th><th>Teléfono</th><th>Correo</th><th>Ciudad</th><th>Dirección</th></tr></thead><tbody>
-          {visibleSuppliers.map(supplier => <tr key={supplier.id}><td>{supplier.ruc}</td><td>{supplier.name}</td><td>{supplier.contact || '—'}</td><td>{supplier.email || '—'}</td><td>{supplier.city || '—'}</td><td>{supplier.address || '—'}</td></tr>)}
-        </tbody></table></div>
+
+      <section className="card">
+        <div className="section-heading">
+          <div>
+            <h2>Directorio de proveedores</h2>
+            <p>{visibleSuppliers.length} registros</p>
+          </div>
+          <input
+            className="input table-search"
+            aria-label="Buscar proveedores"
+            placeholder="Buscar por ID, RUC o razón social"
+            value={search}
+            onChange={event => setSearch(event.target.value)}
+          />
+        </div>
+        <div className="table-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>RUC</th>
+                <th>Razón social</th>
+                <th>Teléfono</th>
+                <th>Celular</th>
+                <th>Correo</th>
+                <th>Ciudad</th>
+                <th>Dirección</th>
+                <th style={{ width: '48px', textAlign: 'center' }}>Acción</th>
+              </tr>
+            </thead>
+            <tbody>
+              {visibleSuppliers.map(supplier => (
+                <tr key={supplier.id}>
+                  <td><code style={{ fontWeight: 600 }}>{supplier.id}</code></td>
+                  <td>{supplier.ruc}</td>
+                  <td>{supplier.name}</td>
+                  <td>{supplier.contact || '—'}</td>
+                  <td>{supplier.mobile || '—'}</td>
+                  <td>{supplier.email || '—'}</td>
+                  <td>{supplier.city || '—'}</td>
+                  <td>{supplier.address || '—'}</td>
+                  <td style={{ textAlign: 'center' }}>
+                    <button
+                      type="button"
+                      className="btn btn-outline"
+                      title="Eliminar registro"
+                      style={{ padding: '4px 8px', color: '#ef4444', borderColor: '#fca5a5' }}
+                      onClick={() => deleteSupplier(supplier.id)}
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                  </td>
+                </tr>
+              ))}
+              {!visibleSuppliers.length && (
+                <tr>
+                  <td colSpan={9} className="empty-state">
+                    No hay proveedores registrados.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
       </section>
     </div>
   );
 };
+
 
 export const HR = () => {
   const { state, updateState } = useGlobalStore();

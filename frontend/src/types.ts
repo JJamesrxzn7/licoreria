@@ -47,6 +47,7 @@ export interface Supplier {
   ruc: string;
   name: string;
   contact: string;
+  mobile?: string;
   email: string;
   city: string;
   cityId?: string;

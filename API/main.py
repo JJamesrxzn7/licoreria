@@ -835,8 +835,10 @@ def listar_proveedores():
                 TRIM(P.prv_RUC_CED) AS ruc,
                 TRIM(P.prv_Nombre) AS name,
                 TRIM(P.prv_Telefono) AS contact,
+                TRIM(P.prv_Celular) AS mobile,
                 TRIM(P.prv_Mail) AS email,
                 COALESCE(TRIM(CI.ciu_Descripcion), 'Quito') AS city,
+                TRIM(P.id_Ciudad) AS cityId,
                 TRIM(P.prv_Direccion) AS address,
                 IF(P.ESTADO_PRV = 'ACT', 'ACTIVE', 'INACTIVE') AS status
             FROM PROVEEDORES P
@@ -855,10 +857,25 @@ def listar_proveedores():
 @app.post("/api/proveedores")
 def crear_proveedor(prv: SupplierInput):
     conn, cur = None, None
-    supplier_id = prv.id or f"PRV-{uuid4().hex[:5].upper()}"
     try:
         conn = mysql.connector.connect(**get_db_config())
         cur = conn.cursor()
+        if prv.id and prv.id.strip():
+            supplier_id = prv.id.strip()[:10]
+        else:
+            import re
+            cur.execute("SELECT id_Proveedor FROM PROVEEDORES")
+            existing_rows = cur.fetchall()
+            max_id = 0
+            for row in existing_rows:
+                id_val = str(row[0] if isinstance(row, (list, tuple)) else row.get("id_Proveedor", ""))
+                m = re.search(r"(\d+)", id_val)
+                if m:
+                    num = int(m.group(1))
+                    if num > max_id:
+                        max_id = num
+            supplier_id = f"prv_{max_id + 1:06d}"
+
         cur.execute(
             """
             INSERT INTO PROVEEDORES 
@@ -877,7 +894,7 @@ def crear_proveedor(prv: SupplierInput):
             ),
         )
         conn.commit()
-        return {"id": supplier_id, "mensaje": f"Proveedor {prv.name} registrado."}
+        return {"id": supplier_id, "mensaje": f"Proveedor {prv.name} registrado exitosamente."}
     except mysql.connector.Error as error:
         if conn: conn.rollback()
         raise_database_error(error)

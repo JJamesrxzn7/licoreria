@@ -172,6 +172,7 @@ export const customerApi = {
 export const supplierApi = {
   listSuppliers: () => request<Supplier[]>('/api/proveedores'),
   createSupplier: (supplier: {
+    id?: string;
     nombre: string;
     ruc: string;
     telefono?: string;
