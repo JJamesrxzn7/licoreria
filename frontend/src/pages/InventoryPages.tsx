@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Check, Plus, Search, X } from 'lucide-react';
 import { useGlobalStore } from '../context';
-import { productApi, purchaseApi, warehouseApi, PurchaseCatalogs, PurchaseOrderRecord } from '../api';
+import { catalogApi, productApi, purchaseApi, warehouseApi, GeneralCatalogs, PurchaseCatalogs, PurchaseOrderRecord } from '../api';
 import { Adjustment, Delivery, Product, Reception } from '../types';
 
 const money = (value: number) => `$${value.toFixed(2)}`;
@@ -11,9 +11,17 @@ export const Catalog = () => {
   const [search, setSearch] = useState('');
   const [showForm, setShowForm] = useState(false);
   const [notice, setNotice] = useState('');
+  const [catalogs, setCatalogs] = useState<GeneralCatalogs>({
+    ciudades: [],
+    unidadesMedida: [],
+    categorias: [],
+    marcas: [],
+    perchas: [],
+    bancos: [],
+  });
   const [form, setForm] = useState<Partial<Product>>({
-    status: 'ACTIVE', category: 'Vino tinto', ml: 750, abv: 0, cost: 0, price: 0, stock: 0,
-    minStock: 0, buyUnit: 'Caja', sellUnit: 'Botella', purchaseFactor: 1,
+    status: 'ACTIVE', ml: 750, abv: 0, cost: 0, price: 0, stock: 0,
+    minStock: 0, purchaseFactor: 1,
   });
 
   const loadProducts = async () => {
@@ -32,32 +40,80 @@ export const Catalog = () => {
 
   useEffect(() => {
     void loadProducts();
+    void catalogApi.getGenerales().then(data => {
+      if (data) {
+        setCatalogs(data);
+        setForm(prev => ({
+          ...prev,
+          categoryId: prev.categoryId || data.categorias[0]?.id || 'CAT-000001',
+          brandId: prev.brandId || data.marcas[0]?.id || 'MAR-000001',
+          buyUnitId: prev.buyUnitId || data.unidadesMedida.find(u => u.id === 'CAJ')?.id || data.unidadesMedida[0]?.id || 'CAJ',
+          sellUnitId: prev.sellUnitId || data.unidadesMedida.find(u => u.id === 'BOT')?.id || data.unidadesMedida[0]?.id || 'BOT',
+          shelfId: prev.shelfId || data.perchas[0]?.id || 'PCH-000001',
+        }));
+      }
+    }).catch(() => null);
   }, []);
 
   const products = useMemo(() => state.products.filter(product => `${product.name} ${product.sku} ${product.barcode} ${product.brand} ${product.category}`.toLowerCase().includes(search.toLowerCase())), [state.products, search]);
 
   const saveProduct = async () => {
-    if (!form.name?.trim() || !form.sku?.trim()) return setNotice('Completa al menos el nombre y el código.');
+    if (!form.name?.trim() || !form.sku?.trim()) return setNotice('Completa al menos el nombre y el código SKU.');
     const cost = Number(form.cost || 0);
     const price = Number(form.price || 0);
     if (price <= 0) return setNotice('El precio de venta debe ser mayor a 0.');
+    if (price < cost) return setNotice('El precio de venta debe ser mayor o igual al costo de compra (restricción requerida por la base de datos).');
+
+    const catId = form.categoryId || catalogs.categorias[0]?.id || 'CAT-000001';
+    const brId = form.brandId || catalogs.marcas[0]?.id || 'MAR-000001';
+    const buyUId = form.buyUnitId || catalogs.unidadesMedida.find(u => u.id === 'CAJ')?.id || 'CAJ';
+    const sellUId = form.sellUnitId || catalogs.unidadesMedida.find(u => u.id === 'BOT')?.id || 'BOT';
+    const shId = form.shelfId || catalogs.perchas[0]?.id || 'PCH-000001';
+
+    const selectedCategory = catalogs.categorias.find(c => c.id === catId);
+    const selectedBrand = catalogs.marcas.find(m => m.id === brId);
+    const selectedBuyUnit = catalogs.unidadesMedida.find(u => u.id === buyUId);
+    const selectedSellUnit = catalogs.unidadesMedida.find(u => u.id === sellUId);
+    const selectedShelf = catalogs.perchas.find(p => p.id === shId);
 
     try {
       const res = await productApi.createProduct({
+        id: form.sku.trim(),
         nombre: form.name.trim(),
+        idCategoria: catId,
+        idMarca: brId,
+        umCompra: buyUId,
+        umVenta: sellUId,
         costoCompra: cost,
         precioVenta: price,
         stockInicial: Number(form.stock || 0),
       });
-      setNotice(`Producto ${res.id} registrado en MariaDB.`);
+      setNotice(`Producto ${res.id} registrado exitosamente en MariaDB.`);
       void loadProducts();
     } catch (err) {
       const product: Product = {
-        id: `PROD-${Date.now()}`, name: form.name.trim(), sku: form.sku.trim(), barcode: form.barcode?.trim() ?? '',
-        brand: form.brand?.trim() || 'General', category: form.category?.trim() || 'Licores', ml: Number(form.ml || 750), abv: Number(form.abv || 0),
-        cost, price, stock: Number(form.stock || 0), minStock: Number(form.minStock || 0),
-        buyUnit: form.buyUnit?.trim() || 'Caja', sellUnit: form.sellUnit?.trim() || 'Botella',
-        purchaseFactor: Number(form.purchaseFactor || 1), shelf: form.shelf?.trim() ?? '', status: form.status ?? 'ACTIVE',
+        id: form.sku.trim(),
+        name: form.name.trim(),
+        sku: form.sku.trim(),
+        barcode: form.barcode?.trim() ?? '',
+        brand: selectedBrand?.nombre || 'General',
+        brandId: brId,
+        category: selectedCategory?.nombre || 'Licores',
+        categoryId: catId,
+        ml: Number(form.ml || 750),
+        abv: Number(form.abv || 0),
+        cost,
+        price,
+        stock: Number(form.stock || 0),
+        minStock: Number(form.minStock || 0),
+        buyUnit: selectedBuyUnit?.nombre || buyUId,
+        buyUnitId: buyUId,
+        sellUnit: selectedSellUnit?.nombre || sellUId,
+        sellUnitId: sellUId,
+        purchaseFactor: Number(form.purchaseFactor || 1),
+        shelf: selectedShelf?.nombre || 'A1',
+        shelfId: shId,
+        status: form.status ?? 'ACTIVE',
       };
       updateState(draft => {
         draft.products.push(product);
@@ -66,7 +122,18 @@ export const Catalog = () => {
       setNotice('Producto registrado localmente.');
     }
 
-    setForm({ status: 'ACTIVE', category: 'Vino tinto', ml: 750, abv: 0, cost: 0, price: 0, stock: 0, minStock: 0, buyUnit: 'Caja', sellUnit: 'Botella', purchaseFactor: 1 });
+    setForm(prev => ({
+      ...prev,
+      name: '',
+      sku: '',
+      barcode: '',
+      cost: 0,
+      price: 0,
+      stock: 0,
+      minStock: 0,
+      ml: 750,
+      abv: 0,
+    }));
     setShowForm(false);
   };
 
@@ -82,21 +149,46 @@ export const Catalog = () => {
     <div>
       <div className="page-heading"><div><span className="eyebrow">BODEGA · CATÁLOGO · MARIADB</span><h1>Inventario de licores</h1><p>Presentaciones, costos, unidades de compra y existencias en MariaDB.</p></div><button type="button" className="btn btn-primary" onClick={() => setShowForm(value => !value)}><Plus size={16} /> Nuevo producto</button></div>
       {showForm && <section className="card"><h2 className="section-title">Ficha de producto</h2><div className="grid-4">
-        <label className="form-group">SKU / Código<input className="input" value={form.sku ?? ''} onChange={event => setForm({ ...form, sku: event.target.value })} /></label>
-        <label className="form-group">Nombre<input className="input" value={form.name ?? ''} onChange={event => setForm({ ...form, name: event.target.value })} /></label>
-        <label className="form-group">Marca<input className="input" value={form.brand ?? ''} onChange={event => setForm({ ...form, brand: event.target.value })} /></label>
-        <label className="form-group">Categoría<input className="input" value={form.category ?? ''} onChange={event => setForm({ ...form, category: event.target.value })} /></label>
-        <label className="form-group">Código de barras<input className="input" value={form.barcode ?? ''} onChange={event => setForm({ ...form, barcode: event.target.value })} /></label>
+        <label className="form-group">SKU / Código (PK)<input className="input" placeholder="Ej. PR-001" value={form.sku ?? ''} onChange={event => setForm({ ...form, sku: event.target.value })} /></label>
+        <label className="form-group">Nombre del producto<input className="input" placeholder="Ej. Johnnie Walker Black 750ml" value={form.name ?? ''} onChange={event => setForm({ ...form, name: event.target.value })} /></label>
+        <label className="form-group">Marca (Cargada desde BD)
+          <select className="select" value={form.brandId ?? ''} onChange={event => setForm({ ...form, brandId: event.target.value })}>
+            {catalogs.marcas.map(m => <option key={m.id} value={m.id}>{m.nombre}</option>)}
+            {!catalogs.marcas.length && <option value="MAR-000001">Cargando marcas...</option>}
+          </select>
+        </label>
+        <label className="form-group">Categoría (Cargada desde BD)
+          <select className="select" value={form.categoryId ?? ''} onChange={event => setForm({ ...form, categoryId: event.target.value })}>
+            {catalogs.categorias.map(c => <option key={c.id} value={c.id}>{c.nombre}</option>)}
+            {!catalogs.categorias.length && <option value="CAT-000001">Cargando categorías...</option>}
+          </select>
+        </label>
+        <label className="form-group">Código de barras<input className="input" placeholder="Opcional" value={form.barcode ?? ''} onChange={event => setForm({ ...form, barcode: event.target.value })} /></label>
         <label className="form-group">Presentación (ml)<input className="input" type="number" min="0" value={form.ml ?? 0} onChange={event => setForm({ ...form, ml: Number(event.target.value) })} /></label>
         <label className="form-group">Alcohol (% ABV)<input className="input" type="number" min="0" max="100" step="0.1" value={form.abv ?? 0} onChange={event => setForm({ ...form, abv: Number(event.target.value) })} /></label>
-        <label className="form-group">Costo unitario<input className="input" type="number" min="0" step="0.01" value={form.cost ?? 0} onChange={event => setForm({ ...form, cost: Number(event.target.value) })} /></label>
-        <label className="form-group">Precio de venta<input className="input" type="number" min="0" step="0.01" value={form.price ?? 0} onChange={event => setForm({ ...form, price: Number(event.target.value) })} /></label>
+        <label className="form-group">Costo unitario ($)<input className="input" type="number" min="0" step="0.01" value={form.cost ?? 0} onChange={event => setForm({ ...form, cost: Number(event.target.value) })} /></label>
+        <label className="form-group">Precio de venta ($)<input className="input" type="number" min="0" step="0.01" value={form.price ?? 0} onChange={event => setForm({ ...form, price: Number(event.target.value) })} /></label>
         <label className="form-group">Stock inicial<input className="input" type="number" min="0" value={form.stock ?? 0} onChange={event => setForm({ ...form, stock: Number(event.target.value) })} /></label>
         <label className="form-group">Stock mínimo<input className="input" type="number" min="0" value={form.minStock ?? 0} onChange={event => setForm({ ...form, minStock: Number(event.target.value) })} /></label>
-        <label className="form-group">Unidad de compra<input className="input" value={form.buyUnit ?? ''} onChange={event => setForm({ ...form, buyUnit: event.target.value })} /></label>
-        <label className="form-group">Unidad de venta<input className="input" value={form.sellUnit ?? ''} onChange={event => setForm({ ...form, sellUnit: event.target.value })} /></label>
+        <label className="form-group">Unidad de compra (BD)
+          <select className="select" value={form.buyUnitId ?? 'CAJ'} onChange={event => setForm({ ...form, buyUnitId: event.target.value })}>
+            {catalogs.unidadesMedida.map(u => <option key={u.id} value={u.id}>{u.id} · {u.nombre}</option>)}
+            {!catalogs.unidadesMedida.length && <option value="CAJ">CAJ · Caja</option>}
+          </select>
+        </label>
+        <label className="form-group">Unidad de venta (BD)
+          <select className="select" value={form.sellUnitId ?? 'BOT'} onChange={event => setForm({ ...form, sellUnitId: event.target.value })}>
+            {catalogs.unidadesMedida.map(u => <option key={u.id} value={u.id}>{u.id} · {u.nombre}</option>)}
+            {!catalogs.unidadesMedida.length && <option value="BOT">BOT · Botella</option>}
+          </select>
+        </label>
         <label className="form-group">Unidades por compra<input className="input" type="number" min="1" value={form.purchaseFactor ?? 1} onChange={event => setForm({ ...form, purchaseFactor: Number(event.target.value) })} /></label>
-        <label className="form-group">Percha<input className="input" value={form.shelf ?? ''} onChange={event => setForm({ ...form, shelf: event.target.value })} /></label>
+        <label className="form-group">Ubicación / Percha (BD)
+          <select className="select" value={form.shelfId ?? ''} onChange={event => setForm({ ...form, shelfId: event.target.value })}>
+            {catalogs.perchas.map(p => <option key={p.id} value={p.id}>{p.letra}{p.nivel} · {p.nombre}</option>)}
+            {!catalogs.perchas.length && <option value="PCH-000001">A1 · Nivel 1</option>}
+          </select>
+        </label>
         <div className="form-action"><button className="btn btn-primary" type="button" onClick={saveProduct}><Check size={16} /> Guardar producto</button></div>
       </div>{notice && <p className="form-notice" role="status">{notice}</p>}</section>}
       {!showForm && notice && <p className="form-notice" role="status">{notice}</p>}

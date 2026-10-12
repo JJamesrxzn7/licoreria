@@ -93,13 +93,33 @@ export const purchaseApi = {
   }),
 };
 
+export interface GeneralCatalogs {
+  ciudades: Array<{ id: string; nombre: string; provincia: string; region: string }>;
+  unidadesMedida: Array<{ id: string; nombre: string; factor: number | string }>;
+  categorias: Array<{ id: string; nombre: string }>;
+  marcas: Array<{ id: string; nombre: string }>;
+  perchas: Array<{ id: string; nombre: string; letra: string; nivel: number }>;
+  bancos: Array<{ id: string; nombre: string }>;
+}
+
+export const catalogApi = {
+  getGenerales: () => request<GeneralCatalogs>('/api/catalogos/generales'),
+  getCiudades: () => request<Array<{ id: string; nombre: string; provincia: string; region: string }>>('/api/ciudades'),
+  getUnidades: () => request<Array<{ id: string; nombre: string; factor: number | string }>>('/api/unidades-medida'),
+  getCategorias: () => request<Array<{ id: string; nombre: string }>>('/api/categorias'),
+  getMarcas: () => request<Array<{ id: string; nombre: string }>>('/api/marcas'),
+};
+
 // 2. Módulo Productos
 export const productApi = {
   listProducts: () => request<Product[]>('/api/productos'),
   createProduct: (product: {
+    id?: string;
     nombre: string;
     idCategoria?: string;
     idMarca?: string;
+    umCompra?: string;
+    umVenta?: string;
     costoCompra: number;
     precioVenta: number;
     stockInicial?: number;

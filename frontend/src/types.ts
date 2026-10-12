@@ -7,7 +7,9 @@ export interface Product {
   sku: string;
   barcode: string;
   brand: string;
+  brandId?: string;
   category: string;
+  categoryId?: string;
   ml: number;
   abv: number;
   cost: number;
@@ -15,9 +17,12 @@ export interface Product {
   stock: number;
   minStock: number;
   buyUnit: string;
+  buyUnitId?: string;
   sellUnit: string;
+  sellUnitId?: string;
   purchaseFactor: number;
   shelf: string;
+  shelfId?: string;
   status: RecordStatus;
 }
 
@@ -28,6 +33,7 @@ export interface Customer {
   contact: string;
   email: string;
   city: string;
+  cityId?: string;
   address: string;
   type: 'NAT' | 'JUR';
   creditLimit: number;
@@ -43,6 +49,7 @@ export interface Supplier {
   contact: string;
   email: string;
   city: string;
+  cityId?: string;
   address: string;
   status: RecordStatus;
 }

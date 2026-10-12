@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { ArrowDownToLine, ArrowUpRight, Plus, Save, Users, Wine } from 'lucide-react';
 import { useGlobalStore } from '../context';
-import { customerApi, hrApi, purchaseApi, supplierApi } from '../api';
+import { catalogApi, customerApi, hrApi, purchaseApi, supplierApi } from '../api';
 import { Customer, Employee, Supplier } from '../types';
 
 const money = (value: number) => `$${value.toFixed(2)}`;
@@ -81,7 +81,8 @@ export const Customers = () => {
   const { state, updateState } = useGlobalStore();
   const [search, setSearch] = useState('');
   const [notice, setNotice] = useState('');
-  const [form, setForm] = useState<Partial<Customer>>({ type: 'NAT', creditLimit: 0, discountRate: 0, status: 'ACTIVE' });
+  const [cities, setCities] = useState<Array<{ id: string; nombre: string; provincia: string }>>([]);
+  const [form, setForm] = useState<Partial<Customer>>({ type: 'NAT', creditLimit: 0, discountRate: 0, status: 'ACTIVE', cityId: 'UIO' });
 
   const loadCustomers = async () => {
     try {
@@ -99,16 +100,24 @@ export const Customers = () => {
 
   useEffect(() => {
     void loadCustomers();
+    void catalogApi.getCiudades().then(list => {
+      if (list && list.length) {
+        setCities(list);
+        if (!form.cityId) setForm(prev => ({ ...prev, cityId: list[0].id }));
+      }
+    }).catch(() => null);
   }, []);
 
   const visibleCustomers = state.customers.filter(customer => `${customer.name} ${customer.ciRuc} ${customer.city}`.toLowerCase().includes(search.toLowerCase()));
 
   const save = async () => {
     if (!form.name?.trim() || !form.ciRuc?.trim()) return setNotice('Ingresa nombre e identificación.');
+    const selectedCity = cities.find(c => c.id === form.cityId);
     try {
       const res = await customerApi.createCustomer({
         nombre: form.name.trim(),
         ciRuc: form.ciRuc.trim(),
+        idCiudad: form.cityId || 'UIO',
         telefono: form.contact?.trim() || '',
         email: form.email?.trim() || '',
         direccion: form.address?.trim() || '',
@@ -120,14 +129,15 @@ export const Customers = () => {
     } catch (err) {
       const newCustomer: Customer = {
         id: `CLI-${Date.now()}`, name: form.name.trim(), ciRuc: form.ciRuc.trim(), contact: form.contact?.trim() ?? '',
-        email: form.email?.trim() ?? '', city: form.city?.trim() ?? 'Quito', address: form.address?.trim() ?? '',
+        email: form.email?.trim() ?? '', city: selectedCity?.nombre ?? form.city?.trim() ?? 'Quito',
+        cityId: form.cityId || 'UIO', address: form.address?.trim() ?? '',
         type: form.type ?? 'NAT', creditLimit: Number(form.creditLimit ?? 0), creditUsed: 0,
         discountRate: Number(form.discountRate ?? 0), status: form.status ?? 'ACTIVE',
       };
       updateState(draft => { draft.customers.push(newCustomer); return draft; });
       setNotice('Cliente guardado localmente.');
     }
-    setForm({ type: 'NAT', creditLimit: 0, discountRate: 0, status: 'ACTIVE' });
+    setForm({ type: 'NAT', creditLimit: 0, discountRate: 0, status: 'ACTIVE', cityId: cities[0]?.id || 'UIO' });
   };
 
   return (
@@ -140,7 +150,12 @@ export const Customers = () => {
           <label className="form-group">Tipo<select className="select" value={form.type ?? 'NAT'} onChange={event => setForm({ ...form, type: event.target.value as Customer['type'] })}><option value="NAT">Persona natural</option><option value="JUR">Persona jurídica</option></select></label>
           <label className="form-group">Teléfono<input className="input" value={form.contact ?? ''} onChange={event => setForm({ ...form, contact: event.target.value })} /></label>
           <label className="form-group">Correo<input className="input" type="email" value={form.email ?? ''} onChange={event => setForm({ ...form, email: event.target.value })} /></label>
-          <label className="form-group">Ciudad<input className="input" value={form.city ?? ''} onChange={event => setForm({ ...form, city: event.target.value })} /></label>
+          <label className="form-group">Ciudad (Cargada desde BD)
+            <select className="select" value={form.cityId ?? 'UIO'} onChange={event => setForm({ ...form, cityId: event.target.value })}>
+              {cities.map(c => <option key={c.id} value={c.id}>{c.nombre} ({c.provincia})</option>)}
+              {!cities.length && <option value="UIO">Quito (Pichincha)</option>}
+            </select>
+          </label>
           <label className="form-group">Dirección<input className="input" value={form.address ?? ''} onChange={event => setForm({ ...form, address: event.target.value })} /></label>
           <label className="form-group">Límite de crédito<input className="input" type="number" min="0" step="0.01" value={form.creditLimit ?? 0} onChange={event => setForm({ ...form, creditLimit: Number(event.target.value) })} /></label>
           <label className="form-group">Descuento (%)<input className="input" type="number" min="0" max="100" value={form.discountRate ?? 0} onChange={event => setForm({ ...form, discountRate: Number(event.target.value) })} /></label>
@@ -161,7 +176,8 @@ export const Suppliers = () => {
   const { state, updateState } = useGlobalStore();
   const [search, setSearch] = useState('');
   const [notice, setNotice] = useState('');
-  const [form, setForm] = useState<Partial<Supplier>>({ status: 'ACTIVE' });
+  const [cities, setCities] = useState<Array<{ id: string; nombre: string; provincia: string }>>([]);
+  const [form, setForm] = useState<Partial<Supplier>>({ status: 'ACTIVE', cityId: 'UIO' });
 
   const loadSuppliers = async () => {
     try {
@@ -179,16 +195,24 @@ export const Suppliers = () => {
 
   useEffect(() => {
     void loadSuppliers();
+    void catalogApi.getCiudades().then(list => {
+      if (list && list.length) {
+        setCities(list);
+        if (!form.cityId) setForm(prev => ({ ...prev, cityId: list[0].id }));
+      }
+    }).catch(() => null);
   }, []);
 
   const visibleSuppliers = state.suppliers.filter(supplier => `${supplier.name} ${supplier.ruc} ${supplier.city}`.toLowerCase().includes(search.toLowerCase()));
 
   const save = async () => {
     if (!form.name?.trim() || !form.ruc?.trim()) return setNotice('Ingresa razón social y RUC.');
+    const selectedCity = cities.find(c => c.id === form.cityId);
     try {
       const res = await supplierApi.createSupplier({
         nombre: form.name.trim(),
         ruc: form.ruc.trim(),
+        idCiudad: form.cityId || 'UIO',
         telefono: form.contact?.trim() || '',
         email: form.email?.trim() || '',
         direccion: form.address?.trim() || '',
@@ -196,11 +220,21 @@ export const Suppliers = () => {
       setNotice(`Proveedor ${res.id} registrado en MariaDB.`);
       void loadSuppliers();
     } catch (err) {
-      const supplier: Supplier = { id: `PROV-${Date.now()}`, name: form.name.trim(), ruc: form.ruc.trim(), contact: form.contact?.trim() ?? '', email: form.email?.trim() ?? '', city: form.city?.trim() ?? 'Quito', address: form.address?.trim() ?? '', status: 'ACTIVE' };
+      const supplier: Supplier = {
+        id: `PROV-${Date.now()}`,
+        name: form.name.trim(),
+        ruc: form.ruc.trim(),
+        contact: form.contact?.trim() ?? '',
+        email: form.email?.trim() ?? '',
+        city: selectedCity?.nombre ?? form.city?.trim() ?? 'Quito',
+        cityId: form.cityId || 'UIO',
+        address: form.address?.trim() ?? '',
+        status: 'ACTIVE',
+      };
       updateState(draft => { draft.suppliers.push(supplier); return draft; });
       setNotice('Proveedor guardado localmente.');
     }
-    setForm({ status: 'ACTIVE' });
+    setForm({ status: 'ACTIVE', cityId: cities[0]?.id || 'UIO' });
   };
 
   return (
@@ -212,7 +246,12 @@ export const Suppliers = () => {
           <label className="form-group">Razón social<input className="input" value={form.name ?? ''} onChange={event => setForm({ ...form, name: event.target.value })} /></label>
           <label className="form-group">Teléfono<input className="input" value={form.contact ?? ''} onChange={event => setForm({ ...form, contact: event.target.value })} /></label>
           <label className="form-group">Correo<input className="input" type="email" value={form.email ?? ''} onChange={event => setForm({ ...form, email: event.target.value })} /></label>
-          <label className="form-group">Ciudad<input className="input" value={form.city ?? ''} onChange={event => setForm({ ...form, city: event.target.value })} /></label>
+          <label className="form-group">Ciudad (Cargada desde BD)
+            <select className="select" value={form.cityId ?? 'UIO'} onChange={event => setForm({ ...form, cityId: event.target.value })}>
+              {cities.map(c => <option key={c.id} value={c.id}>{c.nombre} ({c.provincia})</option>)}
+              {!cities.length && <option value="UIO">Quito (Pichincha)</option>}
+            </select>
+          </label>
           <label className="form-group">Dirección<input className="input" value={form.address ?? ''} onChange={event => setForm({ ...form, address: event.target.value })} /></label>
           <div className="form-action"><button type="button" className="btn btn-primary" onClick={save}><Save size={16} /> Guardar proveedor</button></div>
         </div>

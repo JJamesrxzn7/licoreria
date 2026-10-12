@@ -227,6 +227,70 @@ class AccountInput(BaseModel):
 
 
 # ==========================================
+# 0. CATÁLOGOS AUXILIARES (Ciudades, Unidades, Categorías, Marcas, Perchas, Bancos)
+# ==========================================
+
+@app.get("/api/catalogos/generales")
+def obtener_catalogos_generales():
+    conn, cur = None, None
+    try:
+        conn = mysql.connector.connect(**get_db_config())
+        cur = conn.cursor(dictionary=True)
+
+        cur.execute("SELECT TRIM(id_Ciudad) AS id, TRIM(ciu_Descripcion) AS nombre, TRIM(ciu_Provincia) AS provincia, TRIM(ciu_Region) AS region FROM CIUDADES ORDER BY ciu_Descripcion")
+        ciudades = cur.fetchall()
+
+        cur.execute("SELECT TRIM(id_Unidad_Medida) AS id, TRIM(um_Descripcion) AS nombre, um_FactorConversion AS factor FROM UNIDADES_MEDIDAS ORDER BY um_Descripcion")
+        unidades = cur.fetchall()
+
+        cur.execute("SELECT TRIM(id_Categoria) AS id, TRIM(cat_Nombre) AS nombre FROM CATEGORIAS WHERE ESTADO_CAT = 'ACT' OR ESTADO_CAT IS NULL ORDER BY cat_Nombre")
+        categorias = cur.fetchall()
+
+        cur.execute("SELECT TRIM(id_Marca) AS id, TRIM(mar_Nombre) AS nombre FROM MARCAS WHERE ESTADO_MAR = 'ACT' OR ESTADO_MAR IS NULL ORDER BY mar_Nombre")
+        marcas = cur.fetchall()
+
+        cur.execute("SELECT TRIM(id_Percha) AS id, TRIM(pch_Descripcion) AS nombre, TRIM(pch_Letra) AS letra, pch_Nivel AS nivel FROM PERCHAS WHERE ESTADO_PCH = 'ACT' OR ESTADO_PCH IS NULL ORDER BY pch_Letra, pch_Nivel")
+        perchas = cur.fetchall()
+
+        cur.execute("SELECT TRIM(id_Banco) AS id, TRIM(ban_Nombre) AS nombre FROM BANCOS WHERE ESTADO_BAN = 'ACT' OR ESTADO_BAN IS NULL ORDER BY ban_Nombre")
+        bancos = cur.fetchall()
+
+        return {
+            "ciudades": ciudades,
+            "unidadesMedida": unidades,
+            "categorias": categorias,
+            "marcas": marcas,
+            "perchas": perchas,
+            "bancos": bancos,
+        }
+    except mysql.connector.Error as error:
+        raise_database_error(error)
+    finally:
+        if cur: cur.close()
+        if conn and conn.is_connected(): conn.close()
+
+
+@app.get("/api/ciudades")
+def listar_ciudades():
+    return obtener_catalogos_generales()["ciudades"]
+
+
+@app.get("/api/unidades-medida")
+def listar_unidades_medida():
+    return obtener_catalogos_generales()["unidadesMedida"]
+
+
+@app.get("/api/categorias")
+def listar_categorias():
+    return obtener_catalogos_generales()["categorias"]
+
+
+@app.get("/api/marcas")
+def listar_marcas():
+    return obtener_catalogos_generales()["marcas"]
+
+
+# ==========================================
 # 1. MÓDULO ABASTECIMIENTO / COMPRAS
 # ==========================================
 
@@ -591,10 +655,10 @@ def crear_producto(prod: ProductInput):
                     """
                     INSERT INTO PRODUCTOS (
                         id_Producto, id_Categoria, id_Marca, pro_Descripcion,
-                        pro_Unidad_Compra, pro_Unidad_Venta, pro_Valor_Compra,
+                        pro_UM_Compra, pro_UM_Venta, pro_Valor_Compra,
                         pro_Precio_Venta, pro_Saldo_Inicial, pro_Qty_Ingresos,
-                        pro_Qty_Egresos, pro_Saldo_Final, ESTADO_PROD
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 0, 0, %s, 'ACT')
+                        pro_Qty_Egresos, pro_Qty_Ajustes, pro_Saldo_Final, ESTADO_PROD
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 0, 0, 0, %s, 'ACT')
                     """,
                     (
                         product_id,
