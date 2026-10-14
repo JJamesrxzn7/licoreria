@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import {
   Bell, BookOpen, Briefcase, Calculator, FileText, LayoutDashboard, Menu,
-  Package, PanelLeftClose, PanelLeftOpen, ShoppingCart, Truck, Users, Wine, X,
+  PanelLeftClose, PanelLeftOpen, ShoppingCart, Truck, Users, Wine, X,
 } from 'lucide-react';
 import { StoreProvider } from './context';
 import { POS } from './pages/POS';
@@ -14,32 +14,16 @@ const navItems = [
   { id: 'pos', label: 'Punto de venta', icon: ShoppingCart, group: 'VENTAS' },
   { id: 'sales', label: 'Facturas', icon: FileText, group: 'VENTAS' },
   { id: 'customers', label: 'Clientes', icon: Users, group: 'VENTAS' },
-  { id: 'catalog', label: 'Inventario', icon: Package, group: 'BODEGA' },
   { id: 'adjustments', label: 'Ajustes físicos', icon: BookOpen, group: 'BODEGA' },
   { id: 'receptions', label: 'Recepciones', icon: Truck, group: 'BODEGA' },
   { id: 'deliveries', label: 'Entregas', icon: Truck, group: 'BODEGA' },
   { id: 'pos_orders', label: 'Compras', icon: Briefcase, group: 'ABASTECIMIENTO' },
   { id: 'suppliers', label: 'Proveedores', icon: Users, group: 'ABASTECIMIENTO' },
+  { id: 'products', label: 'Productos', icon: Wine, group: 'ABASTECIMIENTO' },
   { id: 'hr', label: 'Personal y nómina', icon: Users, group: 'ADMINISTRACIÓN' },
   { id: 'accounting', label: 'Contabilidad', icon: Calculator, group: 'ADMINISTRACIÓN' },
   { id: 'reports', label: 'Reportes', icon: FileText, group: 'ADMINISTRACIÓN' },
 ];
-
-const routeViews: Record<string, JSX.Element> = {
-  dashboard: <Dashboard />,
-  pos: <POS />,
-  catalog: <Catalog />,
-  adjustments: <Adjustments />,
-  deliveries: <Deliveries />,
-  sales: <Sales />,
-  customers: <Customers />,
-  suppliers: <Suppliers />,
-  pos_orders: <PurchaseOrders />,
-  receptions: <Receptions />,
-  hr: <HR />,
-  accounting: <Accounting />,
-  reports: <Reports />,
-};
 
 const AppContent = () => {
   const [currentRoute, setCurrentRoute] = useState('dashboard');
@@ -51,6 +35,23 @@ const AppContent = () => {
   const navigate = (route: string) => {
     setCurrentRoute(route);
     setMobileNavOpen(false);
+  };
+
+  const routeViews: Record<string, JSX.Element> = {
+    dashboard: <Dashboard />,
+    pos: <POS />,
+    products: <Catalog />,
+    catalog: <Catalog />,
+    adjustments: <Adjustments />,
+    deliveries: <Deliveries />,
+    sales: <Sales />,
+    customers: <Customers />,
+    suppliers: <Suppliers onNavigate={navigate} />,
+    pos_orders: <PurchaseOrders />,
+    receptions: <Receptions />,
+    hr: <HR />,
+    accounting: <Accounting />,
+    reports: <Reports />,
   };
 
   return (
@@ -86,7 +87,7 @@ const AppContent = () => {
         <header className="topbar">
           <button type="button" className="mobile-menu" aria-label="Abrir menú" onClick={() => setMobileNavOpen(true)}><Menu size={21} /></button>
           <span className="breadcrumb">La Cava <span>/</span> {activePage?.label}</span>
-          <div className="topbar-actions"><span className="demo-badge">DATOS DE PRUEBA</span><button type="button" className="notification-button" aria-label="Ver alertas de inventario" onClick={() => navigate('catalog')}><Bell size={18} /><i /></button><span className="avatar" aria-label="Usuario demostración">LC</span></div>
+          <div className="topbar-actions"><span className="demo-badge">DATOS DE PRUEBA</span><button type="button" className="notification-button" aria-label="Ver alertas de inventario" onClick={() => navigate('products')}><Bell size={18} /><i /></button><span className="avatar" aria-label="Usuario demostración">LC</span></div>
         </header>
         <div className="page-content">{routeViews[currentRoute] ?? <Dashboard />}</div>
       </main>

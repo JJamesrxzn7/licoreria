@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Check, Plus, Search, X } from 'lucide-react';
+import { Check, CheckCircle2, Edit3, Plus, Save, Search, Trash2, X } from 'lucide-react';
 import { useGlobalStore } from '../context';
 import { catalogApi, productApi, purchaseApi, warehouseApi, GeneralCatalogs, PurchaseCatalogs, PurchaseOrderRecord } from '../api';
 import { Adjustment, Delivery, Product, Reception } from '../types';
@@ -9,6 +9,7 @@ const money = (value: number) => `$${value.toFixed(2)}`;
 export const Catalog = () => {
   const { state, updateState } = useGlobalStore();
   const [search, setSearch] = useState('');
+  const [statusFilter, setStatusFilter] = useState<'ALL' | 'ACTIVE' | 'INACTIVE'>('ALL');
   const [showForm, setShowForm] = useState(false);
   const [notice, setNotice] = useState('');
   const [catalogs, setCatalogs] = useState<GeneralCatalogs>({
@@ -22,6 +23,22 @@ export const Catalog = () => {
   const [form, setForm] = useState<Partial<Product>>({
     status: 'ACTIVE', ml: 750, abv: 0, cost: 0, price: 0, stock: 0,
     minStock: 0, purchaseFactor: 1,
+  });
+
+  // Estado para Edición
+  const [editingProduct, setEditingProduct] = useState<Product | null>(null);
+  const [editForm, setEditForm] = useState<Partial<Product>>({});
+  const [editNotice, setEditNotice] = useState('');
+
+  // Estado para confirmación de cambio de estado
+  const [confirmModal, setConfirmModal] = useState<{
+    isOpen: boolean;
+    product: Product | null;
+    targetStatus: 'ACTIVE' | 'INACTIVE';
+  }>({
+    isOpen: false,
+    product: null,
+    targetStatus: 'INACTIVE',
   });
 
   const loadProducts = async () => {
@@ -55,7 +72,22 @@ export const Catalog = () => {
     }).catch(() => null);
   }, []);
 
-  const products = useMemo(() => state.products.filter(product => `${product.name} ${product.sku} ${product.barcode} ${product.brand} ${product.category}`.toLowerCase().includes(search.toLowerCase())), [state.products, search]);
+  const activeCount = useMemo(() => state.products.filter(p => p.status === 'ACTIVE').length, [state.products]);
+  const inactiveCount = useMemo(() => state.products.filter(p => p.status !== 'ACTIVE').length, [state.products]);
+
+  const filteredProducts = useMemo(() => {
+    return state.products
+      .filter(product => {
+        if (statusFilter === 'ACTIVE') return product.status === 'ACTIVE';
+        if (statusFilter === 'INACTIVE') return product.status !== 'ACTIVE';
+        return true;
+      })
+      .filter(product =>
+        `${product.name} ${product.sku} ${product.barcode || ''} ${product.brand || ''} ${product.category || ''}`
+          .toLowerCase()
+          .includes(search.toLowerCase())
+      );
+  }, [state.products, search, statusFilter]);
 
   const saveProduct = async () => {
     if (!form.name?.trim() || !form.sku?.trim()) return setNotice('Completa al menos el nombre y el código SKU.');
@@ -90,7 +122,7 @@ export const Catalog = () => {
       });
       setNotice(`Producto ${res.id} registrado exitosamente.`);
       void loadProducts();
-    } catch (err) {
+    } catch {
       const product: Product = {
         id: form.sku.trim(),
         name: form.name.trim(),
@@ -137,70 +169,674 @@ export const Catalog = () => {
     setShowForm(false);
   };
 
-  const toggleStatus = (productId: string) => {
+  const startEdit = (product: Product) => {
+    setEditingProduct(product);
+    setEditNotice('');
+    setEditForm({
+      ...product,
+      categoryId: product.categoryId || catalogs.categorias.find(c => c.nombre === product.category)?.id || catalogs.categorias[0]?.id || 'CAT-000001',
+      brandId: product.brandId || catalogs.marcas.find(m => m.nombre === product.brand)?.id || catalogs.marcas[0]?.id || 'MAR-000001',
+      buyUnitId: product.buyUnitId || catalogs.unidadesMedida.find(u => u.nombre === product.buyUnit)?.id || 'CAJ',
+      sellUnitId: product.sellUnitId || catalogs.unidadesMedida.find(u => u.nombre === product.sellUnit)?.id || 'BOT',
+      shelfId: product.shelfId || catalogs.perchas.find(p => p.nombre === product.shelf)?.id || 'PCH-000001',
+    });
+  };
+
+  const saveEdit = async () => {
+    if (!editingProduct) return;
+    if (!editForm.name?.trim()) return setEditNotice('El nombre del producto no puede estar vacío.');
+    const cost = Number(editForm.cost || 0);
+    const price = Number(editForm.price || 0);
+    if (price <= 0) return setEditNotice('El precio de venta debe ser mayor a 0.');
+    if (price < cost) return setEditNotice('El precio de venta debe ser mayor o igual al costo de compra.');
+
+    const catId = editForm.categoryId || catalogs.categorias[0]?.id || 'CAT-000001';
+    const brId = editForm.brandId || catalogs.marcas[0]?.id || 'MAR-000001';
+    const buyUId = editForm.buyUnitId || catalogs.unidadesMedida[0]?.id || 'CAJ';
+    const sellUId = editForm.sellUnitId || catalogs.unidadesMedida[0]?.id || 'BOT';
+    const shId = editForm.shelfId || catalogs.perchas[0]?.id || 'PCH-000001';
+
+    const selectedCategory = catalogs.categorias.find(c => c.id === catId);
+    const selectedBrand = catalogs.marcas.find(m => m.id === brId);
+    const selectedBuyUnit = catalogs.unidadesMedida.find(u => u.id === buyUId);
+    const selectedSellUnit = catalogs.unidadesMedida.find(u => u.id === sellUId);
+    const selectedShelf = catalogs.perchas.find(p => p.id === shId);
+
+    try {
+      await productApi.updateProduct(editingProduct.id, {
+        nombre: editForm.name.trim(),
+        costoCompra: cost,
+        precioVenta: price,
+      });
+    } catch {
+      // Si la API no responde, se guarda en el store
+    }
+
     updateState(draft => {
-      const product = draft.products.find(candidate => candidate.id === productId);
-      if (product) product.status = product.status === 'ACTIVE' ? 'INACTIVE' : 'ACTIVE';
+      const p = draft.products.find(candidate => candidate.id === editingProduct.id);
+      if (p) {
+        p.name = editForm.name!.trim();
+        p.barcode = editForm.barcode?.trim() ?? '';
+        p.brand = selectedBrand?.nombre || p.brand;
+        p.brandId = brId;
+        p.category = selectedCategory?.nombre || p.category;
+        p.categoryId = catId;
+        p.ml = Number(editForm.ml || 0);
+        p.abv = Number(editForm.abv || 0);
+        p.cost = cost;
+        p.price = price;
+        p.minStock = Number(editForm.minStock || 0);
+        p.buyUnit = selectedBuyUnit?.nombre || p.buyUnit;
+        p.buyUnitId = buyUId;
+        p.sellUnit = selectedSellUnit?.nombre || p.sellUnit;
+        p.sellUnitId = sellUId;
+        p.purchaseFactor = Number(editForm.purchaseFactor || 1);
+        p.shelf = selectedShelf?.nombre || p.shelf;
+        p.shelfId = shId;
+      }
       return draft;
     });
+
+    setNotice(`Producto ${editingProduct.sku || editingProduct.id} actualizado exitosamente.`);
+    setEditingProduct(null);
+  };
+
+  const askToggleStatus = (product: Product, targetStatus: 'ACTIVE' | 'INACTIVE') => {
+    setConfirmModal({
+      isOpen: true,
+      product,
+      targetStatus,
+    });
+  };
+
+  const executeToggleStatus = () => {
+    const { product, targetStatus } = confirmModal;
+    if (!product) return;
+
+    updateState(draft => {
+      const p = draft.products.find(candidate => candidate.id === product.id);
+      if (p) p.status = targetStatus;
+      return draft;
+    });
+
+    setNotice(
+      targetStatus === 'ACTIVE'
+        ? `Producto ${product.name} reactivado exitosamente.`
+        : `Producto ${product.name} dado de baja (inactivo) exitosamente.`
+    );
+    setConfirmModal({ isOpen: false, product: null, targetStatus: 'INACTIVE' });
   };
 
   return (
     <div>
-      <div className="page-heading"><div><span className="eyebrow">BODEGA · CATÁLOGO</span><h1>Inventario de licores</h1><p>Presentaciones, costos, unidades de compra y existencias.</p></div><button type="button" className="btn btn-primary" onClick={() => setShowForm(value => !value)}><Plus size={16} /> Nuevo producto</button></div>
-      {showForm && <section className="card"><h2 className="section-title">Ficha de producto</h2><div className="grid-4">
-        <label className="form-group">SKU / Código (PK)<input className="input" placeholder="Ej. PR-001" value={form.sku ?? ''} onChange={event => setForm({ ...form, sku: event.target.value })} /></label>
-        <label className="form-group">Nombre del producto<input className="input" placeholder="Ej. Johnnie Walker Black 750ml" value={form.name ?? ''} onChange={event => setForm({ ...form, name: event.target.value })} /></label>
-        <label className="form-group">Marca
-          <select className="select" value={form.brandId ?? ''} onChange={event => setForm({ ...form, brandId: event.target.value })}>
-            {catalogs.marcas.map(m => <option key={m.id} value={m.id}>{m.nombre}</option>)}
-            {!catalogs.marcas.length && <option value="MAR-000001">Cargando marcas...</option>}
-          </select>
-        </label>
-        <label className="form-group">Categoría
-          <select className="select" value={form.categoryId ?? ''} onChange={event => setForm({ ...form, categoryId: event.target.value })}>
-            {catalogs.categorias.map(c => <option key={c.id} value={c.id}>{c.nombre}</option>)}
-            {!catalogs.categorias.length && <option value="CAT-000001">Cargando categorías...</option>}
-          </select>
-        </label>
-        <label className="form-group">Código de barras<input className="input" placeholder="Opcional" value={form.barcode ?? ''} onChange={event => setForm({ ...form, barcode: event.target.value })} /></label>
-        <label className="form-group">Presentación (ml)<input className="input" type="number" min="0" value={form.ml ?? 0} onChange={event => setForm({ ...form, ml: Number(event.target.value) })} /></label>
-        <label className="form-group">Alcohol (% ABV)<input className="input" type="number" min="0" max="100" step="0.1" value={form.abv ?? 0} onChange={event => setForm({ ...form, abv: Number(event.target.value) })} /></label>
-        <label className="form-group">Costo unitario ($)<input className="input" type="number" min="0" step="0.01" value={form.cost ?? 0} onChange={event => setForm({ ...form, cost: Number(event.target.value) })} /></label>
-        <label className="form-group">Precio de venta ($)<input className="input" type="number" min="0" step="0.01" value={form.price ?? 0} onChange={event => setForm({ ...form, price: Number(event.target.value) })} /></label>
-        <label className="form-group">Stock inicial<input className="input" type="number" min="0" value={form.stock ?? 0} onChange={event => setForm({ ...form, stock: Number(event.target.value) })} /></label>
-        <label className="form-group">Stock mínimo<input className="input" type="number" min="0" value={form.minStock ?? 0} onChange={event => setForm({ ...form, minStock: Number(event.target.value) })} /></label>
-        <label className="form-group">Unidad de compra
-          <select className="select" value={form.buyUnitId ?? 'CAJ'} onChange={event => setForm({ ...form, buyUnitId: event.target.value })}>
-            {catalogs.unidadesMedida.map(u => <option key={u.id} value={u.id}>{u.id} · {u.nombre}</option>)}
-            {!catalogs.unidadesMedida.length && <option value="CAJ">CAJ · Caja</option>}
-          </select>
-        </label>
-        <label className="form-group">Unidad de venta
-          <select className="select" value={form.sellUnitId ?? 'BOT'} onChange={event => setForm({ ...form, sellUnitId: event.target.value })}>
-            {catalogs.unidadesMedida.map(u => <option key={u.id} value={u.id}>{u.id} · {u.nombre}</option>)}
-            {!catalogs.unidadesMedida.length && <option value="BOT">BOT · Botella</option>}
-          </select>
-        </label>
-        <label className="form-group">Unidades por compra<input className="input" type="number" min="1" value={form.purchaseFactor ?? 1} onChange={event => setForm({ ...form, purchaseFactor: Number(event.target.value) })} /></label>
-        <label className="form-group">Ubicación / Percha
-          <select className="select" value={form.shelfId ?? ''} onChange={event => setForm({ ...form, shelfId: event.target.value })}>
-            {catalogs.perchas.map(p => <option key={p.id} value={p.id}>{p.letra}{p.nivel} · {p.nombre}</option>)}
-            {!catalogs.perchas.length && <option value="PCH-000001">A1 · Nivel 1</option>}
-          </select>
-        </label>
-        <div className="form-action"><button className="btn btn-primary" type="button" onClick={saveProduct}><Check size={16} /> Guardar producto</button></div>
-      </div>{notice && <p className="form-notice" role="status">{notice}</p>}</section>}
+      <div className="page-heading">
+        <div>
+          <span className="eyebrow">ABASTECIMIENTO · PRODUCTOS</span>
+          <h1>Administración de productos</h1>
+          <p>Control integral de licores, presentaciones, costos, precios y existencias.</p>
+        </div>
+        <button type="button" className="btn btn-primary" onClick={() => setShowForm(value => !value)}>
+          <Plus size={16} /> {showForm ? 'Cerrar formulario' : 'Nuevo producto'}
+        </button>
+      </div>
+
+      {showForm && (
+        <section className="card">
+          <h2 className="section-title">Ficha de nuevo producto</h2>
+          <div className="grid-4">
+            <label className="form-group">
+              SKU / Código (PK)
+              <input
+                className="input"
+                placeholder="Ej. PR-001"
+                value={form.sku ?? ''}
+                onChange={event => setForm({ ...form, sku: event.target.value })}
+              />
+            </label>
+            <label className="form-group">
+              Nombre del producto
+              <input
+                className="input"
+                placeholder="Ej. Johnnie Walker Black 750ml"
+                value={form.name ?? ''}
+                onChange={event => setForm({ ...form, name: event.target.value })}
+              />
+            </label>
+            <label className="form-group">
+              Marca
+              <select
+                className="select"
+                value={form.brandId ?? ''}
+                onChange={event => setForm({ ...form, brandId: event.target.value })}
+              >
+                {catalogs.marcas.map(m => <option key={m.id} value={m.id}>{m.nombre}</option>)}
+                {!catalogs.marcas.length && <option value="MAR-000001">Cargando marcas...</option>}
+              </select>
+            </label>
+            <label className="form-group">
+              Categoría
+              <select
+                className="select"
+                value={form.categoryId ?? ''}
+                onChange={event => setForm({ ...form, categoryId: event.target.value })}
+              >
+                {catalogs.categorias.map(c => <option key={c.id} value={c.id}>{c.nombre}</option>)}
+                {!catalogs.categorias.length && <option value="CAT-000001">Cargando categorías...</option>}
+              </select>
+            </label>
+            <label className="form-group">
+              Código de barras
+              <input
+                className="input"
+                placeholder="Opcional"
+                value={form.barcode ?? ''}
+                onChange={event => setForm({ ...form, barcode: event.target.value })}
+              />
+            </label>
+            <label className="form-group">
+              Presentación (ml)
+              <input
+                className="input"
+                type="number"
+                min="0"
+                value={form.ml ?? 0}
+                onChange={event => setForm({ ...form, ml: Number(event.target.value) })}
+              />
+            </label>
+            <label className="form-group">
+              Alcohol (% ABV)
+              <input
+                className="input"
+                type="number"
+                min="0"
+                max="100"
+                step="0.1"
+                value={form.abv ?? 0}
+                onChange={event => setForm({ ...form, abv: Number(event.target.value) })}
+              />
+            </label>
+            <label className="form-group">
+              Costo unitario ($)
+              <input
+                className="input"
+                type="number"
+                min="0"
+                step="0.01"
+                value={form.cost ?? 0}
+                onChange={event => setForm({ ...form, cost: Number(event.target.value) })}
+              />
+            </label>
+            <label className="form-group">
+              Precio de venta ($)
+              <input
+                className="input"
+                type="number"
+                min="0"
+                step="0.01"
+                value={form.price ?? 0}
+                onChange={event => setForm({ ...form, price: Number(event.target.value) })}
+              />
+            </label>
+            <label className="form-group">
+              Stock inicial
+              <input
+                className="input"
+                type="number"
+                min="0"
+                value={form.stock ?? 0}
+                onChange={event => setForm({ ...form, stock: Number(event.target.value) })}
+              />
+            </label>
+            <label className="form-group">
+              Stock mínimo
+              <input
+                className="input"
+                type="number"
+                min="0"
+                value={form.minStock ?? 0}
+                onChange={event => setForm({ ...form, minStock: Number(event.target.value) })}
+              />
+            </label>
+            <label className="form-group">
+              Unidad de compra
+              <select
+                className="select"
+                value={form.buyUnitId ?? 'CAJ'}
+                onChange={event => setForm({ ...form, buyUnitId: event.target.value })}
+              >
+                {catalogs.unidadesMedida.map(u => <option key={u.id} value={u.id}>{u.id} · {u.nombre}</option>)}
+                {!catalogs.unidadesMedida.length && <option value="CAJ">CAJ · Caja</option>}
+              </select>
+            </label>
+            <label className="form-group">
+              Unidad de venta
+              <select
+                className="select"
+                value={form.sellUnitId ?? 'BOT'}
+                onChange={event => setForm({ ...form, sellUnitId: event.target.value })}
+              >
+                {catalogs.unidadesMedida.map(u => <option key={u.id} value={u.id}>{u.id} · {u.nombre}</option>)}
+                {!catalogs.unidadesMedida.length && <option value="BOT">BOT · Botella</option>}
+              </select>
+            </label>
+            <label className="form-group">
+              Unidades por compra
+              <input
+                className="input"
+                type="number"
+                min="1"
+                value={form.purchaseFactor ?? 1}
+                onChange={event => setForm({ ...form, purchaseFactor: Number(event.target.value) })}
+              />
+            </label>
+            <label className="form-group">
+              Ubicación / Percha
+              <select
+                className="select"
+                value={form.shelfId ?? ''}
+                onChange={event => setForm({ ...form, shelfId: event.target.value })}
+              >
+                {catalogs.perchas.map(p => <option key={p.id} value={p.id}>{p.letra}{p.nivel} · {p.nombre}</option>)}
+                {!catalogs.perchas.length && <option value="PCH-000001">A1 · Nivel 1</option>}
+              </select>
+            </label>
+            <div className="form-action">
+              <button className="btn btn-primary" type="button" onClick={saveProduct}>
+                <Check size={16} /> Guardar producto
+              </button>
+            </div>
+          </div>
+          {notice && <p className="form-notice" role="status">{notice}</p>}
+        </section>
+      )}
+
       {!showForm && notice && <p className="form-notice" role="status">{notice}</p>}
-      <section className="card"><div className="section-heading"><div><h2>Catálogo</h2><p>{products.length} referencias</p></div><div className="search-control table-search"><Search size={16} /><input aria-label="Buscar productos" placeholder="Nombre, marca, SKU o código" value={search} onChange={event => setSearch(event.target.value)} /></div></div>
-        <div className="table-scroll"><table><thead><tr><th>SKU / producto</th><th>Categoría</th><th>Presentación</th><th>ABV</th><th>Compra → venta</th><th>Percha</th><th>Costo</th><th>Precio</th><th>Stock</th><th>Estado</th><th>Acción</th></tr></thead><tbody>
-          {products.map(product => <tr key={product.id}><td><strong>{product.sku}</strong><br />{product.name}<small className="table-subtext">{product.brand} · {product.barcode || 'Sin código'}</small></td><td>{product.category}</td><td>{product.ml} ml</td><td>{product.abv}%</td><td>{product.buyUnit} (×{product.purchaseFactor}) → {product.sellUnit}</td><td>{product.shelf || '—'}</td><td>{money(product.cost)}</td><td>{money(product.price)}</td><td><span className={product.stock <= product.minStock ? 'stock-low' : ''}>{product.stock} / min. {product.minStock}</span></td><td><span className={`badge badge-${product.status === 'ACTIVE' ? 'active' : 'inactive'}`}>{product.status === 'ACTIVE' ? 'Activo' : 'Inactivo'}</span></td><td><button type="button" className="btn btn-outline" onClick={() => toggleStatus(product.id)}>{product.status === 'ACTIVE' ? 'Dar de baja' : 'Reactivar'}</button></td></tr>)}
-          {!products.length && <tr><td className="empty-state" colSpan={11}>No hay productos que coincidan.</td></tr>}
-        </tbody></table></div>
+
+      <section className="card">
+        <div className="section-heading">
+          <div>
+            <h2>Directorio de productos</h2>
+            <p>{filteredProducts.length} referencias visibles</p>
+          </div>
+
+          <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
+            <div style={{ display: 'flex', gap: '6px' }}>
+              <button
+                type="button"
+                className={`filter-badge-btn ${statusFilter === 'ALL' ? 'active' : ''}`}
+                onClick={() => setStatusFilter('ALL')}
+              >
+                Todos ({state.products.length})
+              </button>
+              <button
+                type="button"
+                className={`filter-badge-btn ${statusFilter === 'ACTIVE' ? 'active' : ''}`}
+                onClick={() => setStatusFilter('ACTIVE')}
+              >
+                Activos ({activeCount})
+              </button>
+              <button
+                type="button"
+                className={`filter-badge-btn ${statusFilter === 'INACTIVE' ? 'active' : ''}`}
+                onClick={() => setStatusFilter('INACTIVE')}
+              >
+                Inactivos ({inactiveCount})
+              </button>
+            </div>
+
+            <div className="search-control table-search">
+              <Search size={16} />
+              <input
+                aria-label="Buscar productos"
+                placeholder="Nombre, marca, SKU o código"
+                value={search}
+                onChange={event => setSearch(event.target.value)}
+              />
+            </div>
+          </div>
+        </div>
+
+        <div className="table-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th>SKU / Producto</th>
+                <th>Categoría</th>
+                <th>Presentación</th>
+                <th>ABV</th>
+                <th>Compra → Venta</th>
+                <th>Percha</th>
+                <th>Costo</th>
+                <th>Precio</th>
+                <th>Stock</th>
+                <th>Estado</th>
+                <th style={{ minWidth: '150px', textAlign: 'center' }}>Acciones</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filteredProducts.map(product => {
+                const isLow = product.stock <= product.minStock;
+                return (
+                  <tr key={product.id}>
+                    <td>
+                      <strong>{product.sku}</strong>
+                      <br />
+                      {product.name}
+                      <small className="table-subtext">{product.brand} · {product.barcode || 'Sin código'}</small>
+                    </td>
+                    <td>{product.category}</td>
+                    <td>{product.ml ? `${product.ml} ml` : '—'}</td>
+                    <td>{product.abv ? `${product.abv}%` : '—'}</td>
+                    <td>{product.buyUnit || 'UN'} (×{product.purchaseFactor || 1}) → {product.sellUnit || 'UN'}</td>
+                    <td>{product.shelf || '—'}</td>
+                    <td>{money(product.cost)}</td>
+                    <td style={{ fontWeight: 600, color: 'var(--primary)' }}>{money(product.price)}</td>
+                    <td>
+                      <span className={isLow ? 'stock-low' : 'stock-ok'}>
+                        {product.stock} / mín. {product.minStock}
+                      </span>
+                    </td>
+                    <td>
+                      <span className={`badge badge-${product.status === 'ACTIVE' ? 'active' : 'inactive'}`}>
+                        {product.status === 'ACTIVE' ? 'Activo' : 'Inactivo'}
+                      </span>
+                    </td>
+                    <td>
+                      <div className="inline-actions" style={{ justifyContent: 'center' }}>
+                        <button
+                          type="button"
+                          className="btn btn-outline"
+                          title="Editar producto"
+                          style={{ padding: '6px 10px', fontSize: '12px' }}
+                          onClick={() => startEdit(product)}
+                        >
+                          <Edit3 size={14} /> Editar
+                        </button>
+                        {product.status === 'ACTIVE' ? (
+                          <button
+                            type="button"
+                            className="btn btn-outline"
+                            title="Dar de baja producto"
+                            style={{ padding: '6px 10px', fontSize: '12px', color: '#b42318' }}
+                            onClick={() => askToggleStatus(product, 'INACTIVE')}
+                          >
+                            <Trash2 size={14} /> Dar de baja
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            className="btn btn-outline"
+                            title="Reactivar producto"
+                            style={{ padding: '6px 10px', fontSize: '12px', color: '#027a48' }}
+                            onClick={() => askToggleStatus(product, 'ACTIVE')}
+                          >
+                            <CheckCircle2 size={14} /> Reactivar
+                          </button>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+              {!filteredProducts.length && (
+                <tr>
+                  <td className="empty-state" colSpan={11}>
+                    No hay productos que coincidan con el filtro.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
       </section>
+
+      {/* Modal de Edición de Producto */}
+      {editingProduct && (
+        <div className="modal-backdrop">
+          <div className="modal-card" style={{ maxWidth: '640px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <Edit3 size={18} color="var(--primary)" />
+                <h2 style={{ margin: 0, fontSize: '18px' }}>
+                  Editar producto ({editingProduct.sku || editingProduct.id})
+                </h2>
+              </div>
+              <button
+                type="button"
+                className="icon-button"
+                onClick={() => setEditingProduct(null)}
+                aria-label="Cerrar modal"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="grid-2">
+              <label className="form-group" style={{ gridColumn: 'span 2' }}>
+                <span>Nombre del producto <strong style={{ color: '#ef4444' }}>*</strong></span>
+                <input
+                  className="input"
+                  value={editForm.name ?? ''}
+                  onChange={e => setEditForm({ ...editForm, name: e.target.value })}
+                />
+              </label>
+
+              <label className="form-group">
+                <span>Marca</span>
+                <select
+                  className="select"
+                  value={editForm.brandId ?? ''}
+                  onChange={e => setEditForm({ ...editForm, brandId: e.target.value })}
+                >
+                  {catalogs.marcas.map(m => <option key={m.id} value={m.id}>{m.nombre}</option>)}
+                </select>
+              </label>
+
+              <label className="form-group">
+                <span>Categoría</span>
+                <select
+                  className="select"
+                  value={editForm.categoryId ?? ''}
+                  onChange={e => setEditForm({ ...editForm, categoryId: e.target.value })}
+                >
+                  {catalogs.categorias.map(c => <option key={c.id} value={c.id}>{c.nombre}</option>)}
+                </select>
+              </label>
+
+              <label className="form-group">
+                <span>Costo unitario ($)</span>
+                <input
+                  className="input"
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={editForm.cost ?? 0}
+                  onChange={e => setEditForm({ ...editForm, cost: Number(e.target.value) })}
+                />
+              </label>
+
+              <label className="form-group">
+                <span>Precio de venta ($) <strong style={{ color: '#ef4444' }}>*</strong></span>
+                <input
+                  className="input"
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={editForm.price ?? 0}
+                  onChange={e => setEditForm({ ...editForm, price: Number(e.target.value) })}
+                />
+              </label>
+
+              <label className="form-group">
+                <span>Stock mínimo</span>
+                <input
+                  className="input"
+                  type="number"
+                  min="0"
+                  value={editForm.minStock ?? 0}
+                  onChange={e => setEditForm({ ...editForm, minStock: Number(e.target.value) })}
+                />
+              </label>
+
+              <label className="form-group">
+                <span>Código de barras</span>
+                <input
+                  className="input"
+                  value={editForm.barcode ?? ''}
+                  onChange={e => setEditForm({ ...editForm, barcode: e.target.value })}
+                />
+              </label>
+
+              <label className="form-group">
+                <span>Presentación (ml)</span>
+                <input
+                  className="input"
+                  type="number"
+                  min="0"
+                  value={editForm.ml ?? 0}
+                  onChange={e => setEditForm({ ...editForm, ml: Number(e.target.value) })}
+                />
+              </label>
+
+              <label className="form-group">
+                <span>Alcohol (% ABV)</span>
+                <input
+                  className="input"
+                  type="number"
+                  min="0"
+                  max="100"
+                  step="0.1"
+                  value={editForm.abv ?? 0}
+                  onChange={e => setEditForm({ ...editForm, abv: Number(e.target.value) })}
+                />
+              </label>
+
+              <label className="form-group">
+                <span>Unidad de compra</span>
+                <select
+                  className="select"
+                  value={editForm.buyUnitId ?? 'CAJ'}
+                  onChange={e => setEditForm({ ...editForm, buyUnitId: e.target.value })}
+                >
+                  {catalogs.unidadesMedida.map(u => <option key={u.id} value={u.id}>{u.id} · {u.nombre}</option>)}
+                </select>
+              </label>
+
+              <label className="form-group">
+                <span>Unidad de venta</span>
+                <select
+                  className="select"
+                  value={editForm.sellUnitId ?? 'BOT'}
+                  onChange={e => setEditForm({ ...editForm, sellUnitId: e.target.value })}
+                >
+                  {catalogs.unidadesMedida.map(u => <option key={u.id} value={u.id}>{u.id} · {u.nombre}</option>)}
+                </select>
+              </label>
+
+              <label className="form-group">
+                <span>Unidades por compra</span>
+                <input
+                  className="input"
+                  type="number"
+                  min="1"
+                  value={editForm.purchaseFactor ?? 1}
+                  onChange={e => setEditForm({ ...editForm, purchaseFactor: Number(e.target.value) })}
+                />
+              </label>
+
+              <label className="form-group">
+                <span>Ubicación / Percha</span>
+                <select
+                  className="select"
+                  value={editForm.shelfId ?? ''}
+                  onChange={e => setEditForm({ ...editForm, shelfId: e.target.value })}
+                >
+                  {catalogs.perchas.map(p => <option key={p.id} value={p.id}>{p.letra}{p.nivel} · {p.nombre}</option>)}
+                </select>
+              </label>
+            </div>
+
+            {editNotice && (
+              <p className="form-notice" role="status" style={{ color: '#ef4444', borderColor: '#fca5a5', background: '#fef2f2', marginTop: '12px' }}>
+                {editNotice}
+              </p>
+            )}
+
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', marginTop: '20px' }}>
+              <button
+                type="button"
+                className="btn btn-outline"
+                onClick={() => setEditingProduct(null)}
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={saveEdit}
+              >
+                <Save size={15} /> Actualizar producto
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal de Confirmación para Dar de baja / Reactivar */}
+      {confirmModal.isOpen && confirmModal.product && (
+        <div className="modal-backdrop">
+          <div className="modal-card" style={{ maxWidth: '480px' }}>
+            <h2 style={{ margin: '0 0 10px', fontSize: '18px' }}>
+              {confirmModal.targetStatus === 'INACTIVE' ? '¿Dar de baja producto?' : '¿Reactivar producto?'}
+            </h2>
+            <p style={{ margin: '0 0 16px', fontSize: '13px', color: '#475569', lineHeight: 1.5 }}>
+              {confirmModal.targetStatus === 'INACTIVE' ? (
+                <>
+                  ¿Estás seguro de que deseas dar de baja el producto <strong>{confirmModal.product.name}</strong> ({confirmModal.product.sku})?
+                  <br />
+                  <span style={{ display: 'block', marginTop: '8px', color: '#b42318', fontSize: '12px' }}>
+                    ⚠️ El producto quedará en estado inactivo y no estará disponible para nuevas ventas en POS ni órdenes de compra.
+                  </span>
+                </>
+              ) : (
+                <>
+                  ¿Deseas volver a habilitar el producto <strong>{confirmModal.product.name}</strong> ({confirmModal.product.sku}) para que vuelva a estar disponible en el punto de venta y compras?
+                </>
+              )}
+            </p>
+
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px' }}>
+              <button
+                type="button"
+                className="btn btn-outline"
+                onClick={() => setConfirmModal({ isOpen: false, product: null, targetStatus: 'INACTIVE' })}
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                className={confirmModal.targetStatus === 'INACTIVE' ? 'btn btn-danger' : 'btn btn-secondary'}
+                onClick={executeToggleStatus}
+              >
+                {confirmModal.targetStatus === 'INACTIVE' ? (
+                  <>
+                    <Trash2 size={14} /> Sí, dar de baja
+                  </>
+                ) : (
+                  <>
+                    <CheckCircle2 size={14} /> Sí, reactivar
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
+
+export const Products = Catalog;
 
 export const PurchaseOrders = () => {
   const { state } = useGlobalStore();

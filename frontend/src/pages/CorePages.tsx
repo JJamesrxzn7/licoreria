@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
-import { ArrowDownToLine, ArrowUpRight, CheckCircle2, Edit3, Package, Plus, Power, Save, Search, Trash2, Users, Wine, X } from 'lucide-react';
+import { ArrowDownToLine, ArrowUpRight, CheckCircle2, Edit3, Plus, Power, Save, Trash2, Users, Wine, X } from 'lucide-react';
 import { useGlobalStore } from '../context';
-import { catalogApi, customerApi, hrApi, productApi, purchaseApi, supplierApi } from '../api';
+import { catalogApi, customerApi, hrApi, purchaseApi, supplierApi } from '../api';
 import { Customer, Employee, Supplier } from '../types';
 
 const money = (value: number) => `$${value.toFixed(2)}`;
@@ -172,7 +172,7 @@ export const Customers = () => {
   );
 };
 
-export const Suppliers = () => {
+export const Suppliers = ({ onNavigate }: { onNavigate?: (route: string) => void } = {}) => {
   const { state, updateState } = useGlobalStore();
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<'ALL' | 'ACTIVE' | 'INACTIVE'>('ALL');
@@ -248,8 +248,6 @@ export const Suppliers = () => {
     return `prv_${String(maxNum + 1).padStart(6, '0')}`;
   }, [state.suppliers]);
 
-  const [productSearch, setProductSearch] = useState('');
-
   const loadSuppliers = async () => {
     try {
       const remoteSuppliers = await supplierApi.listSuppliers();
@@ -264,23 +262,8 @@ export const Suppliers = () => {
     }
   };
 
-  const loadProducts = async () => {
-    try {
-      const remoteProducts = await productApi.listProducts();
-      if (Array.isArray(remoteProducts)) {
-        updateState(draft => {
-          draft.products = remoteProducts;
-          return draft;
-        });
-      }
-    } catch {
-      // Estado existente
-    }
-  };
-
   useEffect(() => {
     void loadSuppliers();
-    void loadProducts();
     void catalogApi.getCiudades().then(list => {
       if (list && list.length) {
         setCities(list);
@@ -1105,99 +1088,18 @@ export const Suppliers = () => {
         </div>
       )}
 
-      {/* Sección Catálogo de Productos Vinculados */}
-      <section className="card" style={{ marginTop: '24px' }}>
-        <div className="section-heading">
-          <div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-              <Package size={20} color="var(--primary, #0f172a)" />
-              <h2 style={{ margin: 0 }}>Catálogo de productos</h2>
-            </div>
-            <p style={{ margin: '4px 0 0', fontSize: '12px', color: 'var(--text-muted)' }}>
-              {state.products.length} productos registrados en catálogo de inventario
-            </p>
-          </div>
-          <div className="search-control table-search">
-            <Search size={16} />
-            <input
-              aria-label="Buscar productos"
-              placeholder="Buscar por código, nombre, marca o categoría"
-              value={productSearch}
-              onChange={e => setProductSearch(e.target.value)}
-            />
-          </div>
+      {onNavigate && (
+        <div style={{ marginTop: '20px', display: 'flex', justifyContent: 'flex-end' }}>
+          <button
+            type="button"
+            className="btn btn-secondary"
+            onClick={() => onNavigate('products')}
+            style={{ display: 'inline-flex', alignItems: 'center', gap: '8px' }}
+          >
+            <Wine size={16} /> Administrar productos →
+          </button>
         </div>
-
-        <div className="table-scroll">
-          <table>
-            <thead>
-              <tr>
-                <th>Código / SKU</th>
-                <th>Nombre del producto</th>
-                <th>Marca</th>
-                <th>Categoría</th>
-                <th>Contenido</th>
-                <th>Graduación</th>
-                <th>Compra → Venta</th>
-                <th>Ubicación</th>
-                <th>Costo</th>
-                <th>Precio</th>
-                <th>Stock</th>
-                <th>Estado</th>
-              </tr>
-            </thead>
-            <tbody>
-              {state.products
-                .filter(p =>
-                  `${p.sku} ${p.name} ${p.brand || ''} ${p.category || ''} ${p.barcode || ''}`
-                    .toLowerCase()
-                    .includes(productSearch.toLowerCase())
-                )
-                .map(product => {
-                  const isLow = product.stock <= product.minStock;
-                  return (
-                    <tr key={product.id}>
-                      <td><code style={{ fontWeight: 600 }}>{product.sku || product.id}</code></td>
-                      <td>
-                        <strong>{product.name}</strong>
-                        {product.barcode && (
-                          <small className="table-subtext" style={{ display: 'block', color: 'var(--text-muted)' }}>
-                            Barras: {product.barcode}
-                          </small>
-                        )}
-                      </td>
-                      <td>{product.brand || '—'}</td>
-                      <td>{product.category || '—'}</td>
-                      <td>{product.ml ? `${product.ml} ml` : '—'}</td>
-                      <td>{product.abv ? `${product.abv}%` : '—'}</td>
-                      <td>{product.buyUnit || 'UN'} (×{product.purchaseFactor || 1}) → {product.sellUnit || 'UN'}</td>
-                      <td>{product.shelf || '—'}</td>
-                      <td>{money(product.cost)}</td>
-                      <td style={{ fontWeight: 600, color: 'var(--primary)' }}>{money(product.price)}</td>
-                      <td>
-                        <span className={isLow ? 'stock-low' : 'stock-ok'}>
-                          {product.stock} / mín {product.minStock}
-                        </span>
-                      </td>
-                      <td>
-                        <span className={`badge ${product.status === 'ACTIVE' ? 'badge-active' : 'badge-inactive'}`}>
-                          {product.status === 'ACTIVE' ? 'Activo' : 'Inactivo'}
-                        </span>
-                      </td>
-                    </tr>
-                  );
-                })}
-              {!state.products.length && (
-                <tr>
-                  <td colSpan={12} className="empty-state">
-                    No hay productos registrados en el inventario.
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
-      </section>
+      )}
     </div>
   );
 };
