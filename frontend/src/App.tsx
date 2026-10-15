@@ -5,7 +5,7 @@ import {
 } from 'lucide-react';
 import { StoreProvider } from './context';
 import { POS } from './pages/POS';
-import { Customers, Dashboard, HR, Suppliers } from './pages/CorePages';
+import { Customers, Dashboard, EmployeeFile, PayrollManagement, Suppliers } from './pages/CorePages';
 import { Adjustments, Catalog, Deliveries, PurchaseOrders, Receptions } from './pages/InventoryPages';
 import { Accounting, Reports, Sales } from './pages/FinancialPages';
 
@@ -20,7 +20,8 @@ const navItems = [
   { id: 'pos_orders', label: 'Compras', icon: Briefcase, group: 'ABASTECIMIENTO' },
   { id: 'suppliers', label: 'Proveedores', icon: Users, group: 'ABASTECIMIENTO' },
   { id: 'products', label: 'Productos', icon: Wine, group: 'ABASTECIMIENTO' },
-  { id: 'hr', label: 'Personal y nómina', icon: Users, group: 'ADMINISTRACIÓN' },
+  { id: 'employees', label: 'Ficha del personal', icon: Users, group: 'ADMINISTRACIÓN' },
+  { id: 'payroll', label: 'Roles de pago', icon: Calculator, group: 'ADMINISTRACIÓN' },
   { id: 'accounting', label: 'Contabilidad', icon: Calculator, group: 'ADMINISTRACIÓN' },
   { id: 'reports', label: 'Reportes', icon: FileText, group: 'ADMINISTRACIÓN' },
 ];
@@ -49,7 +50,9 @@ const AppContent = () => {
     suppliers: <Suppliers onNavigate={navigate} />,
     pos_orders: <PurchaseOrders />,
     receptions: <Receptions />,
-    hr: <HR />,
+    employees: <EmployeeFile />,
+    payroll: <PayrollManagement />,
+    hr: <EmployeeFile />,
     accounting: <Accounting />,
     reports: <Reports />,
   };

@@ -1,6 +1,7 @@
 import {
   Customer, Supplier, Product, Invoice, Reception, Delivery,
-  Adjustment, Employee, Payroll, Account, JournalEntry
+  Adjustment, Employee, Payroll, Account, JournalEntry,
+  Dependent, CargoHistoryEntry, BonusCatalogItem, DeductionCatalogItem
 } from './types';
 
 const API_BASE_URL = (import.meta.env.VITE_API_URL || 'http://127.0.0.1:8000').replace(/\/$/, '');
@@ -284,6 +285,55 @@ export const hrApi = {
     method: 'POST',
     body: JSON.stringify(emp),
   }),
+  updateEmployee: (id: string, emp: {
+    ci: string;
+    nombre1: string;
+    nombre2?: string;
+    apellido1: string;
+    apellido2?: string;
+    sexo?: string;
+    fechaNacimiento?: string;
+    sueldo: number;
+    idDepartamento?: string;
+    idCargo?: string;
+    telefono?: string;
+    celular?: string;
+    direccion?: string;
+    email?: string;
+  }) => request<{ id: string; mensaje: string }>(`/api/empleados/${encodeURIComponent(id)}`, {
+    method: 'PUT',
+    body: JSON.stringify(emp),
+  }),
+  listCargosHistory: (employeeId: string) =>
+    request<CargoHistoryEntry[]>(`/api/empleados/${encodeURIComponent(employeeId)}/cargos`),
+  assignCargo: (employeeId: string, data: { idCargo: string; fechaInicio: string; fechaFin?: string | null }) =>
+    request<{ mensaje: string }>(`/api/empleados/${encodeURIComponent(employeeId)}/cargos`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  listDependents: (employeeId: string) =>
+    request<Dependent[]>(`/api/empleados/${encodeURIComponent(employeeId)}/cargas`),
+  createDependent: (employeeId: string, dependent: {
+    ci: string;
+    nombre1: string;
+    nombre2?: string;
+    apellido1: string;
+    apellido2?: string;
+    sexo: string;
+    fechaNacimiento: string;
+    parentesco: string;
+    estadoCivil: string;
+    dependencia: string;
+  }) => request<{ id: string; mensaje: string }>(`/api/empleados/${encodeURIComponent(employeeId)}/cargas`, {
+    method: 'POST',
+    body: JSON.stringify(dependent),
+  }),
+  deleteDependent: (employeeId: string, cargaId: string) =>
+    request<{ id: string; mensaje: string }>(`/api/empleados/${encodeURIComponent(employeeId)}/cargas/${encodeURIComponent(cargaId)}`, {
+      method: 'DELETE',
+    }),
+  listBonuses: () => request<BonusCatalogItem[]>('/api/nomina/bonificaciones'),
+  listDeductions: () => request<DeductionCatalogItem[]>('/api/nomina/descuentos'),
   listPayrolls: () => request<Payroll[]>('/api/nomina'),
   createPayroll: (payroll: {
     descripcion: string;
@@ -293,7 +343,9 @@ export const hrApi = {
     sueldoBase: number;
     bonificaciones?: number;
     descuentos?: number;
-  }) => request<{ id: string; estado: string; mensaje: string }>('/api/nomina', {
+    lineasBonos?: Array<{ idBonificacion: string; fecha?: string; valor: number }>;
+    lineasDescuentos?: Array<{ idDescuento: string; fecha?: string; valor: number }>;
+  }) => request<{ id: string; estado: string; neto: string; mensaje: string }>('/api/nomina', {
     method: 'POST',
     body: JSON.stringify(payroll),
   }),

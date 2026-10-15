@@ -144,26 +144,92 @@ export interface Employee {
   ci: string;
   name: string;
   nombre1?: string;
+  nombre2?: string;
   apellido1?: string;
+  apellido2?: string;
   department: string;
   departmentId?: string;
   role: string;
+  cargoId?: string;
   salary: number;
   birthDate?: string;
   gender?: string;
+  address?: string;
+  phone?: string;
+  mobile?: string;
+  email?: string;
   status: RecordStatus;
   familyDependents: number;
 }
 
+export interface Dependent {
+  id?: string;
+  ci: string;
+  name?: string;
+  nombre1: string;
+  nombre2?: string;
+  apellido1: string;
+  apellido2?: string;
+  sexo: string;
+  fechaNacimiento: string;
+  parentesco: string;
+  estadoCivil: string;
+  dependencia: string;
+  estado?: string;
+}
+
+export interface CargoHistoryEntry {
+  cargoId: string;
+  cargoNombre: string;
+  fechaInicio: string;
+  fechaFin: string | null;
+  estado: string;
+}
+
+export interface BonusCatalogItem {
+  id: string;
+  nombre: string;
+  valor: number;
+  estado: string;
+}
+
+export interface DeductionCatalogItem {
+  id: string;
+  nombre: string;
+  valor: number;
+  estado: string;
+}
+
+export interface PayrollBonusLine {
+  bonusId: string;
+  bonusName?: string;
+  date?: string;
+  amount: number;
+}
+
+export interface PayrollDeductionLine {
+  deductionId: string;
+  deductionName?: string;
+  date?: string;
+  amount: number;
+}
+
 export interface Payroll {
   id: string;
+  description?: string;
+  startDate?: string;
+  endDate?: string;
   date: string;
   employeeId: string;
+  employeeName?: string;
+  department?: string;
   baseSalary: number;
   bonus: number;
   deductions: number;
   amount: number;
   status: 'PEN' | 'APR' | 'ANU' | 'ABI';
+  bonusLines?: PayrollBonusLine[];
+  deductionLines?: PayrollDeductionLine[];
 }
 
 export interface Account {

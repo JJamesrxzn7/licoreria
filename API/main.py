@@ -219,6 +219,38 @@ class EmployeeInput(BaseModel):
     email: str | None = Field(default=None, alias="email")
 
 
+class DependentInput(BaseModel):
+    id_carga: str | None = None
+    cedula: str = Field(alias="ci", min_length=10, max_length=20)
+    nombre1: str = Field(alias="nombre1", min_length=2, max_length=30)
+    nombre2: str | None = Field(default=None, alias="nombre2")
+    apellido1: str = Field(alias="apellido1", min_length=2, max_length=30)
+    apellido2: str | None = Field(default=None, alias="apellido2")
+    gender: str = Field(default="M", alias="sexo")
+    birth_date: date = Field(alias="fechaNacimiento")
+    relationship: str = Field(default="Hijo/a", alias="parentesco")
+    marital_status: str = Field(default="Soltero/a", alias="estadoCivil")
+    dependency_type: str = Field(default="Total", alias="dependencia")
+
+
+class CargoAssignInput(BaseModel):
+    cargo_id: str = Field(alias="idCargo")
+    start_date: date = Field(alias="fechaInicio")
+    end_date: date | None = Field(default=None, alias="fechaFin")
+
+
+class PayrollBonusLineInput(BaseModel):
+    bonus_id: str = Field(alias="idBonificacion")
+    line_date: date | None = Field(default=None, alias="fecha")
+    amount: Decimal = Field(alias="valor", ge=0)
+
+
+class PayrollDeductionLineInput(BaseModel):
+    deduction_id: str = Field(alias="idDescuento")
+    line_date: date | None = Field(default=None, alias="fecha")
+    amount: Decimal = Field(alias="valor", ge=0)
+
+
 class PayrollInput(BaseModel):
     description: str = Field(alias="descripcion", max_length=40)
     start_date: date = Field(alias="fechaInicio")
@@ -227,6 +259,8 @@ class PayrollInput(BaseModel):
     base_salary: Decimal = Field(alias="sueldoBase")
     bonus: Decimal = Field(default=Decimal("0"), alias="bonificaciones")
     deductions: Decimal = Field(default=Decimal("0"), alias="descuentos")
+    bonus_lines: list[PayrollBonusLineInput] = Field(default_factory=list, alias="lineasBonos")
+    deduction_lines: list[PayrollDeductionLineInput] = Field(default_factory=list, alias="lineasDescuentos")
 
 
 class AccountInput(BaseModel):
@@ -1602,25 +1636,37 @@ def listar_empleados():
                 TRIM(E.emp_Cedula) AS ci,
                 CONCAT(TRIM(E.emp_Nombre1), ' ', COALESCE(CONCAT(TRIM(E.emp_Nombre2), ' '), ''), TRIM(E.emp_Apellido1), ' ', COALESCE(TRIM(E.emp_Apellido2), '')) AS name,
                 TRIM(E.emp_Nombre1) AS nombre1,
+                COALESCE(TRIM(E.emp_Nombre2), '') AS nombre2,
                 TRIM(E.emp_Apellido1) AS apellido1,
+                COALESCE(TRIM(E.emp_Apellido2), '') AS apellido2,
                 COALESCE(TRIM(D.dep_Nombre), 'Ventas') AS department,
                 TRIM(E.id_Departamento) AS departmentId,
                 COALESCE(TRIM(C.cgo_Descripcion), 'Colaborador') AS role,
+                COALESCE(TRIM(CXE.id_Cargo), '') AS cargoId,
                 E.emp_Sueldo AS salary,
                 E.emp_FechaNacimiento AS birthDate,
-                TRIM(E.emp_Sexo) AS gender,
-                IF(E.ESTADO_EMP = 'ACT', 'ACTIVE', 'INACTIVE') AS status,
-                0 AS familyDependents
+                COALESCE(TRIM(E.emp_Sexo), 'M') AS gender,
+                COALESCE(TRIM(E.emp_Direccion), '') AS address,
+                COALESCE(TRIM(E.emp_Telefono), '') AS phone,
+                COALESCE(TRIM(E.emp_Celular), '') AS mobile,
+                COALESCE(TRIM(E.emp_Mail), '') AS email,
+                IF(E.ESTADO_EMP = 'ACT' OR E.ESTADO_EMP IS NULL, 'ACTIVE', 'INACTIVE') AS status,
+                (SELECT COUNT(*) FROM CARGAS CG WHERE CG.id_Empleado = E.id_Empleado AND (CG.ESTADO_CAR = 'ACT' OR CG.ESTADO_CAR IS NULL)) AS familyDependents
             FROM EMPLEADOS E
             LEFT JOIN DEPARTAMENTOS D ON E.id_Departamento = D.id_Departamento
             LEFT JOIN (
-                SELECT id_Empleado, MAX(id_Cargo) AS id_Cargo
-                FROM CARGOSxEMPLEADO
-                WHERE ESTADO_CxE = 'ACT'
-                GROUP BY id_Empleado
+                SELECT CE1.id_Empleado, CE1.id_Cargo
+                FROM CARGOSxEMPLEADO CE1
+                INNER JOIN (
+                    SELECT id_Empleado, MAX(cxe_Fecha_Inicio) AS max_fecha
+                    FROM CARGOSxEMPLEADO
+                    WHERE ESTADO_CxE = 'ACT' OR ESTADO_CxE IS NULL
+                    GROUP BY id_Empleado
+                ) CE2 ON CE1.id_Empleado = CE2.id_Empleado AND CE1.cxe_Fecha_Inicio = CE2.max_fecha
             ) CXE ON E.id_Empleado = CXE.id_Empleado
             LEFT JOIN CARGOS C ON CXE.id_Cargo = C.id_Cargo
-            ORDER BY E.emp_Apellido1
+            GROUP BY E.id_Empleado
+            ORDER BY E.emp_Apellido1, E.emp_Nombre1
             """
         )
         return cur.fetchall()
@@ -1656,9 +1702,9 @@ def crear_empleado(emp: EmployeeInput):
             employee_id = f"EMP-{max_num + 1:06d}"
 
         # Asegurar que el departamento exista para FK
-        cur.execute("SELECT id_Departamento FROM DEPARTAMENTOS WHERE id_Departamento = %s", (emp.department_id[:10],))
-        dept_row = cur.fetchone()
         dep_id = emp.department_id[:10]
+        cur.execute("SELECT id_Departamento FROM DEPARTAMENTOS WHERE id_Departamento = %s", (dep_id,))
+        dept_row = cur.fetchone()
         if not dept_row:
             cur.execute("INSERT IGNORE INTO DEPARTAMENTOS (id_Departamento, dep_Nombre, ESTADO_DEP) VALUES (%s, 'General', 'ACT')", (dep_id,))
 
@@ -1712,6 +1758,319 @@ def crear_empleado(emp: EmployeeInput):
         if conn and conn.is_connected(): conn.close()
 
 
+@app.put("/api/empleados/{employee_id}")
+def actualizar_empleado(employee_id: str, emp: EmployeeInput):
+    conn, cur = None, None
+    try:
+        conn = mysql.connector.connect(**get_db_config())
+        cur = conn.cursor()
+        user_id = get_user_id(cur)
+        dep_id = emp.department_id[:10]
+        cur.execute("SELECT id_Departamento FROM DEPARTAMENTOS WHERE id_Departamento = %s", (dep_id,))
+        if not cur.fetchone():
+            cur.execute("INSERT IGNORE INTO DEPARTAMENTOS (id_Departamento, dep_Nombre, ESTADO_DEP) VALUES (%s, 'General', 'ACT')", (dep_id,))
+
+        cur.execute(
+            """
+            UPDATE EMPLEADOS
+            SET emp_Cedula = %s,
+                emp_Apellido1 = %s,
+                emp_Apellido2 = %s,
+                emp_Nombre1 = %s,
+                emp_Nombre2 = %s,
+                emp_Sexo = %s,
+                emp_FechaNacimiento = %s,
+                emp_Sueldo = %s,
+                emp_Direccion = %s,
+                emp_Telefono = %s,
+                emp_Celular = %s,
+                emp_Mail = %s,
+                id_Departamento = %s,
+                USER_ID = %s
+            WHERE id_Empleado = %s
+            """,
+            (
+                emp.ci[:20],
+                emp.last_name1[:30],
+                emp.last_name2[:30] if emp.last_name2 else None,
+                emp.first_name[:30],
+                emp.second_name[:30] if emp.second_name else None,
+                emp.gender[:1].upper() if emp.gender else 'M',
+                emp.birth_date,
+                emp.salary,
+                emp.address[:60] if emp.address else None,
+                emp.phone[:10] if emp.phone else None,
+                emp.mobile[:10] if emp.mobile else None,
+                emp.email[:60] if emp.email else None,
+                dep_id,
+                user_id,
+                employee_id,
+            ),
+        )
+
+        if emp.cargo_id:
+            cur.execute("SELECT id_Cargo FROM CARGOS WHERE id_Cargo = %s", (emp.cargo_id[:10],))
+            if not cur.fetchone():
+                cur.execute("INSERT IGNORE INTO CARGOS (id_Cargo, cgo_Descripcion, ESTADO_CGO) VALUES (%s, 'General', 'ACT')", (emp.cargo_id[:10],))
+            cur.execute(
+                """
+                INSERT INTO CARGOSxEMPLEADO (id_Cargo, id_Empleado, cxe_Fecha_Inicio, USER_ID, ESTADO_CxE)
+                VALUES (%s, %s, CURDATE(), %s, 'ACT')
+                ON DUPLICATE KEY UPDATE ESTADO_CxE = 'ACT'
+                """,
+                (emp.cargo_id[:10], employee_id, user_id),
+            )
+
+        conn.commit()
+        return {"id": employee_id, "mensaje": f"Ficha de {emp.first_name} {emp.last_name1} actualizada exitosamente."}
+    except mysql.connector.Error as error:
+        if conn: conn.rollback()
+        raise_database_error(error)
+    finally:
+        if cur: cur.close()
+        if conn and conn.is_connected(): conn.close()
+
+
+@app.get("/api/empleados/{employee_id}/cargos")
+def listar_historial_cargos(employee_id: str):
+    conn, cur = None, None
+    try:
+        conn = mysql.connector.connect(**get_db_config())
+        cur = conn.cursor(dictionary=True)
+        cur.execute(
+            """
+            SELECT 
+                TRIM(CE.id_Cargo) AS cargoId,
+                TRIM(C.cgo_Descripcion) AS cargoNombre,
+                CE.cxe_Fecha_Inicio AS fechaInicio,
+                CE.cxe_Fecha_Fin AS fechaFin,
+                TRIM(CE.ESTADO_CxE) AS estado
+            FROM CARGOSxEMPLEADO CE
+            INNER JOIN CARGOS C ON CE.id_Cargo = C.id_Cargo
+            WHERE CE.id_Empleado = %s
+            ORDER BY CE.cxe_Fecha_Inicio DESC
+            """,
+            (employee_id,),
+        )
+        return cur.fetchall()
+    except mysql.connector.Error as error:
+        raise_database_error(error)
+    finally:
+        if cur: cur.close()
+        if conn and conn.is_connected(): conn.close()
+
+
+@app.post("/api/empleados/{employee_id}/cargos")
+def asignar_cargo_empleado(employee_id: str, cargo: CargoAssignInput):
+    conn, cur = None, None
+    try:
+        conn = mysql.connector.connect(**get_db_config())
+        cur = conn.cursor()
+        user_id = get_user_id(cur)
+        
+        # Cerrar cargo previo activo si la fecha fin era nula
+        cur.execute(
+            """
+            UPDATE CARGOSxEMPLEADO
+            SET cxe_Fecha_Fin = %s, ESTADO_CxE = 'INA'
+            WHERE id_Empleado = %s AND (cxe_Fecha_Fin IS NULL OR cxe_Fecha_Fin >= %s) AND id_Cargo <> %s
+            """,
+            (cargo.start_date, employee_id, cargo.start_date, cargo.cargo_id[:10]),
+        )
+        
+        cur.execute(
+            """
+            INSERT INTO CARGOSxEMPLEADO (id_Cargo, id_Empleado, cxe_Fecha_Inicio, cxe_Fecha_Fin, USER_ID, ESTADO_CxE)
+            VALUES (%s, %s, %s, %s, %s, 'ACT')
+            ON DUPLICATE KEY UPDATE cxe_Fecha_Fin = VALUES(cxe_Fecha_Fin), ESTADO_CxE = 'ACT'
+            """,
+            (cargo.cargo_id[:10], employee_id, cargo.start_date, cargo.end_date, user_id),
+        )
+        conn.commit()
+        return {"mensaje": "Cargo asignado y registrado en el historial de crecimiento empresarial."}
+    except mysql.connector.Error as error:
+        if conn: conn.rollback()
+        raise_database_error(error)
+    finally:
+        if cur: cur.close()
+        if conn and conn.is_connected(): conn.close()
+
+
+@app.get("/api/empleados/{employee_id}/cargas")
+def listar_cargas_empleado(employee_id: str):
+    conn, cur = None, None
+    try:
+        conn = mysql.connector.connect(**get_db_config())
+        cur = conn.cursor(dictionary=True)
+        cur.execute(
+            """
+            SELECT 
+                TRIM(id_Carga) AS id,
+                TRIM(car_Cedula) AS ci,
+                CONCAT(TRIM(car_Nombre1), ' ', COALESCE(CONCAT(TRIM(car_Nombre2), ' '), ''), TRIM(car_Apellido1), ' ', COALESCE(TRIM(car_Apellido2), '')) AS name,
+                TRIM(car_Nombre1) AS nombre1,
+                COALESCE(TRIM(car_Nombre2), '') AS nombre2,
+                TRIM(car_Apellido1) AS apellido1,
+                COALESCE(TRIM(car_Apellido2), '') AS apellido2,
+                COALESCE(TRIM(car_Sexo), 'M') AS sexo,
+                car_FechaNacimiento AS fechaNacimiento,
+                COALESCE(TRIM(car_Parentesco), 'Hijo/a') AS parentesco,
+                COALESCE(TRIM(car_EstadoCivil), 'Soltero/a') AS estadoCivil,
+                COALESCE(TRIM(car_Dependencia), 'Total') AS dependencia,
+                TRIM(ESTADO_CAR) AS estado
+            FROM CARGAS
+            WHERE id_Empleado = %s AND (ESTADO_CAR = 'ACT' OR ESTADO_CAR IS NULL)
+            ORDER BY car_Apellido1, car_Nombre1
+            """,
+            (employee_id,),
+        )
+        return cur.fetchall()
+    except mysql.connector.Error as error:
+        raise_database_error(error)
+    finally:
+        if cur: cur.close()
+        if conn and conn.is_connected(): conn.close()
+
+
+@app.post("/api/empleados/{employee_id}/cargas")
+def registrar_carga_empleado(employee_id: str, carga: DependentInput):
+    conn, cur = None, None
+    try:
+        conn = mysql.connector.connect(**get_db_config())
+        cur = conn.cursor()
+        user_id = get_user_id(cur)
+
+        if carga.id_carga and carga.id_carga.strip():
+            carga_id = carga.id_carga.strip()[:10]
+        else:
+            import re
+            cur.execute("SELECT id_Carga FROM CARGAS")
+            existing = cur.fetchall()
+            max_num = 0
+            for r in existing:
+                val = str(r[0] if isinstance(r, (list, tuple)) else "")
+                m = re.match(r"^CAR-(\d+)$", val, re.IGNORECASE)
+                if m:
+                    n = int(m.group(1))
+                    if n > max_num:
+                        max_num = n
+            carga_id = f"CAR-{max_num + 1:06d}"
+
+        cur.execute(
+            """
+            INSERT INTO CARGAS (
+                id_Carga, id_Empleado, car_Cedula, car_Apellido1, car_Apellido2,
+                car_Nombre1, car_Nombre2, car_Sexo, car_FechaNacimiento,
+                car_Parentesco, car_EstadoCivil, car_Dependencia, USER_ID, ESTADO_CAR
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'ACT')
+            """,
+            (
+                carga_id,
+                employee_id,
+                carga.cedula[:20],
+                carga.apellido1[:30],
+                carga.apellido2[:30] if carga.apellido2 else None,
+                carga.nombre1[:30],
+                carga.nombre2[:30] if carga.nombre2 else None,
+                carga.gender[:1].upper() if carga.gender else 'M',
+                carga.birth_date,
+                carga.relationship[:20],
+                carga.marital_status[:20],
+                carga.dependency_type[:20],
+                user_id,
+            ),
+        )
+        conn.commit()
+        return {"id": carga_id, "mensaje": f"Carga familiar {carga.nombre1} {carga.apellido1} registrada exitosamente."}
+    except mysql.connector.Error as error:
+        if conn: conn.rollback()
+        raise_database_error(error)
+    finally:
+        if cur: cur.close()
+        if conn and conn.is_connected(): conn.close()
+
+
+@app.delete("/api/empleados/{employee_id}/cargas/{carga_id}")
+def eliminar_carga_empleado(employee_id: str, carga_id: str):
+    conn, cur = None, None
+    try:
+        conn = mysql.connector.connect(**get_db_config())
+        cur = conn.cursor()
+        cur.execute("UPDATE CARGAS SET ESTADO_CAR = 'INA' WHERE id_Carga = %s AND id_Empleado = %s", (carga_id, employee_id))
+        conn.commit()
+        return {"id": carga_id, "mensaje": "Carga familiar removida."}
+    except mysql.connector.Error as error:
+        if conn: conn.rollback()
+        raise_database_error(error)
+    finally:
+        if cur: cur.close()
+        if conn and conn.is_connected(): conn.close()
+
+
+@app.get("/api/nomina/bonificaciones")
+def listar_bonificaciones():
+    conn, cur = None, None
+    try:
+        conn = mysql.connector.connect(**get_db_config())
+        cur = conn.cursor(dictionary=True)
+        cur.execute("SELECT TRIM(id_Bonificacion) AS id, TRIM(bon_Descripcion) AS nombre, bon_Valor AS valor, TRIM(ESTADO_BON) AS estado FROM BONIFICACIONES WHERE ESTADO_BON = 'ACT' OR ESTADO_BON IS NULL ORDER BY bon_Descripcion")
+        rows = cur.fetchall()
+        if not rows:
+            cur.execute(
+                """
+                INSERT IGNORE INTO BONIFICACIONES (id_Bonificacion, bon_Descripcion, bon_Valor, ESTADO_BON)
+                VALUES 
+                ('BON-000001', 'Horas Extras 50%', 25.00, 'ACT'),
+                ('BON-000002', 'Horas Extras 100%', 45.00, 'ACT'),
+                ('BON-000003', 'Bono Puntualidad y Asistencia', 30.00, 'ACT'),
+                ('BON-000004', 'Comisión por Cumplimiento de Ventas', 50.00, 'ACT'),
+                ('BON-000005', 'Bono de Responsabilidad y Desempeño', 60.00, 'ACT'),
+                ('BON-000006', 'Subsidio de Alimentación / Transporte', 40.00, 'ACT')
+                """
+            )
+            conn.commit()
+            cur.execute("SELECT TRIM(id_Bonificacion) AS id, TRIM(bon_Descripcion) AS nombre, bon_Valor AS valor, TRIM(ESTADO_BON) AS estado FROM BONIFICACIONES WHERE ESTADO_BON = 'ACT' OR ESTADO_BON IS NULL ORDER BY bon_Descripcion")
+            rows = cur.fetchall()
+        return rows
+    except mysql.connector.Error as error:
+        raise_database_error(error)
+    finally:
+        if cur: cur.close()
+        if conn and conn.is_connected(): conn.close()
+
+
+@app.get("/api/nomina/descuentos")
+def listar_descuentos():
+    conn, cur = None, None
+    try:
+        conn = mysql.connector.connect(**get_db_config())
+        cur = conn.cursor(dictionary=True)
+        cur.execute("SELECT TRIM(id_Descuento) AS id, TRIM(des_Descripcion) AS nombre, des_Valor AS valor, TRIM(ESTADO_DES) AS estado FROM DESCUENTOS WHERE ESTADO_DES = 'ACT' OR ESTADO_DES IS NULL ORDER BY des_Descripcion")
+        rows = cur.fetchall()
+        if not rows:
+            cur.execute(
+                """
+                INSERT IGNORE INTO DESCUENTOS (id_Descuento, des_Descripcion, des_Valor, ESTADO_DES)
+                VALUES 
+                ('DES-000001', 'Aporte Individual IESS (9.45%)', 0.00, 'ACT'),
+                ('DES-000002', 'Préstamo Quirografario BIESS', 50.00, 'ACT'),
+                ('DES-000003', 'Préstamo Hipotecario BIESS', 120.00, 'ACT'),
+                ('DES-000004', 'Anticipo Quincenal de Sueldo', 100.00, 'ACT'),
+                ('DES-000005', 'Atrasos y Multas Disciplinarias', 15.00, 'ACT'),
+                ('DES-000006', 'Retención Judicial / Pensión Alimenticia', 80.00, 'ACT')
+                """
+            )
+            conn.commit()
+            cur.execute("SELECT TRIM(id_Descuento) AS id, TRIM(des_Descripcion) AS nombre, des_Valor AS valor, TRIM(ESTADO_DES) AS estado FROM DESCUENTOS WHERE ESTADO_DES = 'ACT' OR ESTADO_DES IS NULL ORDER BY des_Descripcion")
+            rows = cur.fetchall()
+        return rows
+    except mysql.connector.Error as error:
+        raise_database_error(error)
+    finally:
+        if cur: cur.close()
+        if conn and conn.is_connected(): conn.close()
+
+
 @app.get("/api/nomina")
 def listar_nomina():
     conn, cur = None, None
@@ -1722,8 +2081,13 @@ def listar_nomina():
             """
             SELECT 
                 TRIM(P.id_Pago) AS id,
+                P.pag_Descripcion AS description,
+                P.pag_Fecha_Inicio AS startDate,
+                P.pag_Fecha_Fin AS endDate,
                 P.pag_Fecha_Fin AS date,
                 TRIM(D.id_Empleado) AS employeeId,
+                CONCAT(TRIM(E.emp_Nombre1), ' ', TRIM(E.emp_Apellido1)) AS employeeName,
+                COALESCE(TRIM(DEP.dep_Nombre), 'General') AS department,
                 D.pxe_Sueldo AS baseSalary,
                 D.pxe_Bonificaciones AS bonus,
                 D.pxe_Descuentos AS deductions,
@@ -1731,10 +2095,54 @@ def listar_nomina():
                 P.ESTADO_PAG AS status
             FROM PAGOS P
             INNER JOIN PAGxEMP D ON P.id_Pago = D.id_Pago
-            ORDER BY P.pag_Fecha_Fin DESC
+            INNER JOIN EMPLEADOS E ON D.id_Empleado = E.id_Empleado
+            LEFT JOIN DEPARTAMENTOS DEP ON E.id_Departamento = DEP.id_Departamento
+            ORDER BY P.pag_Fecha_Fin DESC, P.id_Pago DESC
             """
         )
-        return cur.fetchall()
+        payrolls = cur.fetchall()
+
+        cur.execute(
+            """
+            SELECT 
+                TRIM(BXP.id_Pago) AS pagoId,
+                TRIM(BXP.id_Bonificacion) AS bonusId,
+                TRIM(B.bon_Descripcion) AS bonusName,
+                BXP.bxe_Fecha AS date,
+                BXP.bxe_Valor AS amount
+            FROM BONxEMPxPAG BXP
+            INNER JOIN BONIFICACIONES B ON BXP.id_Bonificacion = B.id_Bonificacion
+            ORDER BY BXP.id_Pago, BXP.bxe_Fecha
+            """
+        )
+        bonuses_by_pay: dict[str, list[dict[str, object]]] = {}
+        for row in cur.fetchall():
+            pid = row.pop("pagoId")
+            bonuses_by_pay.setdefault(pid, []).append(row)
+
+        cur.execute(
+            """
+            SELECT 
+                TRIM(DXP.id_Pago) AS pagoId,
+                TRIM(DXP.id_Descuento) AS deductionId,
+                TRIM(D.des_Descripcion) AS deductionName,
+                DXP.dxe_Fecha AS date,
+                DXP.dxe_Valor AS amount
+            FROM DESxEMPxPAG DXP
+            INNER JOIN DESCUENTOS D ON DXP.id_Descuento = D.id_Descuento
+            ORDER BY DXP.id_Pago, DXP.dxe_Fecha
+            """
+        )
+        deductions_by_pay: dict[str, list[dict[str, object]]] = {}
+        for row in cur.fetchall():
+            pid = row.pop("pagoId")
+            deductions_by_pay.setdefault(pid, []).append(row)
+
+        for p in payrolls:
+            p["bonusLines"] = bonuses_by_pay.get(p["id"], [])
+            p["deductionLines"] = deductions_by_pay.get(p["id"], [])
+
+        return payrolls
     except mysql.connector.Error as error:
         raise_database_error(error)
     finally:
@@ -1744,23 +2152,61 @@ def listar_nomina():
 
 @app.post("/api/nomina")
 def crear_rol_pago(payroll: PayrollInput):
-    pago_id = f"PAG{uuid4().hex[:7].upper()}"
     conn, cur = None, None
     try:
         conn = mysql.connector.connect(**get_db_config())
         cur = conn.cursor()
         user_id = get_user_id(cur)
-        cur.callproc(
-            "SP_PAGO_CREAR",
-            (
-                pago_id,
-                payroll.description[:40],
-                payroll.start_date,
-                payroll.end_date,
-                user_id,
-            ),
-        )
-        neto = payroll.base_salary + payroll.bonus - payroll.deductions
+
+        import re
+        cur.execute("SELECT id_Pago FROM PAGOS")
+        existing = cur.fetchall()
+        max_num = 0
+        for r in existing:
+            val = str(r[0] if isinstance(r, (list, tuple)) else "")
+            m = re.match(r"^PAG-(\d+)$", val, re.IGNORECASE)
+            if m:
+                n = int(m.group(1))
+                if n > max_num:
+                    max_num = n
+        pago_id = f"PAG-{max_num + 1:06d}"
+
+        # Totales calculados con precisión
+        if payroll.bonus_lines:
+            total_bonos = sum((line.amount for line in payroll.bonus_lines), Decimal("0"))
+        else:
+            total_bonos = payroll.bonus
+
+        if payroll.deduction_lines:
+            total_descuentos = sum((line.amount for line in payroll.deduction_lines), Decimal("0"))
+        else:
+            total_descuentos = payroll.deductions
+
+        neto = (payroll.base_salary + total_bonos - total_descuentos).quantize(CENT, rounding=ROUND_HALF_UP)
+
+        try:
+            cur.callproc(
+                "SP_PAGO_CREAR",
+                (
+                    pago_id,
+                    payroll.description[:40],
+                    payroll.start_date,
+                    payroll.end_date,
+                    user_id,
+                ),
+            )
+        except mysql.connector.Error as proc_err:
+            if proc_err.errno in {1305, 1452}:
+                cur.execute(
+                    """
+                    INSERT INTO PAGOS (id_Pago, pag_Descripcion, pag_Fecha_Inicio, pag_Fecha_Fin, USER_ID, ESTADO_PAG)
+                    VALUES (%s, %s, %s, %s, %s, 'ABI')
+                    """,
+                    (pago_id, payroll.description[:40], payroll.start_date, payroll.end_date, user_id),
+                )
+            else:
+                raise
+
         cur.execute(
             """
             INSERT INTO PAGxEMP (id_Pago, id_Empleado, pxe_Sueldo, pxe_Bonificaciones, pxe_Descuentos, pxe_Valor_Neto, ESTADO_PxE)
@@ -1770,13 +2216,49 @@ def crear_rol_pago(payroll: PayrollInput):
                 pago_id,
                 payroll.employee_id,
                 payroll.base_salary,
-                payroll.bonus,
-                payroll.deductions,
+                total_bonos,
+                total_descuentos,
                 neto,
             ),
         )
+
+        for line in payroll.bonus_lines:
+            cur.execute(
+                """
+                INSERT INTO BONxEMPxPAG (id_Pago, id_Empleado, id_Bonificacion, bxe_Fecha, bxe_Valor, ESTADO_BXE)
+                VALUES (%s, %s, %s, %s, %s, 'ACT')
+                """,
+                (
+                    pago_id,
+                    payroll.employee_id,
+                    line.bonus_id[:10],
+                    line.line_date or payroll.end_date,
+                    line.amount,
+                ),
+            )
+
+        for line in payroll.deduction_lines:
+            cur.execute(
+                """
+                INSERT INTO DESxEMPxPAG (id_Pago, id_Empleado, id_Descuento, dxe_Fecha, dxe_Valor, ESTADO_DXE)
+                VALUES (%s, %s, %s, %s, %s, 'ACT')
+                """,
+                (
+                    pago_id,
+                    payroll.employee_id,
+                    line.deduction_id[:10],
+                    line.line_date or payroll.end_date,
+                    line.amount,
+                ),
+            )
+
         conn.commit()
-        return {"id": pago_id, "estado": "ABI", "mensaje": "Rol de pago generado."}
+        return {
+            "id": pago_id,
+            "estado": "ABI",
+            "neto": str(neto),
+            "mensaje": f"Rol de pago {pago_id} generado correctamente.",
+        }
     except mysql.connector.Error as error:
         if conn: conn.rollback()
         raise_database_error(error)
@@ -1792,9 +2274,16 @@ def aprobar_nomina(pago_id: str):
         conn = mysql.connector.connect(**get_db_config())
         cur = conn.cursor()
         user_id = get_user_id(cur)
-        cur.callproc("SP_PAGO_APROBAR", (pago_id, user_id))
+        try:
+            cur.callproc("SP_PAGO_APROBAR", (pago_id, user_id))
+        except mysql.connector.Error as proc_err:
+            if proc_err.errno in {1305, 1452}:
+                cur.execute("UPDATE PAGOS SET ESTADO_PAG = 'APR' WHERE id_Pago = %s", (pago_id,))
+                cur.execute("UPDATE PAGxEMP SET ESTADO_PxE = 'APR' WHERE id_Pago = %s", (pago_id,))
+            else:
+                raise
         conn.commit()
-        return {"id": pago_id, "estado": "APR", "mensaje": "Rol de pago aprobado."}
+        return {"id": pago_id, "estado": "APR", "mensaje": "Rol de pago aprobado exitosamente."}
     except mysql.connector.Error as error:
         if conn: conn.rollback()
         raise_database_error(error)
@@ -1810,7 +2299,14 @@ def anular_nomina(pago_id: str):
         conn = mysql.connector.connect(**get_db_config())
         cur = conn.cursor()
         user_id = get_user_id(cur)
-        cur.callproc("SP_PAGO_ANULAR", (pago_id, user_id))
+        try:
+            cur.callproc("SP_PAGO_ANULAR", (pago_id, user_id))
+        except mysql.connector.Error as proc_err:
+            if proc_err.errno in {1305, 1452}:
+                cur.execute("UPDATE PAGOS SET ESTADO_PAG = 'ANU' WHERE id_Pago = %s", (pago_id,))
+                cur.execute("UPDATE PAGxEMP SET ESTADO_PxE = 'ANU' WHERE id_Pago = %s", (pago_id,))
+            else:
+                raise
         conn.commit()
         return {"id": pago_id, "estado": "ANU", "mensaje": "Rol de pago anulado."}
     except mysql.connector.Error as error:
