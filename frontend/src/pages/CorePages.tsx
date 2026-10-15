@@ -119,6 +119,7 @@ export const Customers = () => {
         ciRuc: form.ciRuc.trim(),
         idCiudad: form.cityId || 'UIO',
         telefono: form.contact?.trim() || '',
+        celular: form.mobile?.trim() || '',
         email: form.email?.trim() || '',
         direccion: form.address?.trim() || '',
         cupoCredito: Number(form.creditLimit || 0),
@@ -129,6 +130,7 @@ export const Customers = () => {
     } catch (err) {
       const newCustomer: Customer = {
         id: `CLI-${Date.now()}`, name: form.name.trim(), ciRuc: form.ciRuc.trim(), contact: form.contact?.trim() ?? '',
+        mobile: form.mobile?.trim() ?? '',
         email: form.email?.trim() ?? '', city: selectedCity?.nombre ?? form.city?.trim() ?? 'Quito',
         cityId: form.cityId || 'UIO', address: form.address?.trim() ?? '',
         type: form.type ?? 'NAT', creditLimit: Number(form.creditLimit ?? 0), creditUsed: 0,
@@ -148,7 +150,8 @@ export const Customers = () => {
           <label className="form-group">Cédula / RUC<input className="input" value={form.ciRuc ?? ''} onChange={event => setForm({ ...form, ciRuc: event.target.value })} /></label>
           <label className="form-group">Nombre / razón social<input className="input" value={form.name ?? ''} onChange={event => setForm({ ...form, name: event.target.value })} /></label>
           <label className="form-group">Tipo<select className="select" value={form.type ?? 'NAT'} onChange={event => setForm({ ...form, type: event.target.value as Customer['type'] })}><option value="NAT">Persona natural</option><option value="JUR">Persona jurídica</option></select></label>
-          <label className="form-group">Teléfono<input className="input" value={form.contact ?? ''} onChange={event => setForm({ ...form, contact: event.target.value })} /></label>
+          <label className="form-group">Teléfono convencional<input className="input" maxLength={10} placeholder="Ej: 022345678" value={form.contact ?? ''} onChange={event => setForm({ ...form, contact: event.target.value.replace(/\D/g, '').slice(0, 10) })} /></label>
+          <label className="form-group">Celular<input className="input" maxLength={10} placeholder="Ej: 0991234567" value={form.mobile ?? ''} onChange={event => setForm({ ...form, mobile: event.target.value.replace(/\D/g, '').slice(0, 10) })} /></label>
           <label className="form-group">Correo<input className="input" type="email" value={form.email ?? ''} onChange={event => setForm({ ...form, email: event.target.value })} /></label>
           <label className="form-group">Ciudad
             <select className="select" value={form.cityId ?? 'UIO'} onChange={event => setForm({ ...form, cityId: event.target.value })}>
@@ -1107,7 +1110,30 @@ export const Suppliers = ({ onNavigate }: { onNavigate?: (route: string) => void
 
 export const HR = () => {
   const { state, updateState } = useGlobalStore();
-  const [employeeForm, setEmployeeForm] = useState<Partial<Employee>>({ status: 'ACTIVE', salary: 0, familyDependents: 0 });
+  const [departments, setDepartments] = useState<Array<{ id: string; nombre: string }>>([
+    { id: 'DEP-TEST', nombre: 'Ventas' },
+    { id: 'DEP-000001', nombre: 'Administración' },
+    { id: 'DEP-000002', nombre: 'Bodega' },
+  ]);
+  const [cargos, setCargos] = useState<Array<{ id: string; nombre: string }>>([
+    { id: 'CGO-000001', nombre: 'Administrador' },
+    { id: 'CGO-000002', nombre: 'Vendedor / Cajero' },
+    { id: 'CGO-000003', nombre: 'Bodeguero' },
+  ]);
+  const [empForm, setEmpForm] = useState({
+    ci: '',
+    nombre1: '',
+    nombre2: '',
+    apellido1: '',
+    apellido2: '',
+    sexo: 'M',
+    fechaNacimiento: '1995-01-01',
+    sueldo: 500,
+    idDepartamento: 'DEP-TEST',
+    idCargo: 'CGO-000001',
+    celular: '',
+    email: '',
+  });
   const [employeeId, setEmployeeId] = useState(state.employees.find(employee => employee.status === 'ACTIVE')?.id ?? '');
   const [bonus, setBonus] = useState(0);
   const [deductions, setDeductions] = useState(0);
@@ -1116,10 +1142,18 @@ export const HR = () => {
 
   const loadHR = async () => {
     try {
-      const [remoteEmployees, remotePayrolls] = await Promise.all([
+      const [remoteEmployees, remotePayrolls, remoteDepts, remoteCargos] = await Promise.all([
         hrApi.listEmployees().catch(() => null),
         hrApi.listPayrolls().catch(() => null),
+        hrApi.listDepartments().catch(() => null),
+        hrApi.listCargos().catch(() => null),
       ]);
+      if (Array.isArray(remoteDepts) && remoteDepts.length) {
+        setDepartments(remoteDepts);
+      }
+      if (Array.isArray(remoteCargos) && remoteCargos.length) {
+        setCargos(remoteCargos);
+      }
       if (remoteEmployees !== null || remotePayrolls !== null) {
         updateState(draft => {
           if (Array.isArray(remoteEmployees)) {
@@ -1139,13 +1173,65 @@ export const HR = () => {
     void loadHR();
   }, []);
 
-  const saveEmployee = () => {
-    if (!employeeForm.name?.trim() || !employeeForm.ci?.trim() || !employeeForm.department?.trim() || !employeeForm.role?.trim()) return setEmployeeNotice('Completa identificación, nombre, departamento y cargo.');
-    const employee: Employee = { id: `EMP-${Date.now()}`, ci: employeeForm.ci.trim(), name: employeeForm.name.trim(), department: employeeForm.department.trim(), role: employeeForm.role.trim(), salary: Number(employeeForm.salary || 0), status: employeeForm.status ?? 'ACTIVE', familyDependents: Number(employeeForm.familyDependents ?? 0) };
-    updateState(draft => { draft.employees.push(employee); return draft; });
-    setEmployeeId(employee.id);
-    setEmployeeForm({ status: 'ACTIVE', salary: 0, familyDependents: 0 });
-    setEmployeeNotice('Empleado agregado al registro.');
+  const saveEmployee = async () => {
+    const ciClean = empForm.ci.replace(/\D/g, '').slice(0, 10);
+    if (!ciClean || ciClean.length < 10) return setEmployeeNotice('La cédula debe contener exactamente 10 dígitos numéricos.');
+    if (!empForm.nombre1.trim() || !empForm.apellido1.trim()) return setEmployeeNotice('Primer nombre y primer apellido son obligatorios según el esquema de la base de datos.');
+    if (!empForm.fechaNacimiento) return setEmployeeNotice('La fecha de nacimiento es obligatoria.');
+    if (empForm.sueldo < 0) return setEmployeeNotice('El sueldo no puede ser negativo.');
+
+    const deptId = empForm.idDepartamento || departments[0]?.id || 'DEP-TEST';
+    const cgoId = empForm.idCargo || cargos[0]?.id || 'CGO-000001';
+
+    try {
+      const res = await hrApi.createEmployee({
+        ci: ciClean,
+        nombre1: empForm.nombre1.trim(),
+        nombre2: empForm.nombre2.trim() || undefined,
+        apellido1: empForm.apellido1.trim(),
+        apellido2: empForm.apellido2.trim() || undefined,
+        sexo: empForm.sexo,
+        fechaNacimiento: empForm.fechaNacimiento,
+        sueldo: Number(empForm.sueldo),
+        idDepartamento: deptId,
+        idCargo: cgoId,
+        celular: empForm.celular.trim() || undefined,
+        email: empForm.email.trim() || undefined,
+      });
+      setEmployeeNotice(`Empleado ${empForm.nombre1.trim()} ${empForm.apellido1.trim()} (${res.id}) registrado exitosamente.`);
+      void loadHR();
+      setEmpForm({
+        ci: '',
+        nombre1: '',
+        nombre2: '',
+        apellido1: '',
+        apellido2: '',
+        sexo: 'M',
+        fechaNacimiento: '1995-01-01',
+        sueldo: 500,
+        idDepartamento: deptId,
+        idCargo: cgoId,
+        celular: '',
+        email: '',
+      });
+    } catch {
+      const fullName = `${empForm.nombre1.trim()} ${empForm.apellido1.trim()}`;
+      const selectedDept = departments.find(d => d.id === deptId)?.nombre || 'Ventas';
+      const selectedCargo = cargos.find(c => c.id === cgoId)?.nombre || 'Colaborador';
+      const employee: Employee = {
+        id: `EMP-${Date.now()}`,
+        ci: ciClean,
+        name: fullName,
+        department: selectedDept,
+        role: selectedCargo,
+        salary: Number(empForm.sueldo || 0),
+        status: 'ACTIVE',
+        familyDependents: 0,
+      };
+      updateState(draft => { draft.employees.push(employee); return draft; });
+      setEmployeeId(employee.id);
+      setEmployeeNotice(`Empleado ${fullName} agregado al registro local.`);
+    }
   };
 
   const createPayroll = async () => {
@@ -1199,16 +1285,58 @@ export const HR = () => {
   const activeEmployees = state.employees.filter(employee => employee.status === 'ACTIVE');
   return (
     <div>
-      <div className="page-heading"><div><span className="eyebrow">EQUIPO Y COMPENSACIÓN</span><h1>Talento humano</h1><p>Personal, cargos y roles de pago sincronizados.</p></div></div>
-      <section className="card"><h2 className="section-title">Registrar empleado</h2>
+      <div className="page-heading"><div><span className="eyebrow">EQUIPO Y COMPENSACIÓN</span><h1>Talento humano</h1><p>Personal, cargos y roles de pago sincronizados según tabla EMPLEADOS.</p></div></div>
+      <section className="card"><h2 className="section-title">Registrar empleado (EMPLEADOS)</h2>
         <div className="grid-4">
-          <label className="form-group">Cédula<input className="input" value={employeeForm.ci ?? ''} onChange={event => setEmployeeForm({ ...employeeForm, ci: event.target.value })} /></label>
-          <label className="form-group">Nombre completo<input className="input" value={employeeForm.name ?? ''} onChange={event => setEmployeeForm({ ...employeeForm, name: event.target.value })} /></label>
-          <label className="form-group">Departamento<input className="input" value={employeeForm.department ?? ''} onChange={event => setEmployeeForm({ ...employeeForm, department: event.target.value })} /></label>
-          <label className="form-group">Cargo<input className="input" value={employeeForm.role ?? ''} onChange={event => setEmployeeForm({ ...employeeForm, role: event.target.value })} /></label>
-          <label className="form-group">Sueldo base<input className="input" type="number" min="0" step="0.01" value={employeeForm.salary ?? 0} onChange={event => setEmployeeForm({ ...employeeForm, salary: Number(event.target.value) })} /></label>
-          <label className="form-group">Cargas familiares<input className="input" type="number" min="0" step="1" value={employeeForm.familyDependents ?? 0} onChange={event => setEmployeeForm({ ...employeeForm, familyDependents: Number(event.target.value) })} /></label>
-          <div className="form-action"><button type="button" className="btn btn-primary" onClick={saveEmployee}><Plus size={16} /> Guardar empleado</button></div>
+          <label className="form-group">Cédula (10 dígitos) <strong style={{ color: '#ef4444' }}>*</strong>
+            <input className="input" maxLength={10} placeholder="1712345678" value={empForm.ci} onChange={e => setEmpForm({ ...empForm, ci: e.target.value.replace(/\D/g, '').slice(0, 10) })} />
+          </label>
+          <label className="form-group">Primer Nombre (emp_Nombre1) <strong style={{ color: '#ef4444' }}>*</strong>
+            <input className="input" placeholder="Ej: Carlos" value={empForm.nombre1} onChange={e => setEmpForm({ ...empForm, nombre1: e.target.value })} />
+          </label>
+          <label className="form-group">Segundo Nombre (emp_Nombre2)
+            <input className="input" placeholder="Ej: Andrés" value={empForm.nombre2} onChange={e => setEmpForm({ ...empForm, nombre2: e.target.value })} />
+          </label>
+          <label className="form-group">Primer Apellido (emp_Apellido1) <strong style={{ color: '#ef4444' }}>*</strong>
+            <input className="input" placeholder="Ej: Mendoza" value={empForm.apellido1} onChange={e => setEmpForm({ ...empForm, apellido1: e.target.value })} />
+          </label>
+          <label className="form-group">Segundo Apellido (emp_Apellido2)
+            <input className="input" placeholder="Ej: Castro" value={empForm.apellido2} onChange={e => setEmpForm({ ...empForm, apellido2: e.target.value })} />
+          </label>
+          <label className="form-group">Sexo <strong style={{ color: '#ef4444' }}>*</strong>
+            <select className="select" value={empForm.sexo} onChange={e => setEmpForm({ ...empForm, sexo: e.target.value })}>
+              <option value="M">Masculino (M)</option>
+              <option value="F">Femenino (F)</option>
+              <option value="H">Hombre / Otro (H)</option>
+            </select>
+          </label>
+          <label className="form-group">Fecha de nacimiento <strong style={{ color: '#ef4444' }}>*</strong>
+            <input className="input" type="date" value={empForm.fechaNacimiento} onChange={e => setEmpForm({ ...empForm, fechaNacimiento: e.target.value })} />
+          </label>
+          <label className="form-group">Departamento <strong style={{ color: '#ef4444' }}>*</strong>
+            <select className="select" value={empForm.idDepartamento} onChange={e => setEmpForm({ ...empForm, idDepartamento: e.target.value })}>
+              {departments.map(d => <option key={d.id} value={d.id}>{d.nombre} ({d.id})</option>)}
+              {!departments.length && <option value="DEP-TEST">Ventas</option>}
+            </select>
+          </label>
+          <label className="form-group">Cargo / Puesto
+            <select className="select" value={empForm.idCargo} onChange={e => setEmpForm({ ...empForm, idCargo: e.target.value })}>
+              {cargos.map(c => <option key={c.id} value={c.id}>{c.nombre} ({c.id})</option>)}
+              {!cargos.length && <option value="CGO-000001">Administrador</option>}
+            </select>
+          </label>
+          <label className="form-group">Sueldo base ($) <strong style={{ color: '#ef4444' }}>*</strong>
+            <input className="input" type="number" min="0" step="0.01" value={empForm.sueldo} onChange={e => setEmpForm({ ...empForm, sueldo: Number(e.target.value) })} />
+          </label>
+          <label className="form-group">Celular
+            <input className="input" maxLength={10} placeholder="0991234567" value={empForm.celular} onChange={e => setEmpForm({ ...empForm, celular: e.target.value.replace(/\D/g, '').slice(0, 10) })} />
+          </label>
+          <label className="form-group">Correo
+            <input className="input" type="email" placeholder="empleado@cava.com" value={empForm.email} onChange={e => setEmpForm({ ...empForm, email: e.target.value })} />
+          </label>
+          <div className="form-action" style={{ gridColumn: 'span 4' }}>
+            <button type="button" className="btn btn-primary" onClick={saveEmployee}><Plus size={16} /> Guardar empleado</button>
+          </div>
         </div>
         {employeeNotice && <p className="form-notice" role="status">{employeeNotice}</p>}
       </section>

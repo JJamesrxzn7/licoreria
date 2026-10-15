@@ -31,6 +31,7 @@ export interface Customer {
   ciRuc: string;
   name: string;
   contact: string;
+  mobile?: string;
   email: string;
   city: string;
   cityId?: string;
@@ -142,9 +143,14 @@ export interface Employee {
   id: string;
   ci: string;
   name: string;
+  nombre1?: string;
+  apellido1?: string;
   department: string;
+  departmentId?: string;
   role: string;
   salary: number;
+  birthDate?: string;
+  gender?: string;
   status: RecordStatus;
   familyDependents: number;
 }

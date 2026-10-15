@@ -263,6 +263,27 @@ export const warehouseApi = {
 // 7. Módulo Talento Humano y Nómina
 export const hrApi = {
   listEmployees: () => request<Employee[]>('/api/empleados'),
+  listDepartments: () => request<Array<{ id: string; nombre: string }>>('/api/departamentos'),
+  listCargos: () => request<Array<{ id: string; nombre: string }>>('/api/cargos'),
+  createEmployee: (emp: {
+    ci: string;
+    nombre1: string;
+    nombre2?: string;
+    apellido1: string;
+    apellido2?: string;
+    sexo?: string;
+    fechaNacimiento?: string;
+    sueldo: number;
+    idDepartamento?: string;
+    idCargo?: string;
+    telefono?: string;
+    celular?: string;
+    direccion?: string;
+    email?: string;
+  }) => request<{ id: string; mensaje: string }>('/api/empleados', {
+    method: 'POST',
+    body: JSON.stringify(emp),
+  }),
   listPayrolls: () => request<Payroll[]>('/api/nomina'),
   createPayroll: (payroll: {
     descripcion: string;

@@ -201,8 +201,22 @@ class ReceptionConfirmInput(BaseModel):
     items: list[dict[str, object]]  # [{ "productId": str, "receivedQty": int, "reason": str }]
 
 
-class DeliveryConfirmInput(BaseModel):
-    items: list[dict[str, object]]  # [{ "productId": str, "deliveredQty": int, "reason": str }]
+class EmployeeInput(BaseModel):
+    id: str | None = None
+    ci: str = Field(alias="ci", min_length=10, max_length=20)
+    first_name: str = Field(alias="nombre1", min_length=2, max_length=30)
+    second_name: str | None = Field(default=None, alias="nombre2")
+    last_name1: str = Field(alias="apellido1", min_length=2, max_length=30)
+    last_name2: str | None = Field(default=None, alias="apellido2")
+    gender: str = Field(default="M", alias="sexo")
+    birth_date: date = Field(default=date(1995, 1, 1), alias="fechaNacimiento")
+    salary: Decimal = Field(alias="sueldo", ge=0)
+    department_id: str = Field(default="DEP-TEST", alias="idDepartamento")
+    cargo_id: str | None = Field(default=None, alias="idCargo")
+    phone: str | None = Field(default=None, alias="telefono")
+    mobile: str | None = Field(default=None, alias="celular")
+    address: str | None = Field(default=None, alias="direccion")
+    email: str | None = Field(default=None, alias="email")
 
 
 class PayrollInput(BaseModel):
@@ -1533,6 +1547,48 @@ def anular_ajuste(adjustment_id: str):
 # 8. MÓDULO TALENTO HUMANO / NÓMINA
 # ==========================================
 
+@app.get("/api/departamentos")
+def listar_departamentos():
+    conn, cur = None, None
+    try:
+        conn = mysql.connector.connect(**get_db_config())
+        cur = conn.cursor(dictionary=True)
+        cur.execute("SELECT TRIM(id_Departamento) AS id, TRIM(dep_Nombre) AS nombre FROM DEPARTAMENTOS ORDER BY dep_Nombre")
+        rows = cur.fetchall()
+        if not rows:
+            cur.execute("INSERT IGNORE INTO DEPARTAMENTOS (id_Departamento, dep_Nombre, ESTADO_DEP) VALUES ('DEP-TEST', 'Ventas', 'ACT'), ('DEP-000001', 'Administración', 'ACT'), ('DEP-000002', 'Bodega', 'ACT')")
+            conn.commit()
+            cur.execute("SELECT TRIM(id_Departamento) AS id, TRIM(dep_Nombre) AS nombre FROM DEPARTAMENTOS ORDER BY dep_Nombre")
+            rows = cur.fetchall()
+        return rows
+    except mysql.connector.Error as error:
+        raise_database_error(error)
+    finally:
+        if cur: cur.close()
+        if conn and conn.is_connected(): conn.close()
+
+
+@app.get("/api/cargos")
+def listar_cargos():
+    conn, cur = None, None
+    try:
+        conn = mysql.connector.connect(**get_db_config())
+        cur = conn.cursor(dictionary=True)
+        cur.execute("SELECT TRIM(id_Cargo) AS id, TRIM(cgo_Descripcion) AS nombre FROM CARGOS ORDER BY cgo_Descripcion")
+        rows = cur.fetchall()
+        if not rows:
+            cur.execute("INSERT IGNORE INTO CARGOS (id_Cargo, cgo_Descripcion, ESTADO_CGO) VALUES ('CGO-000001', 'Administrador', 'ACT'), ('CGO-000002', 'Vendedor / Cajero', 'ACT'), ('CGO-000003', 'Bodeguero', 'ACT')")
+            conn.commit()
+            cur.execute("SELECT TRIM(id_Cargo) AS id, TRIM(cgo_Descripcion) AS nombre FROM CARGOS ORDER BY cgo_Descripcion")
+            rows = cur.fetchall()
+        return rows
+    except mysql.connector.Error as error:
+        raise_database_error(error)
+    finally:
+        if cur: cur.close()
+        if conn and conn.is_connected(): conn.close()
+
+
 @app.get("/api/empleados")
 def listar_empleados():
     conn, cur = None, None
@@ -1544,19 +1600,112 @@ def listar_empleados():
             SELECT 
                 TRIM(E.id_Empleado) AS id,
                 TRIM(E.emp_Cedula) AS ci,
-                CONCAT(TRIM(E.emp_Nombre1), ' ', TRIM(E.emp_Apellido1)) AS name,
-                COALESCE(TRIM(D.dep_Nombre), 'Administración') AS department,
-                'Colaborador' AS role,
+                CONCAT(TRIM(E.emp_Nombre1), ' ', COALESCE(CONCAT(TRIM(E.emp_Nombre2), ' '), ''), TRIM(E.emp_Apellido1), ' ', COALESCE(TRIM(E.emp_Apellido2), '')) AS name,
+                TRIM(E.emp_Nombre1) AS nombre1,
+                TRIM(E.emp_Apellido1) AS apellido1,
+                COALESCE(TRIM(D.dep_Nombre), 'Ventas') AS department,
+                TRIM(E.id_Departamento) AS departmentId,
+                COALESCE(TRIM(C.cgo_Descripcion), 'Colaborador') AS role,
                 E.emp_Sueldo AS salary,
+                E.emp_FechaNacimiento AS birthDate,
+                TRIM(E.emp_Sexo) AS gender,
                 IF(E.ESTADO_EMP = 'ACT', 'ACTIVE', 'INACTIVE') AS status,
                 0 AS familyDependents
             FROM EMPLEADOS E
             LEFT JOIN DEPARTAMENTOS D ON E.id_Departamento = D.id_Departamento
+            LEFT JOIN (
+                SELECT id_Empleado, MAX(id_Cargo) AS id_Cargo
+                FROM CARGOSxEMPLEADO
+                WHERE ESTADO_CxE = 'ACT'
+                GROUP BY id_Empleado
+            ) CXE ON E.id_Empleado = CXE.id_Empleado
+            LEFT JOIN CARGOS C ON CXE.id_Cargo = C.id_Cargo
             ORDER BY E.emp_Apellido1
             """
         )
         return cur.fetchall()
     except mysql.connector.Error as error:
+        raise_database_error(error)
+    finally:
+        if cur: cur.close()
+        if conn and conn.is_connected(): conn.close()
+
+
+@app.post("/api/empleados")
+def crear_empleado(emp: EmployeeInput):
+    conn, cur = None, None
+    try:
+        conn = mysql.connector.connect(**get_db_config())
+        cur = conn.cursor()
+        user_id = get_user_id(cur)
+
+        if emp.id and emp.id.strip():
+            employee_id = emp.id.strip()[:10]
+        else:
+            import re
+            cur.execute("SELECT id_Empleado FROM EMPLEADOS")
+            existing_rows = cur.fetchall()
+            max_num = 0
+            for r in existing_rows:
+                val = str(r[0] if isinstance(r, (list, tuple)) else r.get("id_Empleado", ""))
+                m = re.match(r"^EMP-(\d+)$", val, re.IGNORECASE)
+                if m:
+                    num = int(m.group(1))
+                    if num > max_num:
+                        max_num = num
+            employee_id = f"EMP-{max_num + 1:06d}"
+
+        # Asegurar que el departamento exista para FK
+        cur.execute("SELECT id_Departamento FROM DEPARTAMENTOS WHERE id_Departamento = %s", (emp.department_id[:10],))
+        dept_row = cur.fetchone()
+        dep_id = emp.department_id[:10]
+        if not dept_row:
+            cur.execute("INSERT IGNORE INTO DEPARTAMENTOS (id_Departamento, dep_Nombre, ESTADO_DEP) VALUES (%s, 'General', 'ACT')", (dep_id,))
+
+        cur.execute(
+            """
+            INSERT INTO EMPLEADOS (
+                id_Empleado, id_Departamento, emp_Cedula, emp_Apellido1, emp_Apellido2,
+                emp_Nombre1, emp_Nombre2, emp_Sexo, emp_FechaNacimiento, emp_Sueldo,
+                emp_Direccion, emp_Telefono, emp_Celular, emp_Mail, USER_ID, ESTADO_EMP
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'ACT')
+            """,
+            (
+                employee_id,
+                dep_id,
+                emp.ci[:20],
+                emp.last_name1[:30],
+                emp.last_name2[:30] if emp.last_name2 else None,
+                emp.first_name[:30],
+                emp.second_name[:30] if emp.second_name else None,
+                emp.gender[:1].upper() if emp.gender else 'M',
+                emp.birth_date,
+                emp.salary,
+                emp.address[:60] if emp.address else None,
+                emp.phone[:10] if emp.phone else None,
+                emp.mobile[:10] if emp.mobile else None,
+                emp.email[:60] if emp.email else None,
+                user_id,
+            ),
+        )
+
+        if emp.cargo_id:
+            cur.execute("SELECT id_Cargo FROM CARGOS WHERE id_Cargo = %s", (emp.cargo_id[:10],))
+            if not cur.fetchone():
+                cur.execute("INSERT IGNORE INTO CARGOS (id_Cargo, cgo_Descripcion, ESTADO_CGO) VALUES (%s, 'General', 'ACT')", (emp.cargo_id[:10],))
+            cur.execute(
+                """
+                INSERT INTO CARGOSxEMPLEADO (id_Cargo, id_Empleado, cxe_Fecha_Inicio, USER_ID, ESTADO_CxE)
+                VALUES (%s, %s, CURDATE(), %s, 'ACT')
+                ON DUPLICATE KEY UPDATE ESTADO_CxE = 'ACT'
+                """,
+                (emp.cargo_id[:10], employee_id, user_id),
+            )
+
+        conn.commit()
+        return {"id": employee_id, "mensaje": f"Empleado {emp.first_name} {emp.last_name1} ({employee_id}) registrado exitosamente."}
+    except mysql.connector.Error as error:
+        if conn: conn.rollback()
         raise_database_error(error)
     finally:
         if cur: cur.close()
@@ -1575,10 +1724,10 @@ def listar_nomina():
                 TRIM(P.id_Pago) AS id,
                 P.pag_Fecha_Fin AS date,
                 TRIM(D.id_Empleado) AS employeeId,
-                D.pxe_Sueldo_Base AS baseSalary,
-                D.pxe_Total_Ingresos AS bonus,
-                D.pxe_Total_Egresos AS deductions,
-                D.pxe_Neto_Pagar AS amount,
+                D.pxe_Sueldo AS baseSalary,
+                D.pxe_Bonificaciones AS bonus,
+                D.pxe_Descuentos AS deductions,
+                D.pxe_Valor_Neto AS amount,
                 P.ESTADO_PAG AS status
             FROM PAGOS P
             INNER JOIN PAGxEMP D ON P.id_Pago = D.id_Pago
@@ -1614,7 +1763,7 @@ def crear_rol_pago(payroll: PayrollInput):
         neto = payroll.base_salary + payroll.bonus - payroll.deductions
         cur.execute(
             """
-            INSERT INTO PAGxEMP (id_Pago, id_Empleado, pxe_Sueldo_Base, pxe_Total_Ingresos, pxe_Total_Egresos, pxe_Neto_Pagar, ESTADO_PxE)
+            INSERT INTO PAGxEMP (id_Pago, id_Empleado, pxe_Sueldo, pxe_Bonificaciones, pxe_Descuentos, pxe_Valor_Neto, ESTADO_PxE)
             VALUES (%s, %s, %s, %s, %s, %s, 'ABI')
             """,
             (
