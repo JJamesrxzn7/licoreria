@@ -170,6 +170,7 @@ class ProductInput(BaseModel):
     name: str = Field(alias="nombre", min_length=2, max_length=40)
     category_id: str = Field(default="CAT-000001", alias="idCategoria")
     brand_id: str = Field(default="MAR-000001", alias="idMarca")
+    shelf_id: str | None = Field(default=None, alias="idPercha")
     buy_unit: str = Field(default="CAJ", alias="umCompra")
     sell_unit: str = Field(default="BOT", alias="umVenta")
     buy_cost: Decimal = Field(alias="costoCompra", ge=0)
@@ -585,8 +586,13 @@ def listar_productos():
     try:
         conn = mysql.connector.connect(**get_db_config())
         cur = conn.cursor(dictionary=True)
+        cur.execute("SHOW COLUMNS FROM PRODUCTOS LIKE 'id_Percha'")
+        has_shelf = bool(cur.fetchone())
+        shelf_select = "COALESCE(TRIM(H.pch_Descripcion), CONCAT('Percha ', TRIM(H.pch_Letra), H.pch_Nivel), 'A1') AS shelf, TRIM(P.id_Percha) AS shelfId," if has_shelf else "'A1' AS shelf, NULL AS shelfId,"
+        shelf_join = "LEFT JOIN PERCHAS H ON P.id_Percha = H.id_Percha" if has_shelf else ""
+
         cur.execute(
-            """
+            f"""
             SELECT 
                 TRIM(P.id_Producto) AS id,
                 TRIM(P.pro_Descripcion) AS name,
@@ -603,11 +609,12 @@ def listar_productos():
                 TRIM(P.pro_UM_Compra) AS buyUnit,
                 TRIM(P.pro_UM_Venta) AS sellUnit,
                 12 AS purchaseFactor,
-                'A1' AS shelf,
+                {shelf_select}
                 IF(P.ESTADO_PROD = 'ACT', 'ACTIVE', 'INACTIVE') AS status
             FROM PRODUCTOS P
             LEFT JOIN MARCAS M ON P.id_Marca = M.id_Marca
             LEFT JOIN CATEGORIAS C ON P.id_Categoria = C.id_Categoria
+            {shelf_join}
             ORDER BY P.pro_Descripcion
             """
         )
@@ -642,6 +649,9 @@ def crear_producto(prod: ProductInput):
             product_id = f"PRD-{max_id + 1:06d}"
 
         user_id = get_user_id(cur)
+        cur.execute("SHOW COLUMNS FROM PRODUCTOS LIKE 'id_Percha'")
+        has_shelf = bool(cur.fetchone())
+
         try:
             cur.callproc(
                 "SP_PRODUCTO_CREAR",
@@ -659,29 +669,54 @@ def crear_producto(prod: ProductInput):
                 ),
             )
         except mysql.connector.Error as proc_err:
-            if proc_err.errno in {1305, 1452}:
-                cur.execute(
-                    """
-                    INSERT INTO PRODUCTOS (
-                        id_Producto, id_Categoria, id_Marca, pro_Descripcion,
-                        pro_UM_Compra, pro_UM_Venta, pro_Valor_Compra,
-                        pro_Precio_Venta, pro_Saldo_Inicial, pro_Qty_Ingresos,
-                        pro_Qty_Egresos, pro_Qty_Ajustes, pro_Saldo_Final, ESTADO_PROD
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 0, 0, 0, %s, 'ACT')
-                    """,
-                    (
-                        product_id,
-                        prod.category_id,
-                        prod.brand_id,
-                        prod.name[:40],
-                        prod.buy_unit[:3],
-                        prod.sell_unit[:3],
-                        prod.buy_cost,
-                        prod.sell_price,
-                        prod.initial_stock,
-                        prod.initial_stock,
-                    ),
-                )
+            if proc_err.errno in {1305, 1318, 1452}:
+                if has_shelf and prod.shelf_id:
+                    cur.execute(
+                        """
+                        INSERT INTO PRODUCTOS (
+                            id_Producto, id_Categoria, id_Marca, id_Percha, pro_Descripcion,
+                            pro_UM_Compra, pro_UM_Venta, pro_Valor_Compra,
+                            pro_Precio_Venta, pro_Saldo_Inicial, pro_Qty_Ingresos,
+                            pro_Qty_Egresos, pro_Qty_Ajustes, pro_Saldo_Final, ESTADO_PROD
+                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 0, 0, 0, %s, 'ACT')
+                        """,
+                        (
+                            product_id,
+                            prod.category_id,
+                            prod.brand_id,
+                            prod.shelf_id,
+                            prod.name[:40],
+                            prod.buy_unit[:3],
+                            prod.sell_unit[:3],
+                            prod.buy_cost,
+                            prod.sell_price,
+                            prod.initial_stock,
+                            prod.initial_stock,
+                        ),
+                    )
+                else:
+                    cur.execute(
+                        """
+                        INSERT INTO PRODUCTOS (
+                            id_Producto, id_Categoria, id_Marca, pro_Descripcion,
+                            pro_UM_Compra, pro_UM_Venta, pro_Valor_Compra,
+                            pro_Precio_Venta, pro_Saldo_Inicial, pro_Qty_Ingresos,
+                            pro_Qty_Egresos, pro_Qty_Ajustes, pro_Saldo_Final, ESTADO_PROD
+                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 0, 0, 0, %s, 'ACT')
+                        """,
+                        (
+                            product_id,
+                            prod.category_id,
+                            prod.brand_id,
+                            prod.name[:40],
+                            prod.buy_unit[:3],
+                            prod.sell_unit[:3],
+                            prod.buy_cost,
+                            prod.sell_price,
+                            prod.initial_stock,
+                            prod.initial_stock,
+                        ),
+                    )
             else:
                 raise
         conn.commit()

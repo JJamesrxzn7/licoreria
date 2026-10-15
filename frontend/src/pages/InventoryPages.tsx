@@ -133,6 +133,7 @@ export const Catalog = () => {
         nombre: form.name.trim(),
         idCategoria: catId,
         idMarca: brId,
+        idPercha: shId,
         umCompra: buyUId,
         umVenta: sellUId,
         costoCompra: cost,

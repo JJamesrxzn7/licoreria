@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { StoreState } from './types';
 
-const STORAGE_KEY = 'licoreria_state_v3';
+const STORAGE_KEY = 'licoreria_state_v4';
 
 const initialState: StoreState = {
   products: [],
@@ -33,6 +33,11 @@ function isStoreState(value: unknown): value is StoreState {
 
 function loadState(): StoreState {
   try {
+    // Limpieza de estados anteriores que contenían datos de prueba antiguos
+    ['licoreria_state', 'licoreria_state_v1', 'licoreria_state_v2', 'licoreria_state_v3'].forEach(k => {
+      try { localStorage.removeItem(k); } catch {}
+    });
+
     const saved = localStorage.getItem(STORAGE_KEY);
     if (!saved) return structuredClone(initialState);
     const parsed: unknown = JSON.parse(saved);

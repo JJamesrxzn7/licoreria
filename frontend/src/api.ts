@@ -118,6 +118,7 @@ export const productApi = {
     nombre: string;
     idCategoria?: string;
     idMarca?: string;
+    idPercha?: string;
     umCompra?: string;
     umVenta?: string;
     costoCompra: number;
