@@ -89,17 +89,34 @@ export const Catalog = () => {
       );
   }, [state.products, search, statusFilter]);
 
+  const nextProductId = useMemo(() => {
+    let maxNum = 0;
+    for (const p of state.products) {
+      const code = p.sku || p.id;
+      if (!code) continue;
+      const m = code.match(/^PRD-(\d+)$/i);
+      if (m) {
+        const val = parseInt(m[1], 10);
+        if (!isNaN(val) && val > maxNum) maxNum = val;
+      }
+    }
+    return `PRD-${String(maxNum + 1).padStart(6, '0')}`;
+  }, [state.products]);
+
   const saveProduct = async () => {
-    if (!form.name?.trim() || !form.sku?.trim()) return setNotice('Completa al menos el nombre y el código SKU.');
+    if (!form.name?.trim()) return setNotice('La descripción del producto es obligatoria.');
+    if (form.name.trim().length > 40) return setNotice('La descripción no puede exceder 40 caracteres (restricción de base de datos).');
     const cost = Number(form.cost || 0);
     const price = Number(form.price || 0);
+    const initialStock = Number(form.stock || 0);
     if (price <= 0) return setNotice('El precio de venta debe ser mayor a 0.');
     if (price < cost) return setNotice('El precio de venta debe ser mayor o igual al costo de compra.');
+    if (!Number.isInteger(initialStock) || initialStock < 0) return setNotice('El saldo inicial debe ser un número entero mayor o igual a 0.');
 
     const catId = form.categoryId || catalogs.categorias[0]?.id || 'CAT-000001';
     const brId = form.brandId || catalogs.marcas[0]?.id || 'MAR-000001';
-    const buyUId = form.buyUnitId || catalogs.unidadesMedida.find(u => u.id === 'CAJ')?.id || 'CAJ';
-    const sellUId = form.sellUnitId || catalogs.unidadesMedida.find(u => u.id === 'BOT')?.id || 'BOT';
+    const buyUId = form.buyUnitId || catalogs.unidadesMedida[0]?.id || 'CAJ';
+    const sellUId = form.sellUnitId || catalogs.unidadesMedida[0]?.id || 'BOT';
     const shId = form.shelfId || catalogs.perchas[0]?.id || 'PCH-000001';
 
     const selectedCategory = catalogs.categorias.find(c => c.id === catId);
@@ -108,9 +125,11 @@ export const Catalog = () => {
     const selectedSellUnit = catalogs.unidadesMedida.find(u => u.id === sellUId);
     const selectedShelf = catalogs.perchas.find(p => p.id === shId);
 
+    const generatedId = nextProductId;
+
     try {
       const res = await productApi.createProduct({
-        id: form.sku.trim(),
+        id: generatedId,
         nombre: form.name.trim(),
         idCategoria: catId,
         idMarca: brId,
@@ -118,54 +137,53 @@ export const Catalog = () => {
         umVenta: sellUId,
         costoCompra: cost,
         precioVenta: price,
-        stockInicial: Number(form.stock || 0),
+        stockInicial: initialStock,
       });
       setNotice(`Producto ${res.id} registrado exitosamente.`);
       void loadProducts();
     } catch {
       const product: Product = {
-        id: form.sku.trim(),
+        id: generatedId,
         name: form.name.trim(),
-        sku: form.sku.trim(),
-        barcode: form.barcode?.trim() ?? '',
+        sku: generatedId,
+        barcode: '',
         brand: selectedBrand?.nombre || 'General',
         brandId: brId,
         category: selectedCategory?.nombre || 'Licores',
         categoryId: catId,
-        ml: Number(form.ml || 750),
-        abv: Number(form.abv || 0),
+        ml: 750,
+        abv: 0,
         cost,
         price,
-        stock: Number(form.stock || 0),
-        minStock: Number(form.minStock || 0),
+        stock: initialStock,
+        minStock: initialStock,
         buyUnit: selectedBuyUnit?.nombre || buyUId,
         buyUnitId: buyUId,
         sellUnit: selectedSellUnit?.nombre || sellUId,
         sellUnitId: sellUId,
-        purchaseFactor: Number(form.purchaseFactor || 1),
-        shelf: selectedShelf?.nombre || 'A1',
+        purchaseFactor: 1,
+        shelf: selectedShelf ? `Percha ${selectedShelf.letra}${selectedShelf.nivel}` : '—',
         shelfId: shId,
-        status: form.status ?? 'ACTIVE',
+        status: 'ACTIVE',
       };
       updateState(draft => {
         draft.products.push(product);
         return draft;
       });
-      setNotice(`Producto ${product.name} registrado exitosamente.`);
+      setNotice(`Producto ${product.id} (${product.name}) registrado exitosamente.`);
     }
 
-    setForm(prev => ({
-      ...prev,
+    setForm({
       name: '',
-      sku: '',
-      barcode: '',
       cost: 0,
       price: 0,
       stock: 0,
-      minStock: 0,
-      ml: 750,
-      abv: 0,
-    }));
+      categoryId: catalogs.categorias[0]?.id || 'CAT-000001',
+      brandId: catalogs.marcas[0]?.id || 'MAR-000001',
+      buyUnitId: catalogs.unidadesMedida[0]?.id || 'CAJ',
+      sellUnitId: catalogs.unidadesMedida[0]?.id || 'BOT',
+      shelfId: catalogs.perchas[0]?.id || 'PCH-000001',
+    });
     setShowForm(false);
   };
 
@@ -184,7 +202,8 @@ export const Catalog = () => {
 
   const saveEdit = async () => {
     if (!editingProduct) return;
-    if (!editForm.name?.trim()) return setEditNotice('El nombre del producto no puede estar vacío.');
+    if (!editForm.name?.trim()) return setEditNotice('La descripción del producto no puede estar vacía.');
+    if (editForm.name.trim().length > 40) return setEditNotice('La descripción no puede exceder 40 caracteres.');
     const cost = Number(editForm.cost || 0);
     const price = Number(editForm.price || 0);
     if (price <= 0) return setEditNotice('El precio de venta debe ser mayor a 0.');
@@ -209,29 +228,24 @@ export const Catalog = () => {
         precioVenta: price,
       });
     } catch {
-      // Si la API no responde, se guarda en el store
+      // Guardado en store
     }
 
     updateState(draft => {
       const p = draft.products.find(candidate => candidate.id === editingProduct.id);
       if (p) {
         p.name = editForm.name!.trim();
-        p.barcode = editForm.barcode?.trim() ?? '';
         p.brand = selectedBrand?.nombre || p.brand;
         p.brandId = brId;
         p.category = selectedCategory?.nombre || p.category;
         p.categoryId = catId;
-        p.ml = Number(editForm.ml || 0);
-        p.abv = Number(editForm.abv || 0);
         p.cost = cost;
         p.price = price;
-        p.minStock = Number(editForm.minStock || 0);
         p.buyUnit = selectedBuyUnit?.nombre || p.buyUnit;
         p.buyUnitId = buyUId;
         p.sellUnit = selectedSellUnit?.nombre || p.sellUnit;
         p.sellUnitId = sellUId;
-        p.purchaseFactor = Number(editForm.purchaseFactor || 1);
-        p.shelf = selectedShelf?.nombre || p.shelf;
+        p.shelf = selectedShelf ? `Percha ${selectedShelf.letra}${selectedShelf.nivel}` : p.shelf;
         p.shelfId = shId;
       }
       return draft;
@@ -273,7 +287,7 @@ export const Catalog = () => {
         <div>
           <span className="eyebrow">ABASTECIMIENTO · PRODUCTOS</span>
           <h1>Administración de productos</h1>
-          <p>Control integral de licores, presentaciones, costos, precios y existencias.</p>
+          <p>Control integral de catálogo según tabla PRODUCTOS, unidades de medida, costos, precios y saldos.</p>
         </div>
         <button type="button" className="btn btn-primary" onClick={() => setShowForm(value => !value)}>
           <Plus size={16} /> {showForm ? 'Cerrar formulario' : 'Nuevo producto'}
@@ -282,39 +296,39 @@ export const Catalog = () => {
 
       {showForm && (
         <section className="card">
-          <h2 className="section-title">Ficha de nuevo producto</h2>
-          <div className="grid-4">
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+            <h2 className="section-title" style={{ margin: 0 }}>Registrar nuevo producto</h2>
+            <span style={{ fontSize: '13px', background: '#f8fafc', padding: '4px 10px', borderRadius: '6px', border: '1px solid #e2e8f0', color: '#475569' }}>
+              Código generado: <strong style={{ color: 'var(--primary)', fontFamily: 'monospace' }}>{nextProductId}</strong>
+            </span>
+          </div>
+
+          <div className="grid-3">
             <label className="form-group">
-              SKU / Código (PK)
+              <span>ID Producto (Generado automáticamente)</span>
               <input
                 className="input"
-                placeholder="Ej. PR-001"
-                value={form.sku ?? ''}
-                onChange={event => setForm({ ...form, sku: event.target.value })}
+                value={nextProductId}
+                disabled
+                readOnly
+                style={{ background: '#f8fafc', cursor: 'not-allowed', fontWeight: 600, color: '#475569' }}
               />
             </label>
-            <label className="form-group">
-              Nombre del producto
+
+            <label className="form-group" style={{ gridColumn: 'span 2' }}>
+              <span>Descripción del producto (pro_Descripcion) <strong style={{ color: '#ef4444' }}>*</strong></span>
               <input
                 className="input"
-                placeholder="Ej. Johnnie Walker Black 750ml"
+                placeholder="Ej. Whisky Johnnie Walker Black Label 750ml"
+                maxLength={40}
                 value={form.name ?? ''}
                 onChange={event => setForm({ ...form, name: event.target.value })}
               />
+              <small style={{ fontSize: '11px', color: '#64748b' }}>Máximo 40 caracteres (CHAR(40))</small>
             </label>
+
             <label className="form-group">
-              Marca
-              <select
-                className="select"
-                value={form.brandId ?? ''}
-                onChange={event => setForm({ ...form, brandId: event.target.value })}
-              >
-                {catalogs.marcas.map(m => <option key={m.id} value={m.id}>{m.nombre}</option>)}
-                {!catalogs.marcas.length && <option value="MAR-000001">Cargando marcas...</option>}
-              </select>
-            </label>
-            <label className="form-group">
-              Categoría
+              <span>Categoría (id_Categoria)</span>
               <select
                 className="select"
                 value={form.categoryId ?? ''}
@@ -324,81 +338,37 @@ export const Catalog = () => {
                 {!catalogs.categorias.length && <option value="CAT-000001">Cargando categorías...</option>}
               </select>
             </label>
+
             <label className="form-group">
-              Código de barras
-              <input
-                className="input"
-                placeholder="Opcional"
-                value={form.barcode ?? ''}
-                onChange={event => setForm({ ...form, barcode: event.target.value })}
-              />
+              <span>Marca (id_Marca)</span>
+              <select
+                className="select"
+                value={form.brandId ?? ''}
+                onChange={event => setForm({ ...form, brandId: event.target.value })}
+              >
+                {catalogs.marcas.map(m => <option key={m.id} value={m.id}>{m.nombre}</option>)}
+                {!catalogs.marcas.length && <option value="MAR-000001">Cargando marcas...</option>}
+              </select>
             </label>
+
             <label className="form-group">
-              Presentación (ml)
-              <input
-                className="input"
-                type="number"
-                min="0"
-                value={form.ml ?? 0}
-                onChange={event => setForm({ ...form, ml: Number(event.target.value) })}
-              />
+              <span>Ubicación / Percha (Opcional)</span>
+              <select
+                className="select"
+                value={form.shelfId ?? ''}
+                onChange={event => setForm({ ...form, shelfId: event.target.value })}
+              >
+                {catalogs.perchas.map(p => (
+                  <option key={p.id} value={p.id}>
+                    Percha {p.letra}{p.nivel} · {p.nombre}
+                  </option>
+                ))}
+                {!catalogs.perchas.length && <option value="PCH-000001">A1 · Nivel 1</option>}
+              </select>
             </label>
+
             <label className="form-group">
-              Alcohol (% ABV)
-              <input
-                className="input"
-                type="number"
-                min="0"
-                max="100"
-                step="0.1"
-                value={form.abv ?? 0}
-                onChange={event => setForm({ ...form, abv: Number(event.target.value) })}
-              />
-            </label>
-            <label className="form-group">
-              Costo unitario ($)
-              <input
-                className="input"
-                type="number"
-                min="0"
-                step="0.01"
-                value={form.cost ?? 0}
-                onChange={event => setForm({ ...form, cost: Number(event.target.value) })}
-              />
-            </label>
-            <label className="form-group">
-              Precio de venta ($)
-              <input
-                className="input"
-                type="number"
-                min="0"
-                step="0.01"
-                value={form.price ?? 0}
-                onChange={event => setForm({ ...form, price: Number(event.target.value) })}
-              />
-            </label>
-            <label className="form-group">
-              Stock inicial
-              <input
-                className="input"
-                type="number"
-                min="0"
-                value={form.stock ?? 0}
-                onChange={event => setForm({ ...form, stock: Number(event.target.value) })}
-              />
-            </label>
-            <label className="form-group">
-              Stock mínimo
-              <input
-                className="input"
-                type="number"
-                min="0"
-                value={form.minStock ?? 0}
-                onChange={event => setForm({ ...form, minStock: Number(event.target.value) })}
-              />
-            </label>
-            <label className="form-group">
-              Unidad de compra
+              <span>U.M. Compra (pro_UM_Compra)</span>
               <select
                 className="select"
                 value={form.buyUnitId ?? 'CAJ'}
@@ -408,8 +378,9 @@ export const Catalog = () => {
                 {!catalogs.unidadesMedida.length && <option value="CAJ">CAJ · Caja</option>}
               </select>
             </label>
+
             <label className="form-group">
-              Unidad de venta
+              <span>U.M. Venta (pro_UM_Venta)</span>
               <select
                 className="select"
                 value={form.sellUnitId ?? 'BOT'}
@@ -419,32 +390,48 @@ export const Catalog = () => {
                 {!catalogs.unidadesMedida.length && <option value="BOT">BOT · Botella</option>}
               </select>
             </label>
+
             <label className="form-group">
-              Unidades por compra
+              <span>Saldo Inicial (pro_Saldo_Inicial) <strong style={{ color: '#ef4444' }}>*</strong></span>
               <input
                 className="input"
                 type="number"
-                min="1"
-                value={form.purchaseFactor ?? 1}
-                onChange={event => setForm({ ...form, purchaseFactor: Number(event.target.value) })}
+                min="0"
+                step="1"
+                value={form.stock ?? 0}
+                onChange={event => setForm({ ...form, stock: Number(event.target.value) })}
               />
             </label>
+
             <label className="form-group">
-              Ubicación / Percha
-              <select
-                className="select"
-                value={form.shelfId ?? ''}
-                onChange={event => setForm({ ...form, shelfId: event.target.value })}
-              >
-                {catalogs.perchas.map(p => <option key={p.id} value={p.id}>{p.letra}{p.nivel} · {p.nombre}</option>)}
-                {!catalogs.perchas.length && <option value="PCH-000001">A1 · Nivel 1</option>}
-              </select>
+              <span>Costo de compra ($) (pro_Valor_Compra) <strong style={{ color: '#ef4444' }}>*</strong></span>
+              <input
+                className="input"
+                type="number"
+                min="0"
+                step="0.01"
+                value={form.cost ?? 0}
+                onChange={event => setForm({ ...form, cost: Number(event.target.value) })}
+              />
             </label>
-            <div className="form-action">
-              <button className="btn btn-primary" type="button" onClick={saveProduct}>
-                <Check size={16} /> Guardar producto
-              </button>
-            </div>
+
+            <label className="form-group">
+              <span>Precio de venta ($) (pro_Precio_Venta) <strong style={{ color: '#ef4444' }}>*</strong></span>
+              <input
+                className="input"
+                type="number"
+                min="0"
+                step="0.01"
+                value={form.price ?? 0}
+                onChange={event => setForm({ ...form, price: Number(event.target.value) })}
+              />
+            </label>
+          </div>
+
+          <div className="form-action" style={{ marginTop: '20px' }}>
+            <button className="btn btn-primary" type="button" onClick={saveProduct}>
+              <Check size={16} /> Guardar producto
+            </button>
           </div>
           {notice && <p className="form-notice" role="status">{notice}</p>}
         </section>
@@ -456,7 +443,7 @@ export const Catalog = () => {
         <div className="section-heading">
           <div>
             <h2>Directorio de productos</h2>
-            <p>{filteredProducts.length} referencias visibles</p>
+            <p>{filteredProducts.length} referencias registradas</p>
           </div>
 
           <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
@@ -488,7 +475,7 @@ export const Catalog = () => {
               <Search size={16} />
               <input
                 aria-label="Buscar productos"
-                placeholder="Nombre, marca, SKU o código"
+                placeholder="Descripción, ID, marca o categoría"
                 value={search}
                 onChange={event => setSearch(event.target.value)}
               />
@@ -500,40 +487,45 @@ export const Catalog = () => {
           <table>
             <thead>
               <tr>
-                <th>SKU / Producto</th>
-                <th>Categoría</th>
-                <th>Presentación</th>
-                <th>ABV</th>
-                <th>Compra → Venta</th>
+                <th>ID Producto</th>
+                <th>Descripción</th>
+                <th>Categoría / Marca</th>
+                <th>U.M. Compra</th>
+                <th>U.M. Venta</th>
                 <th>Percha</th>
-                <th>Costo</th>
-                <th>Precio</th>
-                <th>Stock</th>
+                <th>Valor Compra</th>
+                <th>Precio Venta</th>
+                <th>Saldo Inicial</th>
+                <th>Saldo Final</th>
                 <th>Estado</th>
                 <th style={{ minWidth: '150px', textAlign: 'center' }}>Acciones</th>
               </tr>
             </thead>
             <tbody>
               {filteredProducts.map(product => {
-                const isLow = product.stock <= product.minStock;
+                const isLow = product.stock <= (product.minStock || 0) && product.stock > 0;
+                const isZero = product.stock === 0;
                 return (
                   <tr key={product.id}>
                     <td>
-                      <strong>{product.sku}</strong>
-                      <br />
-                      {product.name}
-                      <small className="table-subtext">{product.brand} · {product.barcode || 'Sin código'}</small>
+                      <code style={{ fontWeight: 600, color: 'var(--primary)' }}>{product.sku || product.id}</code>
                     </td>
-                    <td>{product.category}</td>
-                    <td>{product.ml ? `${product.ml} ml` : '—'}</td>
-                    <td>{product.abv ? `${product.abv}%` : '—'}</td>
-                    <td>{product.buyUnit || 'UN'} (×{product.purchaseFactor || 1}) → {product.sellUnit || 'UN'}</td>
+                    <td>
+                      <strong>{product.name}</strong>
+                    </td>
+                    <td>
+                      <span>{product.category || '—'}</span>
+                      <small className="table-subtext">{product.brand || '—'}</small>
+                    </td>
+                    <td>{product.buyUnit || 'CAJ'}</td>
+                    <td>{product.sellUnit || 'BOT'}</td>
                     <td>{product.shelf || '—'}</td>
                     <td>{money(product.cost)}</td>
                     <td style={{ fontWeight: 600, color: 'var(--primary)' }}>{money(product.price)}</td>
+                    <td>{product.minStock ?? product.stock}</td>
                     <td>
-                      <span className={isLow ? 'stock-low' : 'stock-ok'}>
-                        {product.stock} / mín. {product.minStock}
+                      <span className={isZero ? 'stock-low' : isLow ? 'stock-warning' : 'stock-ok'}>
+                        {product.stock}
                       </span>
                     </td>
                     <td>
@@ -580,7 +572,7 @@ export const Catalog = () => {
               })}
               {!filteredProducts.length && (
                 <tr>
-                  <td className="empty-state" colSpan={11}>
+                  <td className="empty-state" colSpan={12}>
                     No hay productos que coincidan con el filtro.
                   </td>
                 </tr>
@@ -613,23 +605,25 @@ export const Catalog = () => {
 
             <div className="grid-2">
               <label className="form-group" style={{ gridColumn: 'span 2' }}>
-                <span>Nombre del producto <strong style={{ color: '#ef4444' }}>*</strong></span>
+                <span>ID Producto (No editable)</span>
                 <input
                   className="input"
-                  value={editForm.name ?? ''}
-                  onChange={e => setEditForm({ ...editForm, name: e.target.value })}
+                  value={editingProduct.sku || editingProduct.id}
+                  disabled
+                  readOnly
+                  style={{ background: '#f8fafc', cursor: 'not-allowed', fontWeight: 600 }}
                 />
               </label>
 
-              <label className="form-group">
-                <span>Marca</span>
-                <select
-                  className="select"
-                  value={editForm.brandId ?? ''}
-                  onChange={e => setEditForm({ ...editForm, brandId: e.target.value })}
-                >
-                  {catalogs.marcas.map(m => <option key={m.id} value={m.id}>{m.nombre}</option>)}
-                </select>
+              <label className="form-group" style={{ gridColumn: 'span 2' }}>
+                <span>Descripción del producto (pro_Descripcion) <strong style={{ color: '#ef4444' }}>*</strong></span>
+                <input
+                  className="input"
+                  maxLength={40}
+                  value={editForm.name ?? ''}
+                  onChange={e => setEditForm({ ...editForm, name: e.target.value })}
+                />
+                <small style={{ fontSize: '11px', color: '#64748b' }}>Máximo 40 caracteres (CHAR(40))</small>
               </label>
 
               <label className="form-group">
@@ -644,7 +638,40 @@ export const Catalog = () => {
               </label>
 
               <label className="form-group">
-                <span>Costo unitario ($)</span>
+                <span>Marca</span>
+                <select
+                  className="select"
+                  value={editForm.brandId ?? ''}
+                  onChange={e => setEditForm({ ...editForm, brandId: e.target.value })}
+                >
+                  {catalogs.marcas.map(m => <option key={m.id} value={m.id}>{m.nombre}</option>)}
+                </select>
+              </label>
+
+              <label className="form-group">
+                <span>U.M. Compra (pro_UM_Compra)</span>
+                <select
+                  className="select"
+                  value={editForm.buyUnitId ?? 'CAJ'}
+                  onChange={e => setEditForm({ ...editForm, buyUnitId: e.target.value })}
+                >
+                  {catalogs.unidadesMedida.map(u => <option key={u.id} value={u.id}>{u.id} · {u.nombre}</option>)}
+                </select>
+              </label>
+
+              <label className="form-group">
+                <span>U.M. Venta (pro_UM_Venta)</span>
+                <select
+                  className="select"
+                  value={editForm.sellUnitId ?? 'BOT'}
+                  onChange={e => setEditForm({ ...editForm, sellUnitId: e.target.value })}
+                >
+                  {catalogs.unidadesMedida.map(u => <option key={u.id} value={u.id}>{u.id} · {u.nombre}</option>)}
+                </select>
+              </label>
+
+              <label className="form-group">
+                <span>Valor / Costo compra ($) (pro_Valor_Compra)</span>
                 <input
                   className="input"
                   type="number"
@@ -656,7 +683,7 @@ export const Catalog = () => {
               </label>
 
               <label className="form-group">
-                <span>Precio de venta ($) <strong style={{ color: '#ef4444' }}>*</strong></span>
+                <span>Precio de venta ($) (pro_Precio_Venta) <strong style={{ color: '#ef4444' }}>*</strong></span>
                 <input
                   className="input"
                   type="number"
@@ -668,90 +695,17 @@ export const Catalog = () => {
               </label>
 
               <label className="form-group">
-                <span>Stock mínimo</span>
-                <input
-                  className="input"
-                  type="number"
-                  min="0"
-                  value={editForm.minStock ?? 0}
-                  onChange={e => setEditForm({ ...editForm, minStock: Number(e.target.value) })}
-                />
-              </label>
-
-              <label className="form-group">
-                <span>Código de barras</span>
-                <input
-                  className="input"
-                  value={editForm.barcode ?? ''}
-                  onChange={e => setEditForm({ ...editForm, barcode: e.target.value })}
-                />
-              </label>
-
-              <label className="form-group">
-                <span>Presentación (ml)</span>
-                <input
-                  className="input"
-                  type="number"
-                  min="0"
-                  value={editForm.ml ?? 0}
-                  onChange={e => setEditForm({ ...editForm, ml: Number(e.target.value) })}
-                />
-              </label>
-
-              <label className="form-group">
-                <span>Alcohol (% ABV)</span>
-                <input
-                  className="input"
-                  type="number"
-                  min="0"
-                  max="100"
-                  step="0.1"
-                  value={editForm.abv ?? 0}
-                  onChange={e => setEditForm({ ...editForm, abv: Number(e.target.value) })}
-                />
-              </label>
-
-              <label className="form-group">
-                <span>Unidad de compra</span>
-                <select
-                  className="select"
-                  value={editForm.buyUnitId ?? 'CAJ'}
-                  onChange={e => setEditForm({ ...editForm, buyUnitId: e.target.value })}
-                >
-                  {catalogs.unidadesMedida.map(u => <option key={u.id} value={u.id}>{u.id} · {u.nombre}</option>)}
-                </select>
-              </label>
-
-              <label className="form-group">
-                <span>Unidad de venta</span>
-                <select
-                  className="select"
-                  value={editForm.sellUnitId ?? 'BOT'}
-                  onChange={e => setEditForm({ ...editForm, sellUnitId: e.target.value })}
-                >
-                  {catalogs.unidadesMedida.map(u => <option key={u.id} value={u.id}>{u.id} · {u.nombre}</option>)}
-                </select>
-              </label>
-
-              <label className="form-group">
-                <span>Unidades por compra</span>
-                <input
-                  className="input"
-                  type="number"
-                  min="1"
-                  value={editForm.purchaseFactor ?? 1}
-                  onChange={e => setEditForm({ ...editForm, purchaseFactor: Number(e.target.value) })}
-                />
-              </label>
-
-              <label className="form-group">
                 <span>Ubicación / Percha</span>
                 <select
                   className="select"
                   value={editForm.shelfId ?? ''}
                   onChange={e => setEditForm({ ...editForm, shelfId: e.target.value })}
                 >
-                  {catalogs.perchas.map(p => <option key={p.id} value={p.id}>{p.letra}{p.nivel} · {p.nombre}</option>)}
+                  {catalogs.perchas.map(p => (
+                    <option key={p.id} value={p.id}>
+                      Percha {p.letra}{p.nivel} · {p.nombre}
+                    </option>
+                  ))}
                 </select>
               </label>
             </div>

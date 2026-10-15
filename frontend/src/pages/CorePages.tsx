@@ -239,7 +239,7 @@ export const Suppliers = ({ onNavigate }: { onNavigate?: (route: string) => void
     let maxNum = 0;
     for (const s of state.suppliers) {
       if (!s.id) continue;
-      const m = s.id.match(/(\d+)/);
+      const m = s.id.match(/^prv_(\d+)$/i);
       if (m) {
         const val = parseInt(m[1], 10);
         if (!isNaN(val) && val > maxNum) maxNum = val;

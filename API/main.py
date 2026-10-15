@@ -622,10 +622,25 @@ def listar_productos():
 @app.post("/api/productos")
 def crear_producto(prod: ProductInput):
     conn, cur = None, None
-    product_id = prod.id or f"PR-{uuid4().hex[:6].upper()}"
     try:
         conn = mysql.connector.connect(**get_db_config())
         cur = conn.cursor()
+        if prod.id and prod.id.strip():
+            product_id = prod.id.strip()[:10]
+        else:
+            import re
+            cur.execute("SELECT id_Producto FROM PRODUCTOS")
+            existing_rows = cur.fetchall()
+            max_id = 0
+            for r in existing_rows:
+                val = str(r[0] if isinstance(r, (list, tuple)) else r.get("id_Producto", ""))
+                m = re.match(r"^PRD-(\d+)$", val, re.IGNORECASE)
+                if m:
+                    num = int(m.group(1))
+                    if num > max_id:
+                        max_id = num
+            product_id = f"PRD-{max_id + 1:06d}"
+
         user_id = get_user_id(cur)
         try:
             cur.callproc(
@@ -869,7 +884,7 @@ def crear_proveedor(prv: SupplierInput):
             max_id = 0
             for row in existing_rows:
                 id_val = str(row[0] if isinstance(row, (list, tuple)) else row.get("id_Proveedor", ""))
-                m = re.search(r"(\d+)", id_val)
+                m = re.match(r"^prv_(\d+)$", id_val, re.IGNORECASE)
                 if m:
                     num = int(m.group(1))
                     if num > max_id:
