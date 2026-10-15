@@ -149,12 +149,19 @@ export const Customers = () => {
         <div className="grid-4">
           <label className="form-group">Cédula / RUC<input className="input" value={form.ciRuc ?? ''} onChange={event => setForm({ ...form, ciRuc: event.target.value })} /></label>
           <label className="form-group">Nombre / razón social<input className="input" value={form.name ?? ''} onChange={event => setForm({ ...form, name: event.target.value })} /></label>
-          <label className="form-group">Tipo<select className="select" value={form.type ?? 'NAT'} onChange={event => setForm({ ...form, type: event.target.value as Customer['type'] })}><option value="NAT">Persona natural</option><option value="JUR">Persona jurídica</option></select></label>
+          <label className="form-group">Tipo
+            <select className="select" value={form.type ?? 'NAT'} onChange={event => setForm({ ...form, type: event.target.value as Customer['type'] })}>
+              <option value="">-- Seleccione tipo de persona --</option>
+              <option value="NAT">Persona natural</option>
+              <option value="JUR">Persona jurídica</option>
+            </select>
+          </label>
           <label className="form-group">Teléfono convencional<input className="input" maxLength={10} placeholder="Ej: 022345678" value={form.contact ?? ''} onChange={event => setForm({ ...form, contact: event.target.value.replace(/\D/g, '').slice(0, 10) })} /></label>
           <label className="form-group">Celular<input className="input" maxLength={10} placeholder="Ej: 0991234567" value={form.mobile ?? ''} onChange={event => setForm({ ...form, mobile: event.target.value.replace(/\D/g, '').slice(0, 10) })} /></label>
           <label className="form-group">Correo<input className="input" type="email" value={form.email ?? ''} onChange={event => setForm({ ...form, email: event.target.value })} /></label>
           <label className="form-group">Ciudad
             <select className="select" value={form.cityId ?? 'UIO'} onChange={event => setForm({ ...form, cityId: event.target.value })}>
+              <option value="">-- Seleccione una ciudad --</option>
               {cities.map(c => <option key={c.id} value={c.id}>{c.nombre} ({c.provincia})</option>)}
               {!cities.length && <option value="UIO">Quito (Pichincha)</option>}
             </select>

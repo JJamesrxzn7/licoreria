@@ -16,7 +16,7 @@ export const POS = () => {
   const [searchTerm, setSearchTerm] = useState('');
   const [categoryFilter, setCategoryFilter] = useState('');
   const [cart, setCart] = useState<CartItem[]>([]);
-  const [paymentMethod, setPaymentMethod] = useState<'CASH' | 'CARD' | 'TRANSFER' | 'CREDIT'>('CASH');
+  const [paymentMethod, setPaymentMethod] = useState<'CASH' | 'CARD' | 'TRANSFER' | 'CREDIT' | ''>('CASH');
   const [customerId, setCustomerId] = useState(state.customers[0]?.id || '');
   const [discountRate, setDiscountRate] = useState(0);
   const [installments, setInstallments] = useState(1);
@@ -115,6 +115,7 @@ export const POS = () => {
     if (!cart.length) return setNotice('Agrega al menos un producto al carrito.');
     if (total <= 0) return setNotice('El total de la factura debe ser mayor que cero.');
     if (!selectedCustomer || selectedCustomer.status !== 'ACTIVE') return setNotice('Selecciona un cliente activo.');
+    if (!paymentMethod) return setNotice('Selecciona una forma de pago.');
     if (!ageVerified) return setNotice('Confirma que verificaste que el cliente es mayor de edad antes de continuar.');
     if (cart.some(item => {
       const current = state.products.find(product => product.id === item.product.id);
@@ -155,7 +156,7 @@ export const POS = () => {
     }
 
     const lines = [
-      { accountId: accountForMethod[paymentMethod], debit: total, credit: 0 },
+      { accountId: accountForMethod[paymentMethod as keyof typeof accountForMethod], debit: total, credit: 0 },
       { accountId: 'a8', debit: 0, credit: taxableSubtotal },
       ...(tax > 0 ? [{ accountId: 'a6', debit: 0, credit: tax }] : []),
     ];
@@ -214,7 +215,7 @@ export const POS = () => {
         <section className="card pos-catalog" aria-label="Catálogo de productos">
           <div className="section-heading"><div><h2>Catálogo</h2><p>{filteredProducts.length} productos disponibles</p></div>
             <select className="select" aria-label="Filtrar categoría" value={categoryFilter} onChange={event => setCategoryFilter(event.target.value)}>
-              <option value="">Todas las categorías</option>{categories.map(category => <option key={category}>{category}</option>)}
+              <option value="">-- Todas las categorías --</option>{categories.map(category => <option key={category}>{category}</option>)}
             </select>
           </div>
           <div className="pos-products">
@@ -255,11 +256,13 @@ export const POS = () => {
                 const customer = state.customers.find(candidate => candidate.id === event.target.value);
                 setDiscountRate(customer?.discountRate ?? 0);
               }}>
+                <option value="">-- Seleccione un cliente --</option>
                 {state.customers.filter(customer => customer.status === 'ACTIVE').map(customer => <option key={customer.id} value={customer.id}>{customer.name}</option>)}
               </select>
             </label>
             <label className="form-group"><span>Forma de pago</span>
               <select className="select" value={paymentMethod} onChange={event => setPaymentMethod(event.target.value as typeof paymentMethod)}>
+                <option value="">-- Seleccione método de pago --</option>
                 <option value="CASH">Efectivo</option><option value="CARD">Tarjeta</option><option value="TRANSFER">Transferencia</option><option value="CREDIT">Crédito</option>
               </select>
             </label>

@@ -332,6 +332,21 @@ export const hrApi = {
     request<{ id: string; mensaje: string }>(`/api/empleados/${encodeURIComponent(employeeId)}/cargas/${encodeURIComponent(cargaId)}`, {
       method: 'DELETE',
     }),
+  updateDependent: (employeeId: string, cargaId: string, dependent: {
+    ci: string;
+    nombre1: string;
+    nombre2?: string;
+    apellido1: string;
+    apellido2?: string;
+    sexo: string;
+    fechaNacimiento: string;
+    parentesco: string;
+    estadoCivil: string;
+    dependencia: string;
+  }) => request<{ id: string; mensaje: string }>(`/api/empleados/${encodeURIComponent(employeeId)}/cargas/${encodeURIComponent(cargaId)}`, {
+    method: 'PUT',
+    body: JSON.stringify(dependent),
+  }),
   listBonuses: () => request<BonusCatalogItem[]>('/api/nomina/bonificaciones'),
   listDeductions: () => request<DeductionCatalogItem[]>('/api/nomina/descuentos'),
   listPayrolls: () => request<Payroll[]>('/api/nomina'),

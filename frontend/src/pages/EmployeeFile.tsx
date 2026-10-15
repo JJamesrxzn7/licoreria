@@ -85,6 +85,21 @@ export const EmployeeFile: React.FC = () => {
     dependencia: 'Total',
   });
 
+  // Modal para Modificar Carga Familiar
+  const [editingDependent, setEditingDependent] = useState<Dependent | null>(null);
+  const [editDependentForm, setEditDependentForm] = useState({
+    ci: '',
+    nombre1: '',
+    nombre2: '',
+    apellido1: '',
+    apellido2: '',
+    sexo: 'M',
+    fechaNacimiento: '2015-01-01',
+    parentesco: 'Hijo/a',
+    estadoCivil: 'Soltero/a',
+    dependencia: 'Total',
+  });
+
   // Cargar datos iniciales
   const loadInitialData = async () => {
     try {
@@ -309,6 +324,61 @@ export const EmployeeFile: React.FC = () => {
     }
   };
 
+  // Abrir modal de edición de carga
+  const startEditDependent = (dep: Dependent) => {
+    setEditingDependent(dep);
+    setEditDependentForm({
+      ci: dep.ci || '',
+      nombre1: dep.nombre1 || (dep.name ? dep.name.split(' ')[0] : ''),
+      nombre2: dep.nombre2 || '',
+      apellido1: dep.apellido1 || (dep.name ? dep.name.split(' ')[1] || '' : ''),
+      apellido2: dep.apellido2 || '',
+      sexo: dep.sexo || 'M',
+      fechaNacimiento: dep.fechaNacimiento ? String(dep.fechaNacimiento).slice(0, 10) : '2015-01-01',
+      parentesco: dep.parentesco || 'Hijo/a',
+      estadoCivil: dep.estadoCivil || 'Soltero/a',
+      dependencia: dep.dependencia || 'Total',
+    });
+  };
+
+  // Guardar modificación de carga familiar
+  const handleUpdateDependent = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedEmployee || !editingDependent?.id) return;
+
+    const ciClean = editDependentForm.ci.replace(/\D/g, '').slice(0, 10);
+    if (ciClean.length < 10) {
+      setNotice({ type: 'error', message: 'La cédula debe contener exactamente 10 dígitos.' });
+      return;
+    }
+    if (!editDependentForm.nombre1.trim() || !editDependentForm.apellido1.trim()) {
+      setNotice({ type: 'error', message: 'Primer nombre y primer apellido son obligatorios.' });
+      return;
+    }
+
+    try {
+      const res = await hrApi.updateDependent(selectedEmployee.id, editingDependent.id, {
+        ci: ciClean,
+        nombre1: editDependentForm.nombre1.trim(),
+        nombre2: editDependentForm.nombre2.trim() || undefined,
+        apellido1: editDependentForm.apellido1.trim(),
+        apellido2: editDependentForm.apellido2.trim() || undefined,
+        sexo: editDependentForm.sexo,
+        fechaNacimiento: editDependentForm.fechaNacimiento,
+        parentesco: editDependentForm.parentesco,
+        estadoCivil: editDependentForm.estadoCivil,
+        dependencia: editDependentForm.dependencia,
+      });
+
+      setNotice({ type: 'success', message: res.mensaje || 'Carga familiar actualizada exitosamente.' });
+      setEditingDependent(null);
+      void loadEmployeeDetails(selectedEmployee.id);
+      void loadInitialData();
+    } catch (err: any) {
+      setNotice({ type: 'error', message: err?.message || 'Error al actualizar los datos de la carga familiar.' });
+    }
+  };
+
   // Eliminar carga familiar
   const handleDeleteDependent = async (cargaId: string) => {
     if (!selectedEmployee) return;
@@ -513,7 +583,7 @@ export const EmployeeFile: React.FC = () => {
                   fontWeight: 600,
                   fontSize: '0.9rem',
                   borderBottom: activeTab === 'cargas' ? '3px solid #6366f1' : '3px solid transparent',
-                  color: activeTab === 'cargos' ? '#4f46e5' : '#6b7280',
+                  color: activeTab === 'cargas' ? '#4f46e5' : '#6b7280',
                   marginBottom: '-2px',
                 }}
               >
@@ -570,12 +640,13 @@ export const EmployeeFile: React.FC = () => {
                     />
                   </label>
                   <label className="form-group">
-                    Sexo
+                    Sexo *
                     <select
                       className="select"
                       value={editEmpForm.sexo}
                       onChange={e => setEditEmpForm({ ...editEmpForm, sexo: e.target.value })}
                     >
+                      <option value="">-- Seleccione sexo --</option>
                       <option value="M">Masculino (M)</option>
                       <option value="F">Femenino (F)</option>
                       <option value="H">Hombre / Otro (H)</option>
@@ -610,13 +681,14 @@ export const EmployeeFile: React.FC = () => {
                       value={editEmpForm.idDepartamento}
                       onChange={e => setEditEmpForm({ ...editEmpForm, idDepartamento: e.target.value })}
                     >
+                      <option value="">-- Seleccione un departamento --</option>
                       {departments.map(d => (
                         <option key={d.id} value={d.id}>{d.nombre} ({d.id})</option>
                       ))}
                     </select>
                   </label>
                   
-                  {/* Campos Requeridos Específicos: Dirección y Teléfono Convencional */}
+                  {/* Campos Requeridos: Dirección y Teléfono Convencional */}
                   <label className="form-group" style={{ gridColumn: 'span 2' }}>
                     Dirección Física Domiciliaria (emp_Direccion) *
                     <div style={{ position: 'relative' }}>
@@ -685,20 +757,21 @@ export const EmployeeFile: React.FC = () => {
                   <h3 style={{ margin: '0 0 10px 0', fontSize: '1rem', color: '#374151' }}>Promover o Asignar Nuevo Cargo (CARGOSxEMPLEADO)</h3>
                   <form onSubmit={handleAssignCargo} style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr) auto', gap: '12px', alignItems: 'flex-end' }}>
                     <label className="form-group" style={{ margin: 0 }}>
-                      Nuevo Cargo / Puesto
+                      Nuevo Cargo / Puesto *
                       <select
                         className="select"
                         value={newCargoForm.idCargo}
                         onChange={e => setNewCargoForm({ ...newCargoForm, idCargo: e.target.value })}
                         required
                       >
+                        <option value="">-- Seleccione un cargo / puesto --</option>
                         {cargos.map(c => (
                           <option key={c.id} value={c.id}>{c.nombre} ({c.id})</option>
                         ))}
                       </select>
                     </label>
                     <label className="form-group" style={{ margin: 0 }}>
-                      Fecha de Inicio (cxe_Fecha_Inicio)
+                      Fecha de Inicio (cxe_Fecha_Inicio) *
                       <input
                         className="input"
                         type="date"
@@ -814,12 +887,14 @@ export const EmployeeFile: React.FC = () => {
                         />
                       </label>
                       <label className="form-group">
-                        Sexo
+                        Sexo *
                         <select
                           className="select"
                           value={newDependentForm.sexo}
                           onChange={e => setNewDependentForm({ ...newDependentForm, sexo: e.target.value })}
+                          required
                         >
+                          <option value="">-- Seleccione sexo --</option>
                           <option value="M">Masculino (M)</option>
                           <option value="F">Femenino (F)</option>
                         </select>
@@ -840,36 +915,44 @@ export const EmployeeFile: React.FC = () => {
                           className="select"
                           value={newDependentForm.parentesco}
                           onChange={e => setNewDependentForm({ ...newDependentForm, parentesco: e.target.value })}
+                          required
                         >
+                          <option value="">-- Seleccione parentesco --</option>
                           <option value="Hijo/a">Hijo/a</option>
-                          <option value="Cónyuge">Cónyuge / Pareja</option>
+                          <option value="Cónyuge">Cónyuge</option>
+                          <option value="Conviviente">Conviviente / Unión de Hecho</option>
                           <option value="Madre">Madre</option>
                           <option value="Padre">Padre</option>
-                          <option value="Hermano/a">Hermano/a con discapacidad</option>
                         </select>
                       </label>
                       <label className="form-group">
-                        Estado Civil
+                        Estado Civil (car_EstadoCivil) *
                         <select
                           className="select"
                           value={newDependentForm.estadoCivil}
                           onChange={e => setNewDependentForm({ ...newDependentForm, estadoCivil: e.target.value })}
+                          required
                         >
+                          <option value="">-- Seleccione estado civil --</option>
                           <option value="Soltero/a">Soltero/a</option>
                           <option value="Casado/a">Casado/a</option>
-                          <option value="Menor de edad">Menor de edad</option>
+                          <option value="Divorciado/a">Divorciado/a</option>
+                          <option value="Viudo/a">Viudo/a</option>
+                          <option value="Unión de Hecho">Unión de Hecho</option>
                         </select>
                       </label>
                       <label className="form-group">
-                        Tipo de Dependencia
+                        Tipo de Dependencia *
                         <select
                           className="select"
                           value={newDependentForm.dependencia}
                           onChange={e => setNewDependentForm({ ...newDependentForm, dependencia: e.target.value })}
+                          required
                         >
+                          <option value="">-- Seleccione dependencia --</option>
                           <option value="Total">Total</option>
                           <option value="Parcial">Parcial</option>
-                          <option value="Discapacidad">Discapacidad severa</option>
+                          <option value="Económica">Económica</option>
                         </select>
                       </label>
                       <div className="form-action" style={{ gridColumn: 'span 2', display: 'flex', alignItems: 'flex-end' }}>
@@ -881,7 +964,7 @@ export const EmployeeFile: React.FC = () => {
                   </form>
                 </div>
 
-                {/* Tabla de Cargas Familiares */}
+                {/* Tabla de Cargas Familiares con opción de Modificar */}
                 <div className="table-scroll">
                   <table>
                     <thead>
@@ -908,15 +991,26 @@ export const EmployeeFile: React.FC = () => {
                           <td>{dep.dependencia}</td>
                           <td>
                             {dep.id && (
-                              <button
-                                type="button"
-                                className="btn btn-outline"
-                                style={{ padding: '4px 8px', color: '#dc2626', borderColor: '#fca5a5' }}
-                                onClick={() => handleDeleteDependent(dep.id!)}
-                                title="Eliminar carga familiar"
-                              >
-                                <Trash2 size={14} />
-                              </button>
+                              <div style={{ display: 'flex', gap: '6px' }}>
+                                <button
+                                  type="button"
+                                  className="btn btn-outline"
+                                  style={{ padding: '4px 8px', color: '#4f46e5', borderColor: '#c7d2fe' }}
+                                  onClick={() => startEditDependent(dep)}
+                                  title="Modificar datos de la carga familiar"
+                                >
+                                  <Edit3 size={14} />
+                                </button>
+                                <button
+                                  type="button"
+                                  className="btn btn-outline"
+                                  style={{ padding: '4px 8px', color: '#dc2626', borderColor: '#fca5a5' }}
+                                  onClick={() => handleDeleteDependent(dep.id!)}
+                                  title="Eliminar carga familiar"
+                                >
+                                  <Trash2 size={14} />
+                                </button>
+                              </div>
                             )}
                           </td>
                         </tr>
@@ -940,6 +1034,181 @@ export const EmployeeFile: React.FC = () => {
           </div>
         )}
       </div>
+
+      {/* Modal Modificar Carga Familiar */}
+      {editingDependent && (
+        <div style={{
+          position: 'fixed',
+          inset: 0,
+          backgroundColor: 'rgba(0,0,0,0.5)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 9999,
+          padding: '20px',
+        }}>
+          <div style={{
+            backgroundColor: '#ffffff',
+            borderRadius: '12px',
+            maxWidth: '650px',
+            width: '100%',
+            padding: '24px',
+            boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.1)',
+          }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid #e5e7eb', paddingBottom: '12px', marginBottom: '16px' }}>
+              <div>
+                <span style={{ fontSize: '0.75rem', fontWeight: 700, color: '#6366f1', textTransform: 'uppercase' }}>
+                  MODIFICAR CARGA FAMILIAR: {editingDependent.id}
+                </span>
+                <h2 style={{ margin: '4px 0 0 0', fontSize: '1.25rem', color: '#111827' }}>
+                  {editingDependent.name || `${editingDependent.nombre1} ${editingDependent.apellido1}`}
+                </h2>
+              </div>
+              <button
+                type="button"
+                onClick={() => setEditingDependent(null)}
+                style={{ background: 'none', border: 'none', fontSize: '1.2rem', cursor: 'pointer', color: '#6b7280' }}
+              >
+                ✕
+              </button>
+            </div>
+
+            <form onSubmit={handleUpdateDependent}>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '14px' }}>
+                <label className="form-group">
+                  Cédula Carga (10 dígitos) *
+                  <input
+                    className="input"
+                    maxLength={10}
+                    value={editDependentForm.ci}
+                    onChange={e => setEditDependentForm({ ...editDependentForm, ci: e.target.value.replace(/\D/g, '').slice(0, 10) })}
+                    required
+                  />
+                </label>
+                <label className="form-group">
+                  Sexo *
+                  <select
+                    className="select"
+                    value={editDependentForm.sexo}
+                    onChange={e => setEditDependentForm({ ...editDependentForm, sexo: e.target.value })}
+                    required
+                  >
+                    <option value="">-- Seleccione sexo --</option>
+                    <option value="M">Masculino (M)</option>
+                    <option value="F">Femenino (F)</option>
+                  </select>
+                </label>
+                <label className="form-group">
+                  Primer Nombre *
+                  <input
+                    className="input"
+                    value={editDependentForm.nombre1}
+                    onChange={e => setEditDependentForm({ ...editDependentForm, nombre1: e.target.value })}
+                    required
+                  />
+                </label>
+                <label className="form-group">
+                  Segundo Nombre
+                  <input
+                    className="input"
+                    value={editDependentForm.nombre2}
+                    onChange={e => setEditDependentForm({ ...editDependentForm, nombre2: e.target.value })}
+                  />
+                </label>
+                <label className="form-group">
+                  Primer Apellido *
+                  <input
+                    className="input"
+                    value={editDependentForm.apellido1}
+                    onChange={e => setEditDependentForm({ ...editDependentForm, apellido1: e.target.value })}
+                    required
+                  />
+                </label>
+                <label className="form-group">
+                  Segundo Apellido
+                  <input
+                    className="input"
+                    value={editDependentForm.apellido2}
+                    onChange={e => setEditDependentForm({ ...editDependentForm, apellido2: e.target.value })}
+                  />
+                </label>
+                <label className="form-group">
+                  Fecha de Nacimiento *
+                  <input
+                    className="input"
+                    type="date"
+                    value={editDependentForm.fechaNacimiento}
+                    onChange={e => setEditDependentForm({ ...editDependentForm, fechaNacimiento: e.target.value })}
+                    required
+                  />
+                </label>
+                <label className="form-group">
+                  Parentesco *
+                  <select
+                    className="select"
+                    value={editDependentForm.parentesco}
+                    onChange={e => setEditDependentForm({ ...editDependentForm, parentesco: e.target.value })}
+                    required
+                  >
+                    <option value="">-- Seleccione parentesco --</option>
+                    <option value="Hijo/a">Hijo/a</option>
+                    <option value="Cónyuge">Cónyuge</option>
+                    <option value="Conviviente">Conviviente / Unión de Hecho</option>
+                    <option value="Madre">Madre</option>
+                    <option value="Padre">Padre</option>
+                  </select>
+                </label>
+                <label className="form-group">
+                  Estado Civil *
+                  <select
+                    className="select"
+                    value={editDependentForm.estadoCivil}
+                    onChange={e => setEditDependentForm({ ...editDependentForm, estadoCivil: e.target.value })}
+                    required
+                  >
+                    <option value="">-- Seleccione estado civil --</option>
+                    <option value="Soltero/a">Soltero/a</option>
+                    <option value="Casado/a">Casado/a</option>
+                    <option value="Divorciado/a">Divorciado/a</option>
+                    <option value="Viudo/a">Viudo/a</option>
+                    <option value="Unión de Hecho">Unión de Hecho</option>
+                  </select>
+                </label>
+                <label className="form-group">
+                  Tipo de Dependencia *
+                  <select
+                    className="select"
+                    value={editDependentForm.dependencia}
+                    onChange={e => setEditDependentForm({ ...editDependentForm, dependencia: e.target.value })}
+                    required
+                  >
+                    <option value="">-- Seleccione dependencia --</option>
+                    <option value="Total">Total</option>
+                    <option value="Parcial">Parcial</option>
+                    <option value="Económica">Económica</option>
+                  </select>
+                </label>
+              </div>
+
+              <div style={{ marginTop: '20px', display: 'flex', justifyContent: 'flex-end', gap: '10px' }}>
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  onClick={() => setEditingDependent(null)}
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  className="btn btn-primary"
+                >
+                  Guardar Modificación
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
 
       {/* Modal Nuevo Colaborador */}
       {isNewEmpModalOpen && (
@@ -1043,7 +1312,9 @@ export const EmployeeFile: React.FC = () => {
                     className="select"
                     value={newEmpForm.sexo}
                     onChange={e => setNewEmpForm({ ...newEmpForm, sexo: e.target.value })}
+                    required
                   >
+                    <option value="">-- Seleccione sexo --</option>
                     <option value="M">Masculino (M)</option>
                     <option value="F">Femenino (F)</option>
                     <option value="H">Hombre / Otro (H)</option>
@@ -1065,7 +1336,9 @@ export const EmployeeFile: React.FC = () => {
                     className="select"
                     value={newEmpForm.idDepartamento}
                     onChange={e => setNewEmpForm({ ...newEmpForm, idDepartamento: e.target.value })}
+                    required
                   >
+                    <option value="">-- Seleccione un departamento --</option>
                     {departments.map(d => (
                       <option key={d.id} value={d.id}>{d.nombre} ({d.id})</option>
                     ))}
@@ -1077,7 +1350,9 @@ export const EmployeeFile: React.FC = () => {
                     className="select"
                     value={newEmpForm.idCargo}
                     onChange={e => setNewEmpForm({ ...newEmpForm, idCargo: e.target.value })}
+                    required
                   >
+                    <option value="">-- Seleccione un cargo inicial --</option>
                     {cargos.map(c => (
                       <option key={c.id} value={c.id}>{c.nombre} ({c.id})</option>
                     ))}

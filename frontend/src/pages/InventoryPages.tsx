@@ -335,6 +335,7 @@ export const Catalog = () => {
                 value={form.categoryId ?? ''}
                 onChange={event => setForm({ ...form, categoryId: event.target.value })}
               >
+                <option value="">-- Seleccione una categoría --</option>
                 {catalogs.categorias.map(c => <option key={c.id} value={c.id}>{c.nombre}</option>)}
                 {!catalogs.categorias.length && <option value="CAT-000001">Cargando categorías...</option>}
               </select>
@@ -347,6 +348,7 @@ export const Catalog = () => {
                 value={form.brandId ?? ''}
                 onChange={event => setForm({ ...form, brandId: event.target.value })}
               >
+                <option value="">-- Seleccione una marca --</option>
                 {catalogs.marcas.map(m => <option key={m.id} value={m.id}>{m.nombre}</option>)}
                 {!catalogs.marcas.length && <option value="MAR-000001">Cargando marcas...</option>}
               </select>
@@ -359,6 +361,7 @@ export const Catalog = () => {
                 value={form.shelfId ?? ''}
                 onChange={event => setForm({ ...form, shelfId: event.target.value })}
               >
+                <option value="">-- Seleccione una percha (Opcional) --</option>
                 {catalogs.perchas.map(p => (
                   <option key={p.id} value={p.id}>
                     Percha {p.letra}{p.nivel} · {p.nombre}
@@ -372,9 +375,10 @@ export const Catalog = () => {
               <span>U.M. Compra (pro_UM_Compra)</span>
               <select
                 className="select"
-                value={form.buyUnitId ?? 'CAJ'}
+                value={form.buyUnitId ?? ''}
                 onChange={event => setForm({ ...form, buyUnitId: event.target.value })}
               >
+                <option value="">-- Seleccione unidad de compra --</option>
                 {catalogs.unidadesMedida.map(u => <option key={u.id} value={u.id}>{u.id} · {u.nombre}</option>)}
                 {!catalogs.unidadesMedida.length && <option value="CAJ">CAJ · Caja</option>}
               </select>
@@ -384,9 +388,10 @@ export const Catalog = () => {
               <span>U.M. Venta (pro_UM_Venta)</span>
               <select
                 className="select"
-                value={form.sellUnitId ?? 'BOT'}
+                value={form.sellUnitId ?? ''}
                 onChange={event => setForm({ ...form, sellUnitId: event.target.value })}
               >
+                <option value="">-- Seleccione unidad de venta --</option>
                 {catalogs.unidadesMedida.map(u => <option key={u.id} value={u.id}>{u.id} · {u.nombre}</option>)}
                 {!catalogs.unidadesMedida.length && <option value="BOT">BOT · Botella</option>}
               </select>
@@ -634,6 +639,7 @@ export const Catalog = () => {
                   value={editForm.categoryId ?? ''}
                   onChange={e => setEditForm({ ...editForm, categoryId: e.target.value })}
                 >
+                  <option value="">-- Seleccione una categoría --</option>
                   {catalogs.categorias.map(c => <option key={c.id} value={c.id}>{c.nombre}</option>)}
                 </select>
               </label>
@@ -645,6 +651,7 @@ export const Catalog = () => {
                   value={editForm.brandId ?? ''}
                   onChange={e => setEditForm({ ...editForm, brandId: e.target.value })}
                 >
+                  <option value="">-- Seleccione una marca --</option>
                   {catalogs.marcas.map(m => <option key={m.id} value={m.id}>{m.nombre}</option>)}
                 </select>
               </label>
@@ -653,9 +660,10 @@ export const Catalog = () => {
                 <span>U.M. Compra (pro_UM_Compra)</span>
                 <select
                   className="select"
-                  value={editForm.buyUnitId ?? 'CAJ'}
+                  value={editForm.buyUnitId ?? ''}
                   onChange={e => setEditForm({ ...editForm, buyUnitId: e.target.value })}
                 >
+                  <option value="">-- Seleccione unidad de compra --</option>
                   {catalogs.unidadesMedida.map(u => <option key={u.id} value={u.id}>{u.id} · {u.nombre}</option>)}
                 </select>
               </label>
@@ -664,9 +672,10 @@ export const Catalog = () => {
                 <span>U.M. Venta (pro_UM_Venta)</span>
                 <select
                   className="select"
-                  value={editForm.sellUnitId ?? 'BOT'}
+                  value={editForm.sellUnitId ?? ''}
                   onChange={e => setEditForm({ ...editForm, sellUnitId: e.target.value })}
                 >
+                  <option value="">-- Seleccione unidad de venta --</option>
                   {catalogs.unidadesMedida.map(u => <option key={u.id} value={u.id}>{u.id} · {u.nombre}</option>)}
                 </select>
               </label>
@@ -702,6 +711,7 @@ export const Catalog = () => {
                   value={editForm.shelfId ?? ''}
                   onChange={e => setEditForm({ ...editForm, shelfId: e.target.value })}
                 >
+                  <option value="">-- Seleccione una percha (Opcional) --</option>
                   {catalogs.perchas.map(p => (
                     <option key={p.id} value={p.id}>
                       Percha {p.letra}{p.nivel} · {p.nombre}
@@ -895,9 +905,9 @@ export const PurchaseOrders = () => {
       <div className="page-heading"><div><span className="eyebrow">ABASTECIMIENTO</span><h1>Órdenes de compra</h1><p>Registro y seguimiento de órdenes de aprovisionamiento.</p></div></div>
       {loading && <p className="helper-text" role="status">Cargando órdenes de compra...</p>}
       <section className="card"><h2 className="section-title">Nueva orden</h2>
-        <div className="grid-3"><label className="form-group">Proveedor<select className="select" value={supplierId} onChange={event => setSupplierId(event.target.value)} disabled={loading || saving}><option value="">Seleccionar proveedor</option>{activeSuppliers.map(supplier => <option key={supplier.id} value={supplier.id}>{supplier.nombre}</option>)}</select></label>
+        <div className="grid-3"><label className="form-group">Proveedor<select className="select" value={supplierId} onChange={event => setSupplierId(event.target.value)} disabled={loading || saving}><option value="">-- Seleccione un proveedor --</option>{activeSuppliers.map(supplier => <option key={supplier.id} value={supplier.id}>{supplier.nombre}</option>)}</select></label>
           {items.map((item, index) => <div className="purchase-line" key={index}>
-            <label className="form-group">Producto<select className="select" value={item.productId} onChange={event => updateItem(index, 'productId', event.target.value)} disabled={loading || saving}><option value="">Seleccionar producto</option>{activeProducts.map(product => <option key={product.id} value={product.id}>{product.nombre}</option>)}</select></label>
+            <label className="form-group">Producto<select className="select" value={item.productId} onChange={event => updateItem(index, 'productId', event.target.value)} disabled={loading || saving}><option value="">-- Seleccione un producto --</option>{activeProducts.map(product => <option key={product.id} value={product.id}>{product.nombre}</option>)}</select></label>
             <label className="form-group">Cantidad<input className="input" type="number" min="1" step="1" value={item.qty} onChange={event => updateItem(index, 'qty', event.target.value)} disabled={saving} /></label>
             <label className="form-group">Costo unitario<input className="input" type="number" min="0" step="0.01" value={item.cost} onChange={event => updateItem(index, 'cost', event.target.value)} disabled={saving} /></label>
             {items.length > 1 && <button type="button" className="icon-button" aria-label="Quitar producto de la orden" disabled={saving} onClick={() => setItems(previous => previous.filter((_, itemIndex) => itemIndex !== index))}><X size={16} /></button>}
@@ -1129,8 +1139,21 @@ export const Adjustments = () => {
     <div>
       <div className="page-heading"><div><span className="eyebrow">CONTROL DE BODEGA</span><h1>Ajustes físicos</h1><p>Registro de mermas y sobrantes con impacto en inventario.</p></div></div>
       <section className="card"><h2 className="section-title">Registrar ajuste</h2><div className="grid-4">
-        <label className="form-group">Tipo<select className="select" value={form.type} onChange={event => setForm({ ...form, type: event.target.value as Adjustment['type'] })}><option value="OUT">Salida · merma / rotura</option><option value="IN">Entrada · sobrante</option></select></label>
-        <label className="form-group">Producto<select className="select" value={form.productId} onChange={event => setForm({ ...form, productId: event.target.value })}><option value="">Seleccionar</option>{state.products.map(product => <option key={product.id} value={product.id}>{product.name} · stock {product.stock}</option>)}</select></label>
+        <label className="form-group">
+          Tipo
+          <select className="select" value={form.type} onChange={event => setForm({ ...form, type: event.target.value as Adjustment['type'] })}>
+            <option value="">-- Seleccione tipo de ajuste --</option>
+            <option value="OUT">Salida · merma / rotura</option>
+            <option value="IN">Entrada · sobrante</option>
+          </select>
+        </label>
+        <label className="form-group">
+          Producto
+          <select className="select" value={form.productId} onChange={event => setForm({ ...form, productId: event.target.value })}>
+            <option value="">-- Seleccione un producto --</option>
+            {state.products.map(product => <option key={product.id} value={product.id}>{product.name} · stock {product.stock}</option>)}
+          </select>
+        </label>
         <label className="form-group">Cantidad<input className="input" type="number" min="1" step="1" value={form.qty} onChange={event => setForm({ ...form, qty: Number(event.target.value) })} /></label>
         <label className="form-group">Motivo<input className="input" value={form.reason} onChange={event => setForm({ ...form, reason: event.target.value })} placeholder="Causa del ajuste" /></label>
         <div className="form-action"><button type="button" className="btn btn-primary" onClick={saveManualAdjustment}>Crear ajuste ABI</button></div>

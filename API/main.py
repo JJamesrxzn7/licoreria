@@ -1990,6 +1990,55 @@ def registrar_carga_empleado(employee_id: str, carga: DependentInput):
         if conn and conn.is_connected(): conn.close()
 
 
+@app.put("/api/empleados/{employee_id}/cargas/{carga_id}")
+def actualizar_carga_empleado(employee_id: str, carga_id: str, carga: DependentInput):
+    conn, cur = None, None
+    try:
+        conn = mysql.connector.connect(**get_db_config())
+        cur = conn.cursor()
+        user_id = get_user_id(cur)
+        cur.execute(
+            """
+            UPDATE CARGAS
+            SET car_Cedula = %s,
+                car_Apellido1 = %s,
+                car_Apellido2 = %s,
+                car_Nombre1 = %s,
+                car_Nombre2 = %s,
+                car_Sexo = %s,
+                car_FechaNacimiento = %s,
+                car_Parentesco = %s,
+                car_EstadoCivil = %s,
+                car_Dependencia = %s,
+                USER_ID = %s
+            WHERE id_Carga = %s AND id_Empleado = %s
+            """,
+            (
+                carga.cedula[:20],
+                carga.apellido1[:30],
+                carga.apellido2[:30] if carga.apellido2 else None,
+                carga.nombre1[:30],
+                carga.nombre2[:30] if carga.nombre2 else None,
+                carga.gender[:1].upper() if carga.gender else 'M',
+                carga.birth_date,
+                carga.relationship[:20],
+                carga.marital_status[:20],
+                carga.dependency_type[:20],
+                user_id,
+                carga_id,
+                employee_id,
+            ),
+        )
+        conn.commit()
+        return {"id": carga_id, "mensaje": f"Carga familiar {carga.nombre1} {carga.apellido1} actualizada exitosamente."}
+    except mysql.connector.Error as error:
+        if conn: conn.rollback()
+        raise_database_error(error)
+    finally:
+        if cur: cur.close()
+        if conn and conn.is_connected(): conn.close()
+
+
 @app.delete("/api/empleados/{employee_id}/cargas/{carga_id}")
 def eliminar_carga_empleado(employee_id: str, carga_id: str):
     conn, cur = None, None

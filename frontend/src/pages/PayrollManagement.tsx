@@ -353,6 +353,7 @@ export const PayrollManagement: React.FC = () => {
                 onChange={e => handleEmployeeChange(e.target.value)}
                 required
               >
+                <option value="">-- Seleccione un colaborador --</option>
                 {employees.filter(e => e.status === 'ACTIVE').map(emp => (
                   <option key={emp.id} value={emp.id}>
                     {emp.name} · {emp.department} · Sueldo: {money(emp.salary)}
@@ -439,6 +440,7 @@ export const PayrollManagement: React.FC = () => {
                     value={selectedBonusId}
                     onChange={e => handleBonusSelectChange(e.target.value)}
                   >
+                    <option value="">-- Seleccione una bonificación --</option>
                     {bonusCatalog.map(b => (
                       <option key={b.id} value={b.id}>{b.nombre} ({money(b.valor)})</option>
                     ))}
@@ -528,6 +530,7 @@ export const PayrollManagement: React.FC = () => {
                     value={selectedDeductionId}
                     onChange={e => handleDeductionSelectChange(e.target.value)}
                   >
+                    <option value="">-- Seleccione un descuento --</option>
                     {deductionCatalog.map(d => (
                       <option key={d.id} value={d.id}>{d.nombre} ({money(d.valor)})</option>
                     ))}
