@@ -232,11 +232,27 @@ export interface Payroll {
   deductionLines?: PayrollDeductionLine[];
 }
 
+export interface Banco {
+  id: string;
+  nombre: string;
+  estado: string;
+}
+
+export interface CentroCosto {
+  id: string;
+  idDepartamento: string;
+  departamento?: string;
+  nombre: string;
+  presupuestoMensual: number;
+  estado: string;
+}
+
 export interface Account {
   id: string;
   code: string;
   name: string;
-  type: 'ASSET' | 'LIABILITY' | 'EQUITY' | 'REVENUE' | 'EXPENSE';
+  type: string; // 'MAY' | 'DET'
+  accountTypeLabel?: string;
   balance: number;
 }
 

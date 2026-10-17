@@ -2,6 +2,7 @@ import { useState } from 'react';
 import {
   Bell, BookOpen, Briefcase, Calculator, FileText, LayoutDashboard, Menu,
   PanelLeftClose, PanelLeftOpen, ShoppingCart, Truck, Users, Wine, X,
+  Building2, PieChart
 } from 'lucide-react';
 import { StoreProvider } from './context';
 import { POS } from './pages/POS';
@@ -23,6 +24,8 @@ const navItems = [
   { id: 'employees', label: 'Ficha del personal', icon: Users, group: 'ADMINISTRACIÓN' },
   { id: 'payroll', label: 'Roles de pago', icon: Calculator, group: 'ADMINISTRACIÓN' },
   { id: 'accounting', label: 'Contabilidad', icon: Calculator, group: 'ADMINISTRACIÓN' },
+  { id: 'bancos', label: 'Bancos', icon: Building2, group: 'ADMINISTRACIÓN' },
+  { id: 'cost_centers', label: 'Centros de costos', icon: PieChart, group: 'ADMINISTRACIÓN' },
   { id: 'reports', label: 'Reportes', icon: FileText, group: 'ADMINISTRACIÓN' },
 ];
 
@@ -53,7 +56,9 @@ const AppContent = () => {
     employees: <EmployeeFile />,
     payroll: <PayrollManagement />,
     hr: <EmployeeFile />,
-    accounting: <Accounting />,
+    accounting: <Accounting initialTab="diario" />,
+    bancos: <Accounting initialTab="bancos" />,
+    cost_centers: <Accounting initialTab="centros_costos" />,
     reports: <Reports />,
   };
 

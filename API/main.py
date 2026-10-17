@@ -8,7 +8,7 @@ from uuid import uuid4
 import mysql.connector  # type: ignore
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 # Cargar variables de entorno desde .env (con fallback si python-dotenv no estuviera instalado)
 try:
@@ -61,6 +61,7 @@ def get_user_id(cursor=None) -> str:
     Obtiene un id_Usuario de la tabla USUARIOS de la aplicación si existe.
     El usuario de conexión MariaDB (ej. 'root') no pertenece a las tablas de la app,
     por lo que aquí solo consultamos la tabla USUARIOS de la base de datos si existe algún registro.
+    Si está vacía, asegura un usuario básico para evitar fallos de clave foránea en log_auditoria.
     """
     if cursor is not None:
         try:
@@ -75,6 +76,40 @@ def get_user_id(cursor=None) -> str:
             row = cursor.fetchone()
             if row:
                 return str(row[0] if isinstance(row, tuple) else row["id_Usuario"]).strip()
+
+            # Asegurar empleado y usuario por defecto si la base está recién inicializada
+            cursor.execute("SELECT id_Empleado FROM EMPLEADOS ORDER BY id_Empleado ASC LIMIT 1")
+            emp_row = cursor.fetchone()
+            if emp_row:
+                emp_id = str(emp_row[0] if isinstance(emp_row, tuple) else emp_row["id_Empleado"]).strip()
+            else:
+                emp_id = "EMP-000001"
+                cursor.execute("SELECT id_Departamento FROM DEPARTAMENTOS ORDER BY id_Departamento ASC LIMIT 1")
+                dep_row = cursor.fetchone()
+                dep_id = str(dep_row[0] if isinstance(dep_row, tuple) else dep_row["id_Departamento"]).strip() if dep_row else "DEP-000001"
+                cursor.execute("INSERT IGNORE INTO DEPARTAMENTOS (id_Departamento, dep_Nombre, ESTADO_DEP) VALUES (%s, 'Administración', 'ACT')", (dep_id,))
+                cursor.execute(
+                    """
+                    INSERT IGNORE INTO EMPLEADOS (id_Empleado, emp_Cedula, emp_Nombre1, emp_Apellido1, emp_Sexo, emp_FechaNacimiento, emp_Sueldo, id_Departamento, ESTADO_EMP)
+                    VALUES (%s, '1700000001', 'Admin', 'Sistema', 'M', '1990-01-01', 1000.00, %s, 'ACT')
+                    """,
+                    (emp_id, dep_id)
+                )
+
+            usr_id = "USR-000001"
+            cursor.execute(
+                """
+                INSERT IGNORE INTO USUARIOS (id_Usuario, id_Empleado, usr_Username, usr_PasswordHash, ESTADO_USR)
+                VALUES (%s, %s, 'admin', 'system_hash', 'ACT')
+                """,
+                (usr_id, emp_id)
+            )
+            if hasattr(cursor, "_connection") and cursor._connection:
+                try:
+                    cursor._connection.commit()
+                except Exception:
+                    pass
+            return usr_id
         except Exception as e:
             logger.debug("No se pudo obtener usuario de USUARIOS: %s", e)
 
@@ -187,14 +222,22 @@ class PhysicalAdjustmentInput(BaseModel):
 
 
 class JournalEntryLineInput(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
     account_id: str = Field(alias="idCuenta")
     debit: Decimal = Field(default=Decimal("0"), alias="debe")
     credit: Decimal = Field(default=Decimal("0"), alias="haber")
 
 
 class JournalEntryInput(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
     description: str = Field(alias="descripcion", max_length=30)
-    lines: list[JournalEntryLineInput] = Field(min_length=2)
+    entry_date: date | datetime | str | None = Field(default=None, alias="fecha")
+    lines: list[JournalEntryLineInput] = Field(min_length=2, default_factory=list)
+
+    def __init__(self, **data):
+        if "lineas" in data and "lines" not in data:
+            data["lines"] = data["lineas"]
+        super().__init__(**data)
 
 
 class ReceptionConfirmInput(BaseModel):
@@ -266,7 +309,21 @@ class PayrollInput(BaseModel):
 class AccountInput(BaseModel):
     id: str = Field(alias="idCuenta", min_length=1, max_length=15)
     name: str = Field(alias="nombre", min_length=2, max_length=60)
-    type: str = Field(default="COR", alias="tipo")
+    type: str = Field(default="DET", alias="tipo")  # 'MAY' or 'DET'
+
+
+class BancoInput(BaseModel):
+    id: str | None = Field(default=None, alias="idBanco")
+    name: str = Field(alias="nombre", min_length=2, max_length=50)
+    status: str = Field(default="ACT", alias="estado")
+
+
+class CentroCostoInput(BaseModel):
+    id: str | None = Field(default=None, alias="idCentroCosto")
+    department_id: str = Field(alias="idDepartamento")
+    name: str = Field(alias="nombre", min_length=2, max_length=50)
+    monthly_budget: Decimal = Field(default=Decimal("0.00"), alias="presupuestoMensual", ge=0)
+    status: str = Field(default="ACT", alias="estado")
 
 
 # ==========================================
@@ -2370,8 +2427,8 @@ def anular_nomina(pago_id: str):
 # 9. MÓDULO CONTABILIDAD
 # ==========================================
 
-@app.get("/api/contabilidad/cuentas")
-def listar_cuentas():
+@app.get("/api/contabilidad/bancos")
+def listar_bancos():
     conn, cur = None, None
     try:
         conn = mysql.connector.connect(**get_db_config())
@@ -2379,16 +2436,214 @@ def listar_cuentas():
         cur.execute(
             """
             SELECT 
+                TRIM(id_Banco) AS id,
+                TRIM(ban_Nombre) AS nombre,
+                COALESCE(ESTADO_BAN, 'ACT') AS estado
+            FROM BANCOS
+            ORDER BY id_Banco
+            """
+        )
+        return cur.fetchall()
+    except mysql.connector.Error as error:
+        raise_database_error(error)
+    finally:
+        if cur: cur.close()
+        if conn and conn.is_connected(): conn.close()
+
+
+@app.post("/api/contabilidad/bancos")
+def crear_banco(banco: BancoInput):
+    conn, cur = None, None
+    try:
+        conn = mysql.connector.connect(**get_db_config())
+        cur = conn.cursor()
+        banco_id = banco.id.strip().upper() if banco.id and banco.id.strip() else ""
+        if not banco_id:
+            cur.execute("SELECT MAX(CAST(SUBSTRING(id_Banco, 5) AS UNSIGNED)) FROM BANCOS WHERE id_Banco LIKE 'BAN-%'")
+            row = cur.fetchone()
+            seq = (row[0] or 0) + 1 if row else 1
+            banco_id = f"BAN-{seq:06d}"
+
+        cur.execute(
+            """
+            INSERT INTO BANCOS (id_Banco, ban_Nombre, ESTADO_BAN)
+            VALUES (%s, %s, %s)
+            ON DUPLICATE KEY UPDATE
+                ban_Nombre = VALUES(ban_Nombre),
+                ESTADO_BAN = VALUES(ESTADO_BAN)
+            """,
+            (banco_id[:10], banco.name[:50].strip(), (banco.status[:3].upper() if banco.status else 'ACT'))
+        )
+        conn.commit()
+        return {"id": banco_id, "mensaje": f"Banco '{banco.name}' registrado exitosamente con código {banco_id}."}
+    except mysql.connector.Error as error:
+        if conn: conn.rollback()
+        raise_database_error(error)
+    finally:
+        if cur: cur.close()
+        if conn and conn.is_connected(): conn.close()
+
+
+@app.put("/api/contabilidad/bancos/{banco_id}")
+def actualizar_banco(banco_id: str, banco: BancoInput):
+    conn, cur = None, None
+    try:
+        conn = mysql.connector.connect(**get_db_config())
+        cur = conn.cursor()
+        cur.execute(
+            """
+            UPDATE BANCOS 
+            SET ban_Nombre = %s, ESTADO_BAN = %s
+            WHERE id_Banco = %s
+            """,
+            (banco.name[:50].strip(), (banco.status[:3].upper() if banco.status else 'ACT'), banco_id.strip())
+        )
+        if cur.rowcount == 0:
+            raise HTTPException(status_code=404, detail=f"No se encontró el banco con código {banco_id}.")
+        conn.commit()
+        return {"id": banco_id, "mensaje": f"Banco {banco_id} actualizado exitosamente."}
+    except mysql.connector.Error as error:
+        if conn: conn.rollback()
+        raise_database_error(error)
+    finally:
+        if cur: cur.close()
+        if conn and conn.is_connected(): conn.close()
+
+
+@app.get("/api/contabilidad/centros-costos")
+def listar_centros_costos():
+    conn, cur = None, None
+    try:
+        conn = mysql.connector.connect(**get_db_config())
+        cur = conn.cursor(dictionary=True)
+        cur.execute(
+            """
+            SELECT 
+                TRIM(CC.id_CentroCosto) AS id,
+                TRIM(CC.id_Departamento) AS idDepartamento,
+                TRIM(COALESCE(D.dep_Nombre, 'General')) AS departamento,
+                TRIM(CC.cco_Nombre) AS nombre,
+                CC.cco_PresupuestoMensual AS presupuestoMensual,
+                COALESCE(CC.ESTADO_CCO, 'ACT') AS estado
+            FROM CENTROS_COSTOS CC
+            LEFT JOIN DEPARTAMENTOS D ON CC.id_Departamento = D.id_Departamento
+            ORDER BY CC.id_CentroCosto
+            """
+        )
+        return cur.fetchall()
+    except mysql.connector.Error as error:
+        raise_database_error(error)
+    finally:
+        if cur: cur.close()
+        if conn and conn.is_connected(): conn.close()
+
+
+@app.post("/api/contabilidad/centros-costos")
+def crear_centro_costo(cco: CentroCostoInput):
+    conn, cur = None, None
+    try:
+        conn = mysql.connector.connect(**get_db_config())
+        cur = conn.cursor()
+        cco_id = cco.id.strip().upper() if cco.id and cco.id.strip() else ""
+        if not cco_id:
+            cur.execute("SELECT MAX(CAST(SUBSTRING(id_CentroCosto, 5) AS UNSIGNED)) FROM CENTROS_COSTOS WHERE id_CentroCosto LIKE 'CCO-%'")
+            row = cur.fetchone()
+            seq = (row[0] or 0) + 1 if row else 1
+            cco_id = f"CCO-{seq:06d}"
+
+        dep_id = cco.department_id.strip()[:10]
+        cur.execute("SELECT id_Departamento FROM DEPARTAMENTOS WHERE id_Departamento = %s", (dep_id,))
+        if not cur.fetchone():
+            cur.execute("INSERT IGNORE INTO DEPARTAMENTOS (id_Departamento, dep_Nombre, ESTADO_DEP) VALUES (%s, 'General', 'ACT')", (dep_id,))
+
+        cur.execute(
+            """
+            INSERT INTO CENTROS_COSTOS (id_CentroCosto, id_Departamento, cco_Nombre, cco_PresupuestoMensual, ESTADO_CCO)
+            VALUES (%s, %s, %s, %s, %s)
+            ON DUPLICATE KEY UPDATE
+                id_Departamento = VALUES(id_Departamento),
+                cco_Nombre = VALUES(cco_Nombre),
+                cco_PresupuestoMensual = VALUES(cco_PresupuestoMensual),
+                ESTADO_CCO = VALUES(ESTADO_CCO)
+            """,
+            (
+                cco_id[:10],
+                dep_id,
+                cco.name[:50].strip(),
+                cco.monthly_budget,
+                (cco.status[:3].upper() if cco.status else 'ACT')
+            )
+        )
+        conn.commit()
+        return {"id": cco_id, "mensaje": f"Centro de Costo '{cco.name}' registrado exitosamente con código {cco_id}."}
+    except mysql.connector.Error as error:
+        if conn: conn.rollback()
+        raise_database_error(error)
+    finally:
+        if cur: cur.close()
+        if conn and conn.is_connected(): conn.close()
+
+
+@app.put("/api/contabilidad/centros-costos/{cco_id}")
+def actualizar_centro_costo(cco_id: str, cco: CentroCostoInput):
+    conn, cur = None, None
+    try:
+        conn = mysql.connector.connect(**get_db_config())
+        cur = conn.cursor()
+        dep_id = cco.department_id.strip()[:10]
+        cur.execute("SELECT id_Departamento FROM DEPARTAMENTOS WHERE id_Departamento = %s", (dep_id,))
+        if not cur.fetchone():
+            cur.execute("INSERT IGNORE INTO DEPARTAMENTOS (id_Departamento, dep_Nombre, ESTADO_DEP) VALUES (%s, 'General', 'ACT')", (dep_id,))
+
+        cur.execute(
+            """
+            UPDATE CENTROS_COSTOS
+            SET id_Departamento = %s,
+                cco_Nombre = %s,
+                cco_PresupuestoMensual = %s,
+                ESTADO_CCO = %s
+            WHERE id_CentroCosto = %s
+            """,
+            (
+                dep_id,
+                cco.name[:50].strip(),
+                cco.monthly_budget,
+                (cco.status[:3].upper() if cco.status else 'ACT'),
+                cco_id.strip()
+            )
+        )
+        if cur.rowcount == 0:
+            raise HTTPException(status_code=404, detail=f"No se encontró el Centro de Costo con código {cco_id}.")
+        conn.commit()
+        return {"id": cco_id, "mensaje": f"Centro de Costo {cco_id} actualizado exitosamente."}
+    except mysql.connector.Error as error:
+        if conn: conn.rollback()
+        raise_database_error(error)
+    finally:
+        if cur: cur.close()
+        if conn and conn.is_connected(): conn.close()
+
+
+@app.get("/api/contabilidad/cuentas")
+def listar_cuentas():
+    conn, cur = None, None
+    try:
+        conn = mysql.connector.connect(**get_db_config())
+        cur = conn.cursor(dictionary=True)
+        cur.execute("INSERT IGNORE INTO TIPO_CUENTA (id_Tipo_Cta, tip_Descripcion) VALUES ('MAY', 'Mayor'), ('DET', 'Detalle')")
+        conn.commit()
+        cur.execute(
+            """
+            SELECT 
                 TRIM(C.id_Cuenta) AS id,
                 TRIM(C.id_Cuenta) AS code,
                 TRIM(C.cue_Descripcion) AS name,
+                TRIM(C.cue_Tipo) AS type,
                 CASE 
-                    WHEN C.id_Cuenta LIKE '1%' THEN 'ASSET'
-                    WHEN C.id_Cuenta LIKE '2%' THEN 'LIABILITY'
-                    WHEN C.id_Cuenta LIKE '3%' THEN 'EQUITY'
-                    WHEN C.id_Cuenta LIKE '4%' THEN 'REVENUE'
-                    ELSE 'EXPENSE'
-                END AS type,
+                    WHEN TRIM(C.cue_Tipo) = 'MAY' THEN 'MAYOR'
+                    WHEN TRIM(C.cue_Tipo) = 'DET' THEN 'DETALLE'
+                    ELSE TRIM(C.cue_Tipo)
+                END AS accountTypeLabel,
                 COALESCE(C.cue_DEBE00, 0) - COALESCE(C.cue_HABER00, 0) AS balance
             FROM CUENTAS C
             WHERE C.ESTADO_CUE = 'ACT' OR C.ESTADO_CUE IS NULL
@@ -2405,23 +2660,31 @@ def listar_cuentas():
 
 @app.post("/api/contabilidad/cuentas")
 def crear_cuenta(acc: AccountInput):
+    acc_type = (acc.type or "DET").strip().upper()
+    if acc_type not in ("MAY", "DET"):
+        raise HTTPException(
+            status_code=422,
+            detail="El tipo de cuenta debe ser únicamente 'MAY' (Cuenta de Mayor) o 'DET' (Cuenta de Detalle)."
+        )
+
     conn, cur = None, None
     try:
         conn = mysql.connector.connect(**get_db_config())
         cur = conn.cursor()
-        cur.execute("SELECT id_Tipo_Cta FROM tipo_cuenta WHERE id_Tipo_Cta = %s", (acc.type[:3],))
-        if not cur.fetchone():
-            cur.execute("INSERT IGNORE INTO tipo_cuenta (id_Tipo_Cta, tip_Descripcion) VALUES (%s, %s)", (acc.type[:3], acc.type[:10]))
+        cur.execute("INSERT IGNORE INTO TIPO_CUENTA (id_Tipo_Cta, tip_Descripcion) VALUES ('MAY', 'Mayor'), ('DET', 'Detalle')")
         cur.execute(
             """
             INSERT INTO CUENTAS (id_Cuenta, cue_Descripcion, cue_Tipo, cue_DEBE00, cue_HABER00, ESTADO_CUE)
             VALUES (%s, %s, %s, 0, 0, 'ACT')
-            ON DUPLICATE KEY UPDATE cue_Descripcion = VALUES(cue_Descripcion)
+            ON DUPLICATE KEY UPDATE 
+                cue_Descripcion = VALUES(cue_Descripcion),
+                cue_Tipo = VALUES(cue_Tipo)
             """,
-            (acc.id[:15], acc.name[:60], acc.type[:3]),
+            (acc.id[:15], acc.name[:60], acc_type),
         )
         conn.commit()
-        return {"id": acc.id, "mensaje": f"Cuenta {acc.id} creada exitosamente."}
+        tipo_lbl = "MAYOR" if acc_type == "MAY" else "DETALLE"
+        return {"id": acc.id, "mensaje": f"Cuenta {acc.id} registrada exitosamente como tipo {tipo_lbl}."}
     except mysql.connector.Error as error:
         if conn: conn.rollback()
         raise_database_error(error)
@@ -2488,6 +2751,25 @@ def crear_asiento(entry: JournalEntryInput):
     try:
         conn = mysql.connector.connect(**get_db_config())
         cur = conn.cursor()
+
+        # Validación vital: ninguna cuenta del asiento puede ser de tipo MAYOR
+        acc_ids = [line.account_id.strip() for line in entry.lines]
+        if acc_ids:
+            format_strings = ','.join(['%s'] * len(acc_ids))
+            cur.execute(
+                f"SELECT TRIM(id_Cuenta), TRIM(cue_Tipo), TRIM(cue_Descripcion) FROM CUENTAS WHERE id_Cuenta IN ({format_strings})",
+                tuple(acc_ids)
+            )
+            found_accounts = {row[0]: (row[1], row[2]) for row in cur.fetchall()}
+            for line in entry.lines:
+                acc_clean = line.account_id.strip()
+                acc_info = found_accounts.get(acc_clean)
+                if acc_info and acc_info[0] == 'MAY':
+                    raise HTTPException(
+                        status_code=422,
+                        detail=f"Validación contable: No se permite realizar asientos en cuentas de MAYOR. La cuenta '{acc_clean}' ({acc_info[1]}) es de MAYOR. Utilice cuentas de DETALLE (DET)."
+                    )
+
         user_id = get_user_id(cur)
         cur.callproc(
             "SP_ASIENTO_CREAR",
@@ -2499,16 +2781,27 @@ def crear_asiento(entry: JournalEntryInput):
                 user_id,
             ),
         )
+
+        # Si se especificó una fecha de transacción manual, actualizar el TIMESTAMP en ASIENTOS
+        if entry.entry_date:
+            date_val = str(entry.entry_date).strip()
+            if len(date_val) == 10:
+                date_val = f"{date_val} 12:00:00"
+            cur.execute(
+                "UPDATE ASIENTOS SET asi_FechaHora = %s WHERE id_Asiento = %s",
+                (date_val, asiento_id)
+            )
+
         for line in entry.lines:
             cur.execute(
                 """
                 INSERT INTO CTAxASI (id_Asiento, id_Cuenta, cxa_Debe, cxa_Haber, ESTADO_CXA)
                 VALUES (%s, %s, %s, %s, 'ABI')
                 """,
-                (asiento_id, line.account_id, line.debit, line.credit),
+                (asiento_id, line.account_id.strip(), line.debit, line.credit),
             )
         conn.commit()
-        return {"id": asiento_id, "estado": "ABI", "mensaje": "Asiento contable registrado."}
+        return {"id": asiento_id, "estado": "ABI", "mensaje": "Asiento contable registrado exitosamente."}
     except mysql.connector.Error as error:
         if conn: conn.rollback()
         raise_database_error(error)

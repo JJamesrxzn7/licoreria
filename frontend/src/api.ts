@@ -1,7 +1,8 @@
 import {
   Customer, Supplier, Product, Invoice, Reception, Delivery,
   Adjustment, Employee, Payroll, Account, JournalEntry,
-  Dependent, CargoHistoryEntry, BonusCatalogItem, DeductionCatalogItem
+  Dependent, CargoHistoryEntry, BonusCatalogItem, DeductionCatalogItem,
+  Banco, CentroCosto
 } from './types';
 
 const API_BASE_URL = (import.meta.env.VITE_API_URL || 'http://127.0.0.1:8000').replace(/\/$/, '');
@@ -386,6 +387,7 @@ export const accountingApi = {
   listEntries: () => request<JournalEntry[]>('/api/contabilidad/asientos'),
   createEntry: (entry: {
     descripcion: string;
+    fecha?: string;
     lines: Array<{ idCuenta: string; debe: number; haber: number }>;
   }) => request<{ id: string; estado: string; mensaje: string }>('/api/contabilidad/asientos', {
     method: 'POST',
@@ -397,6 +399,39 @@ export const accountingApi = {
   annulEntry: (id: string) => request<{ id: string; estado: string; mensaje: string }>(`/api/contabilidad/asientos/${encodeURIComponent(id)}/anular`, {
     method: 'POST',
   }),
+  listBancos: () => request<Banco[]>('/api/contabilidad/bancos'),
+  createBanco: (data: { idBanco?: string; nombre: string; estado?: string }) =>
+    request<{ id: string; mensaje: string }>('/api/contabilidad/bancos', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  updateBanco: (id: string, data: { nombre: string; estado?: string }) =>
+    request<{ id: string; mensaje: string }>(`/api/contabilidad/bancos/${encodeURIComponent(id)}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    }),
+  listCentrosCostos: () => request<CentroCosto[]>('/api/contabilidad/centros-costos'),
+  createCentroCosto: (data: {
+    idCentroCosto?: string;
+    idDepartamento: string;
+    nombre: string;
+    presupuestoMensual?: number;
+    estado?: string;
+  }) =>
+    request<{ id: string; mensaje: string }>('/api/contabilidad/centros-costos', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  updateCentroCosto: (id: string, data: {
+    idDepartamento: string;
+    nombre: string;
+    presupuestoMensual?: number;
+    estado?: string;
+  }) =>
+    request<{ id: string; mensaje: string }>(`/api/contabilidad/centros-costos/${encodeURIComponent(id)}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    }),
 };
 
 // 9. Auditoría
