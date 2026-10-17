@@ -10,6 +10,34 @@ import { hrApi } from '../api';
 const money = (val: number | string | undefined) =>
   `$${Number(val || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
+const RE_NAME = /^[A-Za-zÁÉÍÓÚáéíóúÑñÜü\s\.\-']+$/;
+const RE_SQLI = /(\b(UNION|SELECT|INSERT|UPDATE|DELETE|DROP|ALTER|TRUNCATE|EXEC|EXECUTE)\b|--|\/\*|\*\/|;|'|"|<script)/i;
+const RE_EMAIL = /^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$/;
+const RE_MOBILE = /^09\d{8}$/;
+const RE_PHONE_CONV = /^(0[2-7]\d{7}|\d{7})$/;
+
+export const validateEcuadorianCedula = (cedula: string): boolean => {
+  const clean = String(cedula || '').replace(/\D/g, '');
+  if (clean.length !== 10) return false;
+  const prov = parseInt(clean.slice(0, 2), 10);
+  if (!((prov >= 1 && prov <= 24) || prov === 30)) return false;
+  const tercer = parseInt(clean.charAt(2), 10);
+  if (tercer >= 6) return false;
+  const coefs = [2, 1, 2, 1, 2, 1, 2, 1, 2];
+  let suma = 0;
+  for (let i = 0; i < 9; i++) {
+    const val = parseInt(clean.charAt(i), 10) * coefs[i];
+    suma += val >= 10 ? val - 9 : val;
+  }
+  const verificador = (10 - (suma % 10)) % 10;
+  return verificador === parseInt(clean.charAt(9), 10);
+};
+
+const now = new Date();
+const maxBirthDateEmp = new Date(now.getFullYear() - 18, now.getMonth(), now.getDate()).toISOString().slice(0, 10);
+const minBirthDateEmp = new Date(now.getFullYear() - 90, now.getMonth(), now.getDate()).toISOString().slice(0, 10);
+const todayStr = now.toISOString().slice(0, 10);
+
 export const EmployeeFile: React.FC = () => {
   const { state, updateState } = useGlobalStore();
   const [employees, setEmployees] = useState<Employee[]>(state.employees);
@@ -182,22 +210,115 @@ export const EmployeeFile: React.FC = () => {
     }
   };
 
+  const validateEmployeeData = (form: {
+    ci: string;
+    nombre1: string;
+    nombre2?: string;
+    apellido1: string;
+    apellido2?: string;
+    sueldo: number;
+    fechaNacimiento: string;
+    direccion: string;
+    telefono?: string;
+    celular?: string;
+    email?: string;
+  }): string | null => {
+    const ciClean = form.ci.replace(/\D/g, '');
+    if (!validateEcuadorianCedula(ciClean)) {
+      return 'La cédula ingresada no es válida según el algoritmo de verificación de Ecuador (10 dígitos).';
+    }
+    if (!form.nombre1.trim() || !form.apellido1.trim()) {
+      return 'Primer nombre y primer apellido son requeridos.';
+    }
+    if (!RE_NAME.test(form.nombre1.trim()) || RE_SQLI.test(form.nombre1.trim())) {
+      return 'El primer nombre solo puede contener letras y espacios, sin números ni sentencias SQL.';
+    }
+    if (form.nombre2 && form.nombre2.trim() && (!RE_NAME.test(form.nombre2.trim()) || RE_SQLI.test(form.nombre2.trim()))) {
+      return 'El segundo nombre solo puede contener letras y espacios.';
+    }
+    if (!RE_NAME.test(form.apellido1.trim()) || RE_SQLI.test(form.apellido1.trim())) {
+      return 'El primer apellido solo puede contener letras y espacios, sin números ni sentencias SQL.';
+    }
+    if (form.apellido2 && form.apellido2.trim() && (!RE_NAME.test(form.apellido2.trim()) || RE_SQLI.test(form.apellido2.trim()))) {
+      return 'El segundo apellido solo puede contener letras y espacios.';
+    }
+    if (Number(form.sueldo) < 460) {
+      return 'El sueldo base no puede ser inferior al Salario Básico Unificado vigente ($460.00 USD).';
+    }
+    if (form.fechaNacimiento > maxBirthDateEmp) {
+      return 'El colaborador debe ser mayor de edad (al menos 18 años).';
+    }
+    if (form.fechaNacimiento < minBirthDateEmp) {
+      return 'La fecha de nacimiento del colaborador no es válida (edad supera 90 años).';
+    }
+    if (!form.direccion.trim() || form.direccion.trim().length < 5) {
+      return 'La dirección domiciliaria debe tener al menos 5 caracteres (emp_Direccion).';
+    }
+    if (RE_SQLI.test(form.direccion.trim())) {
+      return 'La dirección contiene caracteres o sentencias no permitidas (protección SQL Injection).';
+    }
+    if (form.celular && form.celular.trim()) {
+      const celClean = form.celular.replace(/\D/g, '');
+      if (!RE_MOBILE.test(celClean)) {
+        return 'El celular debe tener 10 dígitos y comenzar con 09 (ej. 0991234567).';
+      }
+    }
+    if (form.telefono && form.telefono.trim()) {
+      const telClean = form.telefono.replace(/\D/g, '');
+      if (!RE_PHONE_CONV.test(telClean)) {
+        return 'El teléfono convencional debe tener 7 dígitos o 9 dígitos iniciando con código de provincia (ej. 022345678).';
+      }
+    }
+    if (form.email && form.email.trim()) {
+      if (!RE_EMAIL.test(form.email.trim().toLowerCase()) || RE_SQLI.test(form.email.trim())) {
+        return 'El formato de correo electrónico es inválido (ej. usuario@dominio.com).';
+      }
+    }
+    return null;
+  };
+
+  const validateDependentData = (form: {
+    ci: string;
+    nombre1: string;
+    nombre2?: string;
+    apellido1: string;
+    apellido2?: string;
+    fechaNacimiento: string;
+  }): string | null => {
+    const ciClean = form.ci.replace(/\D/g, '');
+    if (!validateEcuadorianCedula(ciClean)) {
+      return 'La cédula de la carga familiar no es válida según el algoritmo de Ecuador (10 dígitos).';
+    }
+    if (!form.nombre1.trim() || !form.apellido1.trim()) {
+      return 'Primer nombre y primer apellido de la carga familiar son obligatorios.';
+    }
+    if (!RE_NAME.test(form.nombre1.trim()) || RE_SQLI.test(form.nombre1.trim())) {
+      return 'El primer nombre de la carga familiar solo puede contener letras y espacios.';
+    }
+    if (form.nombre2 && form.nombre2.trim() && (!RE_NAME.test(form.nombre2.trim()) || RE_SQLI.test(form.nombre2.trim()))) {
+      return 'El segundo nombre de la carga familiar solo puede contener letras y espacios.';
+    }
+    if (!RE_NAME.test(form.apellido1.trim()) || RE_SQLI.test(form.apellido1.trim())) {
+      return 'El primer apellido de la carga familiar solo puede contener letras y espacios.';
+    }
+    if (form.apellido2 && form.apellido2.trim() && (!RE_NAME.test(form.apellido2.trim()) || RE_SQLI.test(form.apellido2.trim()))) {
+      return 'El segundo apellido de la carga familiar solo puede contener letras y espacios.';
+    }
+    if (form.fechaNacimiento > todayStr) {
+      return 'La fecha de nacimiento de la carga familiar no puede ser en el futuro.';
+    }
+    return null;
+  };
+
   // Crear nuevo empleado
   const handleCreateEmployee = async (e: React.FormEvent) => {
     e.preventDefault();
+    const errorMsg = validateEmployeeData(newEmpForm);
+    if (errorMsg) {
+      setNotice({ type: 'error', message: errorMsg });
+      return;
+    }
     const ciClean = newEmpForm.ci.replace(/\D/g, '').slice(0, 10);
-    if (ciClean.length < 10) {
-      setNotice({ type: 'error', message: 'La cédula debe tener exactamente 10 dígitos.' });
-      return;
-    }
-    if (!newEmpForm.nombre1.trim() || !newEmpForm.apellido1.trim()) {
-      setNotice({ type: 'error', message: 'Primer nombre y primer apellido son requeridos.' });
-      return;
-    }
-    if (!newEmpForm.direccion.trim()) {
-      setNotice({ type: 'error', message: 'La dirección física del empleado es obligatoria (emp_Direccion).' });
-      return;
-    }
 
     try {
       const res = await hrApi.createEmployee({
@@ -212,8 +333,8 @@ export const EmployeeFile: React.FC = () => {
         idDepartamento: newEmpForm.idDepartamento || departments[0]?.id || 'DEP-TEST',
         idCargo: newEmpForm.idCargo || cargos[0]?.id || 'CGO-000001',
         direccion: newEmpForm.direccion.trim(),
-        telefono: newEmpForm.telefono.trim() || undefined,
-        celular: newEmpForm.celular.trim() || undefined,
+        telefono: newEmpForm.telefono.replace(/\D/g, '') || undefined,
+        celular: newEmpForm.celular.replace(/\D/g, '') || undefined,
         email: newEmpForm.email.trim() || undefined,
       });
 
@@ -231,6 +352,12 @@ export const EmployeeFile: React.FC = () => {
     e.preventDefault();
     if (!selectedEmployee) return;
 
+    const errorMsg = validateEmployeeData(editEmpForm);
+    if (errorMsg) {
+      setNotice({ type: 'error', message: errorMsg });
+      return;
+    }
+
     try {
       const res = await hrApi.updateEmployee(selectedEmployee.id, {
         ci: editEmpForm.ci.replace(/\D/g, '').slice(0, 10),
@@ -243,8 +370,8 @@ export const EmployeeFile: React.FC = () => {
         sueldo: Number(editEmpForm.sueldo),
         idDepartamento: editEmpForm.idDepartamento,
         direccion: editEmpForm.direccion.trim(),
-        telefono: editEmpForm.telefono.trim() || undefined,
-        celular: editEmpForm.celular.trim() || undefined,
+        telefono: editEmpForm.telefono.replace(/\D/g, '') || undefined,
+        celular: editEmpForm.celular.replace(/\D/g, '') || undefined,
         email: editEmpForm.email.trim() || undefined,
       });
 
@@ -259,6 +386,11 @@ export const EmployeeFile: React.FC = () => {
   const handleAssignCargo = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedEmployee || !newCargoForm.idCargo) return;
+
+    if (newCargoForm.fechaFin && newCargoForm.fechaFin < newCargoForm.fechaInicio) {
+      setNotice({ type: 'error', message: 'La fecha de fin del cargo no puede ser anterior a la fecha de inicio.' });
+      return;
+    }
 
     try {
       const res = await hrApi.assignCargo(selectedEmployee.id, {
@@ -280,15 +412,13 @@ export const EmployeeFile: React.FC = () => {
     e.preventDefault();
     if (!selectedEmployee) return;
 
+    const errorMsg = validateDependentData(newDependentForm);
+    if (errorMsg) {
+      setNotice({ type: 'error', message: errorMsg });
+      return;
+    }
+
     const ciClean = newDependentForm.ci.replace(/\D/g, '').slice(0, 10);
-    if (ciClean.length < 10) {
-      setNotice({ type: 'error', message: 'La cédula de la carga familiar debe contener 10 dígitos.' });
-      return;
-    }
-    if (!newDependentForm.nombre1.trim() || !newDependentForm.apellido1.trim()) {
-      setNotice({ type: 'error', message: 'Primer nombre y primer apellido de la carga son obligatorios.' });
-      return;
-    }
 
     try {
       const res = await hrApi.createDependent(selectedEmployee.id, {
@@ -346,15 +476,13 @@ export const EmployeeFile: React.FC = () => {
     e.preventDefault();
     if (!selectedEmployee || !editingDependent?.id) return;
 
+    const errorMsg = validateDependentData(editDependentForm);
+    if (errorMsg) {
+      setNotice({ type: 'error', message: errorMsg });
+      return;
+    }
+
     const ciClean = editDependentForm.ci.replace(/\D/g, '').slice(0, 10);
-    if (ciClean.length < 10) {
-      setNotice({ type: 'error', message: 'La cédula debe contener exactamente 10 dígitos.' });
-      return;
-    }
-    if (!editDependentForm.nombre1.trim() || !editDependentForm.apellido1.trim()) {
-      setNotice({ type: 'error', message: 'Primer nombre y primer apellido son obligatorios.' });
-      return;
-    }
 
     try {
       const res = await hrApi.updateDependent(selectedEmployee.id, editingDependent.id, {
@@ -600,15 +728,25 @@ export const EmployeeFile: React.FC = () => {
                     <input
                       className="input"
                       maxLength={10}
+                      pattern="^\d{10}$"
+                      title="Cédula ecuatoriana válida de 10 dígitos"
                       value={editEmpForm.ci}
                       onChange={e => setEditEmpForm({ ...editEmpForm, ci: e.target.value.replace(/\D/g, '').slice(0, 10) })}
                       required
                     />
+                    {editEmpForm.ci.length === 10 && (
+                      <span style={{ fontSize: '0.75rem', marginTop: '2px', color: validateEcuadorianCedula(editEmpForm.ci) ? '#059669' : '#dc2626' }}>
+                        {validateEcuadorianCedula(editEmpForm.ci) ? '✓ Cédula válida' : '✗ Cédula no válida en Ecuador'}
+                      </span>
+                    )}
                   </label>
                   <label className="form-group">
                     Primer Nombre *
                     <input
                       className="input"
+                      maxLength={30}
+                      pattern="^[A-Za-zÁÉÍÓÚáéíóúÑñÜü\s\.\-']+$"
+                      title="Solo letras y espacios (máximo 30 caracteres)"
                       value={editEmpForm.nombre1}
                       onChange={e => setEditEmpForm({ ...editEmpForm, nombre1: e.target.value })}
                       required
@@ -618,6 +756,9 @@ export const EmployeeFile: React.FC = () => {
                     Segundo Nombre
                     <input
                       className="input"
+                      maxLength={30}
+                      pattern="^[A-Za-zÁÉÍÓÚáéíóúÑñÜü\s\.\-']+$"
+                      title="Solo letras y espacios (máximo 30 caracteres)"
                       value={editEmpForm.nombre2}
                       onChange={e => setEditEmpForm({ ...editEmpForm, nombre2: e.target.value })}
                     />
@@ -626,6 +767,9 @@ export const EmployeeFile: React.FC = () => {
                     Primer Apellido *
                     <input
                       className="input"
+                      maxLength={30}
+                      pattern="^[A-Za-zÁÉÍÓÚáéíóúÑñÜü\s\.\-']+$"
+                      title="Solo letras y espacios (máximo 30 caracteres)"
                       value={editEmpForm.apellido1}
                       onChange={e => setEditEmpForm({ ...editEmpForm, apellido1: e.target.value })}
                       required
@@ -635,6 +779,9 @@ export const EmployeeFile: React.FC = () => {
                     Segundo Apellido
                     <input
                       className="input"
+                      maxLength={30}
+                      pattern="^[A-Za-zÁÉÍÓÚáéíóúÑñÜü\s\.\-']+$"
+                      title="Solo letras y espacios (máximo 30 caracteres)"
                       value={editEmpForm.apellido2}
                       onChange={e => setEditEmpForm({ ...editEmpForm, apellido2: e.target.value })}
                     />
@@ -657,6 +804,9 @@ export const EmployeeFile: React.FC = () => {
                     <input
                       className="input"
                       type="date"
+                      max={maxBirthDateEmp}
+                      min={minBirthDateEmp}
+                      title="El colaborador debe tener al menos 18 años"
                       value={editEmpForm.fechaNacimiento}
                       onChange={e => setEditEmpForm({ ...editEmpForm, fechaNacimiento: e.target.value })}
                       required
@@ -667,8 +817,9 @@ export const EmployeeFile: React.FC = () => {
                     <input
                       className="input"
                       type="number"
-                      min="0"
+                      min="460"
                       step="0.01"
+                      title="Sueldo base mínimo: $460.00 (SBU)"
                       value={editEmpForm.sueldo}
                       onChange={e => setEditEmpForm({ ...editEmpForm, sueldo: Number(e.target.value) })}
                       required
@@ -696,6 +847,7 @@ export const EmployeeFile: React.FC = () => {
                       <input
                         className="input"
                         style={{ paddingLeft: '32px' }}
+                        maxLength={60}
                         placeholder="Ej: Av. Amazonas N24-50 y Colón, Quito"
                         value={editEmpForm.direccion}
                         onChange={e => setEditEmpForm({ ...editEmpForm, direccion: e.target.value })}
@@ -710,10 +862,11 @@ export const EmployeeFile: React.FC = () => {
                       <input
                         className="input"
                         style={{ paddingLeft: '32px' }}
-                        maxLength={10}
+                        maxLength={9}
                         placeholder="Ej: 022500123"
+                        title="Teléfono convencional de 7 o 9 dígitos (ej. 022500123)"
                         value={editEmpForm.telefono}
-                        onChange={e => setEditEmpForm({ ...editEmpForm, telefono: e.target.value.replace(/\D/g, '').slice(0, 10) })}
+                        onChange={e => setEditEmpForm({ ...editEmpForm, telefono: e.target.value.replace(/\D/g, '').slice(0, 9) })}
                       />
                     </div>
                   </label>
@@ -723,6 +876,8 @@ export const EmployeeFile: React.FC = () => {
                       className="input"
                       maxLength={10}
                       placeholder="Ej: 0991234567"
+                      pattern="^09\d{8}$"
+                      title="Celular de 10 dígitos comenzando con 09"
                       value={editEmpForm.celular}
                       onChange={e => setEditEmpForm({ ...editEmpForm, celular: e.target.value.replace(/\D/g, '').slice(0, 10) })}
                     />
@@ -735,6 +890,7 @@ export const EmployeeFile: React.FC = () => {
                         className="input"
                         style={{ paddingLeft: '32px' }}
                         type="email"
+                        maxLength={60}
                         placeholder="empleado@cava.com"
                         value={editEmpForm.email}
                         onChange={e => setEditEmpForm({ ...editEmpForm, email: e.target.value })}
@@ -842,16 +998,26 @@ export const EmployeeFile: React.FC = () => {
                         <input
                           className="input"
                           maxLength={10}
+                          pattern="^\d{10}$"
+                          title="Cédula ecuatoriana válida de 10 dígitos"
                           placeholder="1722334455"
                           value={newDependentForm.ci}
                           onChange={e => setNewDependentForm({ ...newDependentForm, ci: e.target.value.replace(/\D/g, '').slice(0, 10) })}
                           required
                         />
+                        {newDependentForm.ci.length === 10 && (
+                          <span style={{ fontSize: '0.75rem', marginTop: '2px', color: validateEcuadorianCedula(newDependentForm.ci) ? '#059669' : '#dc2626' }}>
+                            {validateEcuadorianCedula(newDependentForm.ci) ? '✓ Cédula válida' : '✗ Cédula no válida en Ecuador'}
+                          </span>
+                        )}
                       </label>
                       <label className="form-group">
                         Primer Nombre *
                         <input
                           className="input"
+                          maxLength={30}
+                          pattern="^[A-Za-zÁÉÍÓÚáéíóúÑñÜü\s\.\-']+$"
+                          title="Solo letras y espacios (máximo 30 caracteres)"
                           placeholder="Ej: Sofía"
                           value={newDependentForm.nombre1}
                           onChange={e => setNewDependentForm({ ...newDependentForm, nombre1: e.target.value })}
@@ -862,6 +1028,9 @@ export const EmployeeFile: React.FC = () => {
                         Segundo Nombre
                         <input
                           className="input"
+                          maxLength={30}
+                          pattern="^[A-Za-zÁÉÍÓÚáéíóúÑñÜü\s\.\-']+$"
+                          title="Solo letras y espacios (máximo 30 caracteres)"
                           placeholder="Ej: Isabel"
                           value={newDependentForm.nombre2}
                           onChange={e => setNewDependentForm({ ...newDependentForm, nombre2: e.target.value })}
@@ -871,6 +1040,9 @@ export const EmployeeFile: React.FC = () => {
                         Primer Apellido *
                         <input
                           className="input"
+                          maxLength={30}
+                          pattern="^[A-Za-zÁÉÍÓÚáéíóúÑñÜü\s\.\-']+$"
+                          title="Solo letras y espacios (máximo 30 caracteres)"
                           placeholder="Ej: Mendoza"
                           value={newDependentForm.apellido1}
                           onChange={e => setNewDependentForm({ ...newDependentForm, apellido1: e.target.value })}
@@ -881,6 +1053,9 @@ export const EmployeeFile: React.FC = () => {
                         Segundo Apellido
                         <input
                           className="input"
+                          maxLength={30}
+                          pattern="^[A-Za-zÁÉÍÓÚáéíóúÑñÜü\s\.\-']+$"
+                          title="Solo letras y espacios (máximo 30 caracteres)"
                           placeholder="Ej: Paredes"
                           value={newDependentForm.apellido2}
                           onChange={e => setNewDependentForm({ ...newDependentForm, apellido2: e.target.value })}
@@ -904,6 +1079,8 @@ export const EmployeeFile: React.FC = () => {
                         <input
                           className="input"
                           type="date"
+                          max={todayStr}
+                          title="La fecha de nacimiento no puede ser futura"
                           value={newDependentForm.fechaNacimiento}
                           onChange={e => setNewDependentForm({ ...newDependentForm, fechaNacimiento: e.target.value })}
                           required
@@ -1076,10 +1253,21 @@ export const EmployeeFile: React.FC = () => {
             <form onSubmit={handleUpdateDependent}>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '14px' }}>
                 <label className="form-group">
-                  Cédula Carga (10 dígitos) *
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span>Cédula Carga (10 dígitos) *</span>
+                    {editDependentForm.ci.length === 10 && (
+                      validateEcuadorianCedula(editDependentForm.ci) ? (
+                        <span style={{ color: '#16a34a', fontSize: '0.75rem', fontWeight: 600 }}>✓ Válida</span>
+                      ) : (
+                        <span style={{ color: '#dc2626', fontSize: '0.75rem', fontWeight: 600 }}>✗ Inválida</span>
+                      )
+                    )}
+                  </div>
                   <input
                     className="input"
                     maxLength={10}
+                    pattern="\d{10}"
+                    title="Debe tener 10 dígitos numéricos válidos en Ecuador"
                     value={editDependentForm.ci}
                     onChange={e => setEditDependentForm({ ...editDependentForm, ci: e.target.value.replace(/\D/g, '').slice(0, 10) })}
                     required
@@ -1102,6 +1290,9 @@ export const EmployeeFile: React.FC = () => {
                   Primer Nombre *
                   <input
                     className="input"
+                    maxLength={20}
+                    pattern="[A-Za-zÁÉÍÓÚáéíóúÑñÜü\s]+"
+                    title="Solo letras y espacios (máximo 20 caracteres)"
                     value={editDependentForm.nombre1}
                     onChange={e => setEditDependentForm({ ...editDependentForm, nombre1: e.target.value })}
                     required
@@ -1111,6 +1302,9 @@ export const EmployeeFile: React.FC = () => {
                   Segundo Nombre
                   <input
                     className="input"
+                    maxLength={20}
+                    pattern="[A-Za-zÁÉÍÓÚáéíóúÑñÜü\s]*"
+                    title="Solo letras y espacios (máximo 20 caracteres)"
                     value={editDependentForm.nombre2}
                     onChange={e => setEditDependentForm({ ...editDependentForm, nombre2: e.target.value })}
                   />
@@ -1119,6 +1313,9 @@ export const EmployeeFile: React.FC = () => {
                   Primer Apellido *
                   <input
                     className="input"
+                    maxLength={20}
+                    pattern="[A-Za-zÁÉÍÓÚáéíóúÑñÜü\s]+"
+                    title="Solo letras y espacios (máximo 20 caracteres)"
                     value={editDependentForm.apellido1}
                     onChange={e => setEditDependentForm({ ...editDependentForm, apellido1: e.target.value })}
                     required
@@ -1128,6 +1325,9 @@ export const EmployeeFile: React.FC = () => {
                   Segundo Apellido
                   <input
                     className="input"
+                    maxLength={20}
+                    pattern="[A-Za-zÁÉÍÓÚáéíóúÑñÜü\s]*"
+                    title="Solo letras y espacios (máximo 20 caracteres)"
                     value={editDependentForm.apellido2}
                     onChange={e => setEditDependentForm({ ...editDependentForm, apellido2: e.target.value })}
                   />
@@ -1137,6 +1337,7 @@ export const EmployeeFile: React.FC = () => {
                   <input
                     className="input"
                     type="date"
+                    max={todayStr}
                     value={editDependentForm.fechaNacimiento}
                     onChange={e => setEditDependentForm({ ...editDependentForm, fechaNacimiento: e.target.value })}
                     required
@@ -1246,10 +1447,21 @@ export const EmployeeFile: React.FC = () => {
             <form onSubmit={handleCreateEmployee}>
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '14px' }}>
                 <label className="form-group">
-                  Cédula de Identidad (10 dígitos) *
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span>Cédula de Identidad (10 dígitos) *</span>
+                    {newEmpForm.ci.length === 10 && (
+                      validateEcuadorianCedula(newEmpForm.ci) ? (
+                        <span style={{ color: '#16a34a', fontSize: '0.75rem', fontWeight: 600 }}>✓ Cédula válida</span>
+                      ) : (
+                        <span style={{ color: '#dc2626', fontSize: '0.75rem', fontWeight: 600 }}>✗ Cédula no válida</span>
+                      )
+                    )}
+                  </div>
                   <input
                     className="input"
                     maxLength={10}
+                    pattern="\d{10}"
+                    title="Debe ingresar exactamente 10 dígitos numéricos correspondientes a una cédula ecuatoriana válida"
                     placeholder="1712345678"
                     value={newEmpForm.ci}
                     onChange={e => setNewEmpForm({ ...newEmpForm, ci: e.target.value.replace(/\D/g, '').slice(0, 10) })}
@@ -1257,13 +1469,15 @@ export const EmployeeFile: React.FC = () => {
                   />
                 </label>
                 <label className="form-group">
-                  Sueldo Base ($) *
+                  Sueldo Base ($ - Mín. SBU $460) *
                   <input
                     className="input"
                     type="number"
-                    min="0"
+                    min="460"
+                    max="50000"
                     step="0.01"
-                    value={newEmpForm.sueldo}
+                    placeholder="460.00"
+                    value={newEmpForm.sueldo || ''}
                     onChange={e => setNewEmpForm({ ...newEmpForm, sueldo: Number(e.target.value) })}
                     required
                   />
@@ -1272,6 +1486,9 @@ export const EmployeeFile: React.FC = () => {
                   Primer Nombre (emp_Nombre1) *
                   <input
                     className="input"
+                    maxLength={20}
+                    pattern="[A-Za-zÁÉÍÓÚáéíóúÑñÜü\s]+"
+                    title="Solo letras y espacios (máximo 20 caracteres)"
                     placeholder="Ej: Carlos"
                     value={newEmpForm.nombre1}
                     onChange={e => setNewEmpForm({ ...newEmpForm, nombre1: e.target.value })}
@@ -1282,6 +1499,9 @@ export const EmployeeFile: React.FC = () => {
                   Segundo Nombre (emp_Nombre2)
                   <input
                     className="input"
+                    maxLength={20}
+                    pattern="[A-Za-zÁÉÍÓÚáéíóúÑñÜü\s]*"
+                    title="Solo letras y espacios (máximo 20 caracteres)"
                     placeholder="Ej: Andrés"
                     value={newEmpForm.nombre2}
                     onChange={e => setNewEmpForm({ ...newEmpForm, nombre2: e.target.value })}
@@ -1291,6 +1511,9 @@ export const EmployeeFile: React.FC = () => {
                   Primer Apellido (emp_Apellido1) *
                   <input
                     className="input"
+                    maxLength={20}
+                    pattern="[A-Za-zÁÉÍÓÚáéíóúÑñÜü\s]+"
+                    title="Solo letras y espacios (máximo 20 caracteres)"
                     placeholder="Ej: Mendoza"
                     value={newEmpForm.apellido1}
                     onChange={e => setNewEmpForm({ ...newEmpForm, apellido1: e.target.value })}
@@ -1301,6 +1524,9 @@ export const EmployeeFile: React.FC = () => {
                   Segundo Apellido (emp_Apellido2)
                   <input
                     className="input"
+                    maxLength={20}
+                    pattern="[A-Za-zÁÉÍÓÚáéíóúÑñÜü\s]*"
+                    title="Solo letras y espacios (máximo 20 caracteres)"
                     placeholder="Ej: Castro"
                     value={newEmpForm.apellido2}
                     onChange={e => setNewEmpForm({ ...newEmpForm, apellido2: e.target.value })}
@@ -1317,14 +1543,15 @@ export const EmployeeFile: React.FC = () => {
                     <option value="">-- Seleccione sexo --</option>
                     <option value="M">Masculino (M)</option>
                     <option value="F">Femenino (F)</option>
-                    <option value="H">Hombre / Otro (H)</option>
                   </select>
                 </label>
                 <label className="form-group">
-                  Fecha de Nacimiento *
+                  Fecha de Nacimiento (Mayor de 18 años) *
                   <input
                     className="input"
                     type="date"
+                    min={minBirthDateEmp}
+                    max={maxBirthDateEmp}
                     value={newEmpForm.fechaNacimiento}
                     onChange={e => setNewEmpForm({ ...newEmpForm, fechaNacimiento: e.target.value })}
                     required
@@ -1364,6 +1591,7 @@ export const EmployeeFile: React.FC = () => {
                   Dirección Física Domiciliaria (emp_Direccion) *
                   <input
                     className="input"
+                    maxLength={60}
                     placeholder="Ej: Calle Los Cedros 123 y Av. 10 de Agosto, Quito"
                     value={newEmpForm.direccion}
                     onChange={e => setNewEmpForm({ ...newEmpForm, direccion: e.target.value })}
@@ -1374,10 +1602,12 @@ export const EmployeeFile: React.FC = () => {
                   Teléfono Convencional Fijo (emp_Telefono)
                   <input
                     className="input"
-                    maxLength={10}
+                    maxLength={9}
+                    pattern="[0-9]{7,9}"
+                    title="7 a 9 dígitos numéricos (ej. 022123456)"
                     placeholder="022123456"
                     value={newEmpForm.telefono}
-                    onChange={e => setNewEmpForm({ ...newEmpForm, telefono: e.target.value.replace(/\D/g, '').slice(0, 10) })}
+                    onChange={e => setNewEmpForm({ ...newEmpForm, telefono: e.target.value.replace(/\D/g, '').slice(0, 9) })}
                   />
                 </label>
                 <label className="form-group">
@@ -1385,6 +1615,8 @@ export const EmployeeFile: React.FC = () => {
                   <input
                     className="input"
                     maxLength={10}
+                    pattern="09[0-9]{8}"
+                    title="10 dígitos numéricos iniciando con 09 (ej. 0991234567)"
                     placeholder="0991234567"
                     value={newEmpForm.celular}
                     onChange={e => setNewEmpForm({ ...newEmpForm, celular: e.target.value.replace(/\D/g, '').slice(0, 10) })}
@@ -1395,6 +1627,7 @@ export const EmployeeFile: React.FC = () => {
                   <input
                     className="input"
                     type="email"
+                    maxLength={60}
                     placeholder="colaborador@lacava.com"
                     value={newEmpForm.email}
                     onChange={e => setNewEmpForm({ ...newEmpForm, email: e.target.value })}

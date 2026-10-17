@@ -7,6 +7,10 @@ import { Banco, CentroCosto, Invoice, JournalEntry, JournalEntryLine } from '../
 const money = (value: number) => `$${value.toFixed(2)}`;
 const paymentLabel: Record<Invoice['paymentMethod'], string> = { CASH: 'Efectivo', CARD: 'Tarjeta', TRANSFER: 'Transferencia', CREDIT: 'Crédito' };
 
+const RE_SQLI = /(--|\/\*|\*\/|;|'|"|<script|UNION\s+SELECT|INSERT\s+INTO|UPDATE\s+\w+\s+SET|DELETE\s+FROM|DROP\s+TABLE|ALTER\s+TABLE|TRUNCATE\s+TABLE|EXEC\s*\()/i;
+const RE_ACCOUNT_CODE = /^\d+(\.\d+)*$/;
+const RE_NAME_GENERAL = /^[A-Za-zÁÉÍÓÚáéíóúÑñÜü0-9\s\.\-&/]+$/;
+
 export const Sales = () => {
   const { state, updateState } = useGlobalStore();
   const [search, setSearch] = useState('');
@@ -184,8 +188,27 @@ export const Accounting = ({ initialTab = 'diario' }: { initialTab?: 'diario' | 
 
   // Guardar nueva cuenta contable (MAY o DET)
   const saveAccount = async () => {
-    if (!newAccCode.trim() || !newAccName.trim()) {
-      setAccNotice('Ingresa código y nombre de la cuenta.');
+    const code = newAccCode.trim();
+    const name = newAccName.trim();
+
+    if (!code || !name) {
+      setAccNotice('Ingresa código y nombre de la cuenta contable.');
+      return;
+    }
+    if (!RE_ACCOUNT_CODE.test(code)) {
+      setAccNotice('El código de cuenta solo debe contener dígitos numéricos separados por puntos (ej: 1, 1.1, 1.1.01).');
+      return;
+    }
+    if (code.length > 15) {
+      setAccNotice('El código de cuenta no puede superar 15 caracteres.');
+      return;
+    }
+    if (name.length < 3 || name.length > 60) {
+      setAccNotice('El nombre de la cuenta debe tener entre 3 y 60 caracteres.');
+      return;
+    }
+    if (RE_SQLI.test(name)) {
+      setAccNotice('El nombre de la cuenta contiene caracteres o patrones no permitidos (anti-SQLi detectado).');
       return;
     }
     if (!newAccType || (newAccType !== 'MAY' && newAccType !== 'DET')) {
@@ -194,11 +217,11 @@ export const Accounting = ({ initialTab = 'diario' }: { initialTab?: 'diario' | 
     }
     try {
       const res = await accountingApi.createAccount({
-        idCuenta: newAccCode.trim(),
-        nombre: newAccName.trim(),
+        idCuenta: code,
+        nombre: name,
         tipo: newAccType,
       });
-      setAccNotice(res.mensaje || `Cuenta ${newAccCode.trim()} registrada con éxito.`);
+      setAccNotice(res.mensaje || `Cuenta ${code} registrada con éxito.`);
       setNewAccCode('');
       setNewAccName('');
       void loadAccounting();
@@ -223,15 +246,40 @@ export const Accounting = ({ initialTab = 'diario' }: { initialTab?: 'diario' | 
       setNotice('Ingresa la fecha de la transacción contable.');
       return;
     }
+    const entryYear = new Date(entryDate).getFullYear();
+    if (isNaN(entryYear) || entryYear < 2000 || entryYear > 2100) {
+      setNotice('La fecha de la transacción debe corresponder a un año válido entre 2000 y 2100.');
+      return;
+    }
 
-    const validLines = lines.length >= 2 && lines.every(line => line.accountId
+    const cleanDesc = description.trim();
+    if (!cleanDesc || cleanDesc.length < 5 || cleanDesc.length > 30) {
+      setNotice('El concepto o glosa del asiento debe tener entre 5 y 30 caracteres.');
+      return;
+    }
+    if (RE_SQLI.test(cleanDesc)) {
+      setNotice('El concepto contiene caracteres o sentencias no permitidas (SQL injection detectado).');
+      return;
+    }
+
+    if (lines.length < 2) {
+      setNotice('El asiento debe tener al menos dos líneas contables.');
+      return;
+    }
+
+    const validLines = lines.every(line => line.accountId
       && state.accounts.some(account => account.id === line.accountId)
       && Number.isFinite(line.debit) && Number.isFinite(line.credit)
       && line.debit >= 0 && line.credit >= 0
       && ((line.debit > 0 && line.credit === 0) || (line.credit > 0 && line.debit === 0)));
 
-    if (!description.trim() || !validLines) {
-      setNotice('Ingresa un concepto y al menos dos líneas válidas, cada una con una sola columna de valor.');
+    if (!validLines) {
+      setNotice('Todas las líneas deben tener cuenta válida y registrar valor exclusivamente en Debe o Haber (mayor a 0).');
+      return;
+    }
+
+    if (totalDebit <= 0) {
+      setNotice('El valor total del asiento debe ser mayor a $0.00.');
       return;
     }
 
@@ -257,7 +305,7 @@ export const Accounting = ({ initialTab = 'diario' }: { initialTab?: 'diario' | 
 
     try {
       const res = await accountingApi.createEntry({
-        descripcion: description.trim(),
+        descripcion: cleanDesc,
         fecha: entryDate,
         lines: lines.map(line => ({ idCuenta: line.accountId, debe: line.debit, haber: line.credit })),
       });
@@ -266,7 +314,7 @@ export const Accounting = ({ initialTab = 'diario' }: { initialTab?: 'diario' | 
     } catch (err: any) {
       const entryId = editingEntryId || `ASI-MAN-${Date.now()}`;
       updateState(draft => {
-        draft.journalEntries.push({ id: entryId, date: entryDate, description: description.trim(), lines: lines.map(line => ({ ...line })), status: 'ABI', source: 'MANUAL' });
+        draft.journalEntries.push({ id: entryId, date: entryDate, description: cleanDesc, lines: lines.map(line => ({ ...line })), status: 'ABI', source: 'MANUAL' });
         return draft;
       });
       setNotice(err.message || 'Asiento registrado exitosamente.');
@@ -317,15 +365,24 @@ export const Accounting = ({ initialTab = 'diario' }: { initialTab?: 'diario' | 
   // Guardar banco
   const handleSaveBanco = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!bancoForm.nombre.trim()) {
-      setBancoNotice('Por favor ingrese el nombre de la entidad bancaria.');
+    const cleanName = bancoForm.nombre.trim();
+    if (!cleanName || cleanName.length < 3 || cleanName.length > 50) {
+      setBancoNotice('El nombre de la entidad bancaria debe tener entre 3 y 50 caracteres.');
+      return;
+    }
+    if (RE_SQLI.test(cleanName)) {
+      setBancoNotice('El nombre del banco contiene patrones o sentencias no permitidas (anti-SQLi detectado).');
+      return;
+    }
+    if (!RE_NAME_GENERAL.test(cleanName)) {
+      setBancoNotice('El nombre del banco contiene caracteres no permitidos.');
       return;
     }
     setBancoLoading(true);
     try {
       const res = await accountingApi.createBanco({
         idBanco: bancoForm.idBanco.trim() || undefined,
-        nombre: bancoForm.nombre.trim(),
+        nombre: cleanName,
         estado: bancoForm.estado || 'ACT',
       });
       setBancoNotice(res.mensaje || 'Banco registrado exitosamente.');
@@ -340,11 +397,24 @@ export const Accounting = ({ initialTab = 'diario' }: { initialTab?: 'diario' | 
 
   const handleUpdateBanco = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!editingBanco || !editBancoForm.nombre.trim()) return;
+    if (!editingBanco) return;
+    const cleanName = editBancoForm.nombre.trim();
+    if (!cleanName || cleanName.length < 3 || cleanName.length > 50) {
+      setBancoNotice('El nombre del banco debe tener entre 3 y 50 caracteres.');
+      return;
+    }
+    if (RE_SQLI.test(cleanName)) {
+      setBancoNotice('El nombre del banco contiene patrones no permitidos (anti-SQLi).');
+      return;
+    }
+    if (!RE_NAME_GENERAL.test(cleanName)) {
+      setBancoNotice('El nombre del banco contiene caracteres no permitidos.');
+      return;
+    }
     setBancoLoading(true);
     try {
       const res = await accountingApi.updateBanco(editingBanco.id, {
-        nombre: editBancoForm.nombre.trim(),
+        nombre: cleanName,
         estado: editBancoForm.estado,
       });
       setBancoNotice(res.mensaje || 'Banco actualizado exitosamente.');
@@ -374,8 +444,26 @@ export const Accounting = ({ initialTab = 'diario' }: { initialTab?: 'diario' | 
   // Guardar centro de costo
   const handleSaveCco = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!ccoForm.nombre.trim() || !ccoForm.idDepartamento) {
-      setCcoNotice('Por favor complete el nombre y seleccione un departamento.');
+    const cleanName = ccoForm.nombre.trim();
+    if (!cleanName || cleanName.length < 3 || cleanName.length > 50) {
+      setCcoNotice('El nombre del centro de costo debe tener entre 3 y 50 caracteres.');
+      return;
+    }
+    if (RE_SQLI.test(cleanName)) {
+      setCcoNotice('El nombre contiene caracteres o patrones no permitidos (anti-SQLi detectado).');
+      return;
+    }
+    if (!RE_NAME_GENERAL.test(cleanName)) {
+      setCcoNotice('El nombre solo puede contener letras, números, espacios y caracteres básicos.');
+      return;
+    }
+    if (!ccoForm.idDepartamento) {
+      setCcoNotice('Debe seleccionar el departamento asignado al centro de costo.');
+      return;
+    }
+    const presupuesto = Number(ccoForm.presupuestoMensual) || 0;
+    if (presupuesto < 0 || presupuesto > 1000000) {
+      setCcoNotice('El presupuesto mensual debe estar entre $0.00 y $1,000,000.00.');
       return;
     }
     setCcoLoading(true);
@@ -383,8 +471,8 @@ export const Accounting = ({ initialTab = 'diario' }: { initialTab?: 'diario' | 
       const res = await accountingApi.createCentroCosto({
         idCentroCosto: ccoForm.idCentroCosto.trim() || undefined,
         idDepartamento: ccoForm.idDepartamento,
-        nombre: ccoForm.nombre.trim(),
-        presupuestoMensual: Number(ccoForm.presupuestoMensual) || 0,
+        nombre: cleanName,
+        presupuestoMensual: presupuesto,
         estado: ccoForm.estado || 'ACT',
       });
       setCcoNotice(res.mensaje || 'Centro de Costo registrado exitosamente.');
@@ -405,13 +493,35 @@ export const Accounting = ({ initialTab = 'diario' }: { initialTab?: 'diario' | 
 
   const handleUpdateCco = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!editingCco || !editCcoForm.nombre.trim() || !editCcoForm.idDepartamento) return;
+    if (!editingCco) return;
+    const cleanName = editCcoForm.nombre.trim();
+    if (!cleanName || cleanName.length < 3 || cleanName.length > 50) {
+      setCcoNotice('El nombre del centro de costo debe tener entre 3 y 50 caracteres.');
+      return;
+    }
+    if (RE_SQLI.test(cleanName)) {
+      setCcoNotice('El nombre contiene caracteres o patrones no permitidos (anti-SQLi).');
+      return;
+    }
+    if (!RE_NAME_GENERAL.test(cleanName)) {
+      setCcoNotice('El nombre solo puede contener caracteres válidos.');
+      return;
+    }
+    if (!editCcoForm.idDepartamento) {
+      setCcoNotice('Debe seleccionar el departamento asignado.');
+      return;
+    }
+    const presupuesto = Number(editCcoForm.presupuestoMensual) || 0;
+    if (presupuesto < 0 || presupuesto > 1000000) {
+      setCcoNotice('El presupuesto mensual debe estar entre $0.00 y $1,000,000.00.');
+      return;
+    }
     setCcoLoading(true);
     try {
       const res = await accountingApi.updateCentroCosto(editingCco.id, {
         idDepartamento: editCcoForm.idDepartamento,
-        nombre: editCcoForm.nombre.trim(),
-        presupuestoMensual: Number(editCcoForm.presupuestoMensual) || 0,
+        nombre: cleanName,
+        presupuestoMensual: presupuesto,
         estado: editCcoForm.estado,
       });
       setCcoNotice(res.mensaje || 'Centro de Costo actualizado exitosamente.');
@@ -525,12 +635,15 @@ export const Accounting = ({ initialTab = 'diario' }: { initialTab?: 'diario' | 
                 <span>Concepto / Glosa <strong style={{ color: '#ef4444' }}>*</strong></span>
                 <input
                   className="input"
+                  minLength={5}
                   maxLength={30}
+                  pattern="[A-Za-zÁÉÍÓÚáéíóúÑñÜü0-9\s\.\-&/]+"
+                  title="Entre 5 y 30 caracteres (letras, números y signos básicos)."
                   value={description}
                   onChange={event => setDescription(event.target.value)}
                   placeholder="Ej: Pago de arriendo local matriz"
                 />
-                <small style={{ fontSize: '11px', color: '#64748b' }}>Máximo 30 caracteres (CHAR(30))</small>
+                <small style={{ fontSize: '11px', color: '#64748b' }}>Entre 5 y 30 caracteres (CHAR(30))</small>
               </label>
             </div>
 
@@ -574,6 +687,7 @@ export const Accounting = ({ initialTab = 'diario' }: { initialTab?: 'diario' | 
                           className="input compact-input"
                           type="number"
                           min="0"
+                          max="1000000"
                           step="0.01"
                           value={line.debit}
                           onChange={event => updateLine(index, 'debit', event.target.value)}
@@ -584,6 +698,7 @@ export const Accounting = ({ initialTab = 'diario' }: { initialTab?: 'diario' | 
                           className="input compact-input"
                           type="number"
                           min="0"
+                          max="1000000"
                           step="0.01"
                           value={line.credit}
                           onChange={event => updateLine(index, 'credit', event.target.value)}
@@ -721,9 +836,12 @@ export const Accounting = ({ initialTab = 'diario' }: { initialTab?: 'diario' | 
                 <input
                   className="input"
                   maxLength={15}
+                  pattern="^\d+(\.\d+)*$"
+                  title="Formato numérico jerárquico separado por puntos (ej: 1, 1.1, 1.1.01)"
                   value={newAccCode}
-                  onChange={e => setNewAccCode(e.target.value)}
+                  onChange={e => setNewAccCode(e.target.value.replace(/[^0-9.]/g, ''))}
                   placeholder="Ej. 1.1.01.001"
+                  required
                 />
               </label>
 
@@ -731,10 +849,14 @@ export const Accounting = ({ initialTab = 'diario' }: { initialTab?: 'diario' | 
                 <span>Nombre de la cuenta <strong style={{ color: '#ef4444' }}>*</strong></span>
                 <input
                   className="input"
+                  minLength={3}
                   maxLength={60}
+                  pattern="[A-Za-zÁÉÍÓÚáéíóúÑñÜü0-9\s\.\-&/]+"
+                  title="Entre 3 y 60 caracteres válidos (letras, números y signos básicos)."
                   value={newAccName}
                   onChange={e => setNewAccName(e.target.value)}
                   placeholder="Ej. Caja Chica"
+                  required
                 />
               </label>
 
@@ -855,7 +977,10 @@ export const Accounting = ({ initialTab = 'diario' }: { initialTab?: 'diario' | 
                   <span>Nombre del Banco (ban_Nombre) <strong style={{ color: '#ef4444' }}>*</strong></span>
                   <input
                     className="input"
+                    minLength={3}
                     maxLength={50}
+                    pattern="[A-Za-zÁÉÍÓÚáéíóúÑñÜü0-9\s\.\-&/]+"
+                    title="Entre 3 y 50 caracteres (letras, números, espacios y signos básicos)"
                     value={bancoForm.nombre}
                     onChange={e => setBancoForm({ ...bancoForm, nombre: e.target.value })}
                     placeholder="Ej: Banco Pichincha, Banco Guayaquil"
@@ -969,7 +1094,10 @@ export const Accounting = ({ initialTab = 'diario' }: { initialTab?: 'diario' | 
                       <span>Nombre del Banco *</span>
                       <input
                         className="input"
+                        minLength={3}
                         maxLength={50}
+                        pattern="[A-Za-zÁÉÍÓÚáéíóúÑñÜü0-9\s\.\-&/]+"
+                        title="Entre 3 y 50 caracteres (letras, números, espacios y signos básicos)"
                         value={editBancoForm.nombre}
                         onChange={e => setEditBancoForm({ ...editBancoForm, nombre: e.target.value })}
                         required
@@ -1045,7 +1173,10 @@ export const Accounting = ({ initialTab = 'diario' }: { initialTab?: 'diario' | 
                   <span>Nombre del Centro de Costo <strong style={{ color: '#ef4444' }}>*</strong></span>
                   <input
                     className="input"
+                    minLength={3}
                     maxLength={50}
+                    pattern="[A-Za-zÁÉÍÓÚáéíóúÑñÜü0-9\s\.\-&/]+"
+                    title="Entre 3 y 50 caracteres (letras, números, espacios y signos básicos)"
                     value={ccoForm.nombre}
                     onChange={e => setCcoForm({ ...ccoForm, nombre: e.target.value })}
                     placeholder="Ej. Bodega Matriz, Ventas POS"
@@ -1059,6 +1190,7 @@ export const Accounting = ({ initialTab = 'diario' }: { initialTab?: 'diario' | 
                     className="input"
                     type="number"
                     min="0"
+                    max="1000000"
                     step="0.01"
                     value={ccoForm.presupuestoMensual}
                     onChange={e => setCcoForm({ ...ccoForm, presupuestoMensual: Number(e.target.value) })}
@@ -1168,7 +1300,10 @@ export const Accounting = ({ initialTab = 'diario' }: { initialTab?: 'diario' | 
                       <span>Nombre del Centro de Costo *</span>
                       <input
                         className="input"
+                        minLength={3}
                         maxLength={50}
+                        pattern="[A-Za-zÁÉÍÓÚáéíóúÑñÜü0-9\s\.\-&/]+"
+                        title="Entre 3 y 50 caracteres (letras, números, espacios y signos básicos)"
                         value={editCcoForm.nombre}
                         onChange={e => setEditCcoForm({ ...editCcoForm, nombre: e.target.value })}
                         required
@@ -1196,6 +1331,7 @@ export const Accounting = ({ initialTab = 'diario' }: { initialTab?: 'diario' | 
                         className="input"
                         type="number"
                         min="0"
+                        max="1000000"
                         step="0.01"
                         value={editCcoForm.presupuestoMensual}
                         onChange={e => setEditCcoForm({ ...editCcoForm, presupuestoMensual: Number(e.target.value) })}

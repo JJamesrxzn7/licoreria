@@ -1,6 +1,7 @@
 import logging
 import os
-from datetime import date, datetime
+import re
+from datetime import date, datetime, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 from uuid import uuid4
@@ -8,7 +9,7 @@ from uuid import uuid4
 import mysql.connector  # type: ignore
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 # Cargar variables de entorno desde .env (con fallback si python-dotenv no estuviera instalado)
 try:
@@ -142,8 +143,41 @@ def raise_database_error(error: mysql.connector.Error) -> None:
 
 
 # ==========================================
-# MODELOS PYDANTIC
+# MODELOS PYDANTIC Y RESTRICCIONES DE SEGURIDAD (ANTI-SQLI / INTEGRIDAD)
 # ==========================================
+
+RE_SQLI_DANGEROUS = re.compile(
+    r"(\b(UNION|SELECT|INSERT|UPDATE|DELETE|DROP|ALTER|TRUNCATE|EXEC|EXECUTE)\b|--|/\*|\*/|;|'|\"|<script)",
+    re.IGNORECASE
+)
+
+RE_NAME = re.compile(r"^[A-Za-zÁÉÍÓÚáéíóúÑñÜü\s\.\-']+$")
+RE_ACCOUNT_CODE = re.compile(r"^\d+(\.\d+)*$")
+RE_PHONE_CONV = re.compile(r"^0[2-7]\d{7}$")
+RE_MOBILE = re.compile(r"^09\d{8}$")
+RE_EMAIL = re.compile(r"^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$")
+RE_BANK_NAME = re.compile(r"^[A-Za-zÁÉÍÓÚáéíóúÑñÜü0-9\s\.\-&/]+$")
+RE_CCO_NAME = re.compile(r"^[A-Za-zÁÉÍÓÚáéíóúÑñÜü0-9\s\.\-_/]+$")
+RE_ACCOUNT_NAME = re.compile(r"^[A-Za-zÁÉÍÓÚáéíóúÑñÜü0-9\s\.\-_/()]+$")
+
+def validar_cedula_ecuador(cedula: str) -> bool:
+    cedula_limpia = str(cedula).strip()
+    if not cedula_limpia.isdigit() or len(cedula_limpia) != 10:
+        return False
+    provincia = int(cedula_limpia[:2])
+    if not (1 <= provincia <= 24 or provincia == 30):
+        return False
+    tercer_digito = int(cedula_limpia[2])
+    if tercer_digito >= 6:
+        return False
+    coeficientes = [2, 1, 2, 1, 2, 1, 2, 1, 2]
+    suma = 0
+    for i in range(9):
+        val = int(cedula_limpia[i]) * coeficientes[i]
+        suma += (val - 9) if val >= 10 else val
+    verificador = (10 - (suma % 10)) % 10
+    return verificador == int(cedula_limpia[9])
+
 
 class PurchaseItemInput(BaseModel):
     product_id: str = Field(alias="idProducto", min_length=1, max_length=10)
@@ -227,10 +261,25 @@ class JournalEntryLineInput(BaseModel):
     debit: Decimal = Field(default=Decimal("0"), alias="debe")
     credit: Decimal = Field(default=Decimal("0"), alias="haber")
 
+    @field_validator("account_id")
+    @classmethod
+    def validar_cuenta_linea(cls, v: str) -> str:
+        limpio = str(v or "").strip()
+        if not RE_ACCOUNT_CODE.match(limpio):
+            raise ValueError(f"El identificador de cuenta '{limpio}' no tiene un formato numérico válido.")
+        return limpio
+
+    @field_validator("debit", "credit")
+    @classmethod
+    def validar_monto_linea(cls, v: Decimal) -> Decimal:
+        if v < Decimal("0.00"):
+            raise ValueError("Los valores del Debe y Haber no pueden ser negativos.")
+        return v.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
 
 class JournalEntryInput(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
-    description: str = Field(alias="descripcion", max_length=30)
+    description: str = Field(alias="descripcion", min_length=5, max_length=30)
     entry_date: date | datetime | str | None = Field(default=None, alias="fecha")
     lines: list[JournalEntryLineInput] = Field(min_length=2, default_factory=list)
 
@@ -239,21 +288,53 @@ class JournalEntryInput(BaseModel):
             data["lines"] = data["lineas"]
         super().__init__(**data)
 
+    @field_validator("description")
+    @classmethod
+    def validar_asiento_desc(cls, v: str) -> str:
+        limpio = str(v or "").strip()
+        if len(limpio) < 5 or len(limpio) > 30:
+            raise ValueError("El concepto del asiento contable debe tener entre 5 y 30 caracteres.")
+        if RE_SQLI_DANGEROUS.search(limpio):
+            raise ValueError("El concepto contiene caracteres o comandos no permitidos (protección SQL Injection).")
+        return limpio
+
+    @field_validator("entry_date")
+    @classmethod
+    def validar_asiento_fecha(cls, v: date | datetime | str | None) -> date | datetime | str | None:
+        if v is None:
+            return None
+        d: date
+        if isinstance(v, datetime):
+            d = v.date()
+        elif isinstance(v, date):
+            d = v
+        else:
+            try:
+                d = datetime.strptime(str(v)[:10], "%Y-%m-%d").date()
+            except Exception:
+                raise ValueError("Formato de fecha inválido. Utilice el formato YYYY-MM-DD.")
+        if d < date(2000, 1, 1):
+            raise ValueError("La fecha del asiento contable no puede ser anterior al año 2000.")
+        if d > date.today() + timedelta(days=365):
+            raise ValueError("La fecha del asiento contable no puede superar un año hacia el futuro.")
+        return v
+
 
 class ReceptionConfirmInput(BaseModel):
     items: list[dict[str, object]]  # [{ "productId": str, "receivedQty": int, "reason": str }]
 
 
 class EmployeeInput(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
     id: str | None = None
-    ci: str = Field(alias="ci", min_length=10, max_length=20)
-    first_name: str = Field(alias="nombre1", min_length=2, max_length=30)
+    ci: str = Field(alias="ci")
+    first_name: str = Field(alias="nombre1")
     second_name: str | None = Field(default=None, alias="nombre2")
-    last_name1: str = Field(alias="apellido1", min_length=2, max_length=30)
+    last_name1: str = Field(alias="apellido1")
     last_name2: str | None = Field(default=None, alias="apellido2")
     gender: str = Field(default="M", alias="sexo")
     birth_date: date = Field(default=date(1995, 1, 1), alias="fechaNacimiento")
-    salary: Decimal = Field(alias="sueldo", ge=0)
+    salary: Decimal = Field(alias="sueldo")
     department_id: str = Field(default="DEP-TEST", alias="idDepartamento")
     cargo_id: str | None = Field(default=None, alias="idCargo")
     phone: str | None = Field(default=None, alias="telefono")
@@ -261,13 +342,114 @@ class EmployeeInput(BaseModel):
     address: str | None = Field(default=None, alias="direccion")
     email: str | None = Field(default=None, alias="email")
 
+    @field_validator("ci")
+    @classmethod
+    def validar_ci(cls, v: str) -> str:
+        ci_clean = re.sub(r"\D", "", str(v or ""))
+        if not validar_cedula_ecuador(ci_clean):
+            raise ValueError("La cédula ingresada no es válida según el algoritmo de verificación de Ecuador (10 dígitos).")
+        return ci_clean
+
+    @field_validator("first_name", "last_name1")
+    @classmethod
+    def validar_nombre_requerido(cls, v: str, info) -> str:
+        limpio = str(v or "").strip()
+        if len(limpio) < 2 or len(limpio) > 30:
+            raise ValueError(f"El campo '{info.field_name}' debe tener entre 2 y 30 caracteres.")
+        if not RE_NAME.match(limpio) or RE_SQLI_DANGEROUS.search(limpio):
+            raise ValueError(f"El campo '{info.field_name}' solo puede contener letras y espacios, sin números ni sentencias SQL.")
+        return limpio
+
+    @field_validator("second_name", "last_name2")
+    @classmethod
+    def validar_nombre_opcional(cls, v: str | None, info) -> str | None:
+        if not v or not str(v).strip():
+            return None
+        limpio = str(v).strip()
+        if len(limpio) > 30:
+            raise ValueError(f"El campo '{info.field_name}' no puede exceder 30 caracteres.")
+        if not RE_NAME.match(limpio) or RE_SQLI_DANGEROUS.search(limpio):
+            raise ValueError(f"El campo '{info.field_name}' solo puede contener letras y espacios.")
+        return limpio
+
+    @field_validator("gender")
+    @classmethod
+    def validar_genero(cls, v: str) -> str:
+        g = str(v or "M").strip().upper()
+        if g not in {"M", "F"}:
+            raise ValueError("El género debe ser 'M' (Masculino) o 'F' (Femenino).")
+        return g
+
+    @field_validator("birth_date")
+    @classmethod
+    def validar_fecha_nacimiento_emp(cls, v: date) -> date:
+        hoy = date.today()
+        if v > hoy:
+            raise ValueError("La fecha de nacimiento no puede ser en el futuro.")
+        edad = hoy.year - v.year - ((hoy.month, hoy.day) < (v.month, v.day))
+        if edad < 18:
+            raise ValueError(f"El empleado debe ser mayor de edad (al menos 18 años). Edad calculada: {edad} años.")
+        if edad > 90:
+            raise ValueError("La fecha de nacimiento del colaborador no es válida (edad supera 90 años).")
+        return v
+
+    @field_validator("salary")
+    @classmethod
+    def validar_sueldo(cls, v: Decimal) -> Decimal:
+        if v < Decimal("460.00"):
+            raise ValueError("El sueldo no puede ser inferior al Salario Básico Unificado vigente ($460.00 USD).")
+        if v > Decimal("50000.00"):
+            raise ValueError("El sueldo especificado supera el límite corporativo permitido ($50,000.00 USD).")
+        return v.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+    @field_validator("phone")
+    @classmethod
+    def validar_telefono(cls, v: str | None) -> str | None:
+        if not v or not str(v).strip():
+            return None
+        clean = re.sub(r"\D", "", str(v).strip())
+        if not (clean.startswith("0") and len(clean) == 9) and len(clean) != 7:
+            raise ValueError("El teléfono convencional debe tener 7 dígitos o 9 dígitos iniciando con código de provincia (ej. 022345678).")
+        return clean
+
+    @field_validator("mobile")
+    @classmethod
+    def validar_celular(cls, v: str | None) -> str | None:
+        if not v or not str(v).strip():
+            return None
+        clean = re.sub(r"\D", "", str(v).strip())
+        if not RE_MOBILE.match(clean):
+            raise ValueError("El teléfono celular debe tener 10 dígitos y comenzar con 09 (ej. 0991234567).")
+        return clean
+
+    @field_validator("email")
+    @classmethod
+    def validar_email(cls, v: str | None) -> str | None:
+        if not v or not str(v).strip():
+            return None
+        clean = str(v).strip().lower()
+        if not RE_EMAIL.match(clean) or RE_SQLI_DANGEROUS.search(clean) or len(clean) > 60:
+            raise ValueError("El formato de correo electrónico es inválido (ej. usuario@dominio.com).")
+        return clean
+
+    @field_validator("address")
+    @classmethod
+    def validar_direccion(cls, v: str | None) -> str | None:
+        if not v or not str(v).strip():
+            return None
+        clean = str(v).strip()
+        if RE_SQLI_DANGEROUS.search(clean):
+            raise ValueError("La dirección contiene caracteres o sentencias no permitidas (protección SQL Injection).")
+        return clean[:60]
+
 
 class DependentInput(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
     id_carga: str | None = None
-    cedula: str = Field(alias="ci", min_length=10, max_length=20)
-    nombre1: str = Field(alias="nombre1", min_length=2, max_length=30)
+    cedula: str = Field(alias="ci")
+    nombre1: str = Field(alias="nombre1")
     nombre2: str | None = Field(default=None, alias="nombre2")
-    apellido1: str = Field(alias="apellido1", min_length=2, max_length=30)
+    apellido1: str = Field(alias="apellido1")
     apellido2: str | None = Field(default=None, alias="apellido2")
     gender: str = Field(default="M", alias="sexo")
     birth_date: date = Field(alias="fechaNacimiento")
@@ -275,27 +457,152 @@ class DependentInput(BaseModel):
     marital_status: str = Field(default="Soltero/a", alias="estadoCivil")
     dependency_type: str = Field(default="Total", alias="dependencia")
 
+    @field_validator("cedula")
+    @classmethod
+    def validar_ci_carga(cls, v: str) -> str:
+        ci_clean = re.sub(r"\D", "", str(v or ""))
+        if not validar_cedula_ecuador(ci_clean):
+            raise ValueError("La cédula de la carga familiar no es válida según el algoritmo de Ecuador (10 dígitos).")
+        return ci_clean
+
+    @field_validator("nombre1", "apellido1")
+    @classmethod
+    def validar_nombre_carga_req(cls, v: str, info) -> str:
+        limpio = str(v or "").strip()
+        if len(limpio) < 2 or len(limpio) > 30:
+            raise ValueError(f"El campo '{info.field_name}' debe tener entre 2 y 30 caracteres.")
+        if not RE_NAME.match(limpio) or RE_SQLI_DANGEROUS.search(limpio):
+            raise ValueError(f"El campo '{info.field_name}' solo puede contener letras y espacios.")
+        return limpio
+
+    @field_validator("nombre2", "apellido2")
+    @classmethod
+    def validar_nombre_carga_opc(cls, v: str | None, info) -> str | None:
+        if not v or not str(v).strip():
+            return None
+        limpio = str(v).strip()
+        if len(limpio) > 30:
+            raise ValueError(f"El campo '{info.field_name}' no puede exceder 30 caracteres.")
+        if not RE_NAME.match(limpio) or RE_SQLI_DANGEROUS.search(limpio):
+            raise ValueError(f"El campo '{info.field_name}' solo puede contener letras y espacios.")
+        return limpio
+
+    @field_validator("gender")
+    @classmethod
+    def validar_genero_carga(cls, v: str) -> str:
+        g = str(v or "M").strip().upper()
+        if g not in {"M", "F"}:
+            raise ValueError("El género debe ser 'M' (Masculino) o 'F' (Femenino).")
+        return g
+
+    @field_validator("birth_date")
+    @classmethod
+    def validar_fecha_nacimiento_carga(cls, v: date) -> date:
+        hoy = date.today()
+        if v > hoy:
+            raise ValueError("La fecha de nacimiento de la carga familiar no puede ser en el futuro.")
+        edad = hoy.year - v.year - ((hoy.month, hoy.day) < (v.month, v.day))
+        if edad > 110:
+            raise ValueError("La fecha de nacimiento de la carga familiar supera el límite de edad permitido (110 años).")
+        return v
+
+    @field_validator("relationship")
+    @classmethod
+    def validar_parentesco(cls, v: str) -> str:
+        validos = {"Hijo/a", "Cónyuge", "Conviviente", "Padre/Madre"}
+        if v not in validos:
+            raise ValueError(f"Parentesco no válido. Debe ser uno de: {', '.join(sorted(validos))}")
+        return v
+
+    @field_validator("marital_status")
+    @classmethod
+    def validar_estado_civil(cls, v: str) -> str:
+        validos = {"Soltero/a", "Casado/a", "Divorciado/a", "Viudo/a", "Unión de Hecho"}
+        if v not in validos:
+            raise ValueError(f"Estado civil no válido. Debe ser uno de: {', '.join(sorted(validos))}")
+        return v
+
+    @field_validator("dependency_type")
+    @classmethod
+    def validar_dependencia(cls, v: str) -> str:
+        validos = {"Total", "Parcial"}
+        if v not in validos:
+            raise ValueError(f"Tipo de dependencia no válido. Debe ser uno de: {', '.join(sorted(validos))}")
+        return v
+
 
 class CargoAssignInput(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
     cargo_id: str = Field(alias="idCargo")
     start_date: date = Field(alias="fechaInicio")
     end_date: date | None = Field(default=None, alias="fechaFin")
 
+    @field_validator("cargo_id")
+    @classmethod
+    def validar_cargo_id(cls, v: str) -> str:
+        limpio = str(v or "").strip()
+        if not limpio or RE_SQLI_DANGEROUS.search(limpio):
+            raise ValueError("El identificador del cargo no es válido.")
+        return limpio[:10]
+
+    @model_validator(mode="after")
+    def validar_fechas_cargo(self):
+        if self.end_date and self.end_date < self.start_date:
+            raise ValueError("La fecha de fin del cargo no puede ser anterior a la fecha de inicio.")
+        return self
+
 
 class PayrollBonusLineInput(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
     bonus_id: str = Field(alias="idBonificacion")
     line_date: date | None = Field(default=None, alias="fecha")
     amount: Decimal = Field(alias="valor", ge=0)
 
+    @field_validator("bonus_id")
+    @classmethod
+    def validar_bonus_id(cls, v: str) -> str:
+        limpio = str(v or "").strip()
+        if not limpio or RE_SQLI_DANGEROUS.search(limpio):
+            raise ValueError("Identificador de bonificación inválido.")
+        return limpio[:10]
+
+    @field_validator("amount")
+    @classmethod
+    def validar_monto_bono(cls, v: Decimal) -> Decimal:
+        if v <= Decimal("0.00"):
+            raise ValueError("El valor de la bonificación debe ser un monto positivo mayor a $0.00.")
+        if v > Decimal("50000.00"):
+            raise ValueError("El valor de la bonificación excede el límite permitido ($50,000.00).")
+        return v.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
 
 class PayrollDeductionLineInput(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
     deduction_id: str = Field(alias="idDescuento")
     line_date: date | None = Field(default=None, alias="fecha")
     amount: Decimal = Field(alias="valor", ge=0)
 
+    @field_validator("deduction_id")
+    @classmethod
+    def validar_deduction_id(cls, v: str) -> str:
+        limpio = str(v or "").strip()
+        if not limpio or RE_SQLI_DANGEROUS.search(limpio):
+            raise ValueError("Identificador de descuento inválido.")
+        return limpio[:10]
+
+    @field_validator("amount")
+    @classmethod
+    def validar_monto_descuento(cls, v: Decimal) -> Decimal:
+        if v <= Decimal("0.00"):
+            raise ValueError("El valor del descuento debe ser un monto positivo mayor a $0.00.")
+        if v > Decimal("50000.00"):
+            raise ValueError("El valor del descuento excede el límite permitido ($50,000.00).")
+        return v.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
 
 class PayrollInput(BaseModel):
-    description: str = Field(alias="descripcion", max_length=40)
+    model_config = ConfigDict(populate_by_name=True)
+    description: str = Field(alias="descripcion", min_length=5, max_length=40)
     start_date: date = Field(alias="fechaInicio")
     end_date: date = Field(alias="fechaFin")
     employee_id: str = Field(alias="idEmpleado")
@@ -305,25 +612,152 @@ class PayrollInput(BaseModel):
     bonus_lines: list[PayrollBonusLineInput] = Field(default_factory=list, alias="lineasBonos")
     deduction_lines: list[PayrollDeductionLineInput] = Field(default_factory=list, alias="lineasDescuentos")
 
+    @field_validator("description")
+    @classmethod
+    def validar_descripcion_rol(cls, v: str) -> str:
+        limpio = str(v or "").strip()
+        if len(limpio) < 5 or len(limpio) > 40:
+            raise ValueError("La descripción del rol debe tener entre 5 y 40 caracteres.")
+        if RE_SQLI_DANGEROUS.search(limpio):
+            raise ValueError("La descripción contiene caracteres no permitidos (protección SQL Injection).")
+        return limpio
+
+    @field_validator("base_salary")
+    @classmethod
+    def validar_sueldo_rol(cls, v: Decimal) -> Decimal:
+        if v < Decimal("0.00"):
+            raise ValueError("El sueldo base no puede ser negativo.")
+        return v.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+    @model_validator(mode="after")
+    def validar_fechas_rol(self):
+        if self.end_date < self.start_date:
+            raise ValueError("La fecha de fin del rol de pago no puede ser anterior a la fecha de inicio.")
+        return self
+
 
 class AccountInput(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
     id: str = Field(alias="idCuenta", min_length=1, max_length=15)
-    name: str = Field(alias="nombre", min_length=2, max_length=60)
+    name: str = Field(alias="nombre", min_length=3, max_length=60)
     type: str = Field(default="DET", alias="tipo")  # 'MAY' or 'DET'
+
+    @field_validator("id")
+    @classmethod
+    def validar_cuenta_id(cls, v: str) -> str:
+        limpio = str(v or "").strip()
+        if not RE_ACCOUNT_CODE.match(limpio):
+            raise ValueError("El código de cuenta debe tener un formato numérico con puntos (ej. '1', '1.1', '1.1.01').")
+        if len(limpio) > 15:
+            raise ValueError("El código de cuenta no puede exceder 15 caracteres.")
+        return limpio
+
+    @field_validator("name")
+    @classmethod
+    def validar_cuenta_nombre(cls, v: str) -> str:
+        limpio = str(v or "").strip()
+        if len(limpio) < 3 or len(limpio) > 60:
+            raise ValueError("El nombre de la cuenta debe tener entre 3 y 60 caracteres.")
+        if not RE_ACCOUNT_NAME.match(limpio) or RE_SQLI_DANGEROUS.search(limpio):
+            raise ValueError("El nombre de la cuenta contiene caracteres especiales no válidos o código SQL.")
+        return limpio
+
+    @field_validator("type")
+    @classmethod
+    def validar_cuenta_tipo(cls, v: str) -> str:
+        limpio = str(v or "").strip().upper()
+        if limpio not in {"MAY", "DET"}:
+            raise ValueError("El tipo de cuenta debe ser estrictamente 'MAY' (Mayor) o 'DET' (Detalle).")
+        return limpio
 
 
 class BancoInput(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
     id: str | None = Field(default=None, alias="idBanco")
-    name: str = Field(alias="nombre", min_length=2, max_length=50)
+    name: str = Field(alias="nombre", min_length=3, max_length=50)
     status: str = Field(default="ACT", alias="estado")
+
+    @field_validator("id")
+    @classmethod
+    def validar_banco_id(cls, v: str | None) -> str | None:
+        if not v or not str(v).strip():
+            return None
+        limpio = str(v).strip()
+        if RE_SQLI_DANGEROUS.search(limpio) or len(limpio) > 10:
+            raise ValueError("Código de banco inválido.")
+        return limpio
+
+    @field_validator("name")
+    @classmethod
+    def validar_banco_nombre(cls, v: str) -> str:
+        limpio = str(v or "").strip()
+        if len(limpio) < 3 or len(limpio) > 50:
+            raise ValueError("El nombre de la entidad bancaria debe tener entre 3 y 50 caracteres.")
+        if not RE_BANK_NAME.match(limpio) or RE_SQLI_DANGEROUS.search(limpio):
+            raise ValueError("El nombre del banco contiene caracteres no permitidos o sentencias SQL.")
+        return limpio
+
+    @field_validator("status")
+    @classmethod
+    def validar_banco_estado(cls, v: str) -> str:
+        limpio = str(v or "ACT").strip().upper()
+        if limpio not in {"ACT", "INA"}:
+            raise ValueError("El estado del banco debe ser 'ACT' (Activo) o 'INA' (Inactivo).")
+        return limpio
 
 
 class CentroCostoInput(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
     id: str | None = Field(default=None, alias="idCentroCosto")
     department_id: str = Field(alias="idDepartamento")
-    name: str = Field(alias="nombre", min_length=2, max_length=50)
+    name: str = Field(alias="nombre", min_length=3, max_length=50)
     monthly_budget: Decimal = Field(default=Decimal("0.00"), alias="presupuestoMensual", ge=0)
     status: str = Field(default="ACT", alias="estado")
+
+    @field_validator("id")
+    @classmethod
+    def validar_cco_id(cls, v: str | None) -> str | None:
+        if not v or not str(v).strip():
+            return None
+        limpio = str(v).strip()
+        if RE_SQLI_DANGEROUS.search(limpio) or len(limpio) > 10:
+            raise ValueError("Código de centro de costo inválido.")
+        return limpio
+
+    @field_validator("department_id")
+    @classmethod
+    def validar_cco_dep(cls, v: str) -> str:
+        limpio = str(v or "").strip()
+        if not limpio or RE_SQLI_DANGEROUS.search(limpio) or len(limpio) > 10:
+            raise ValueError("Departamento asociado inválido.")
+        return limpio
+
+    @field_validator("name")
+    @classmethod
+    def validar_cco_nombre(cls, v: str) -> str:
+        limpio = str(v or "").strip()
+        if len(limpio) < 3 or len(limpio) > 50:
+            raise ValueError("El nombre del centro de costo debe tener entre 3 y 50 caracteres.")
+        if not RE_CCO_NAME.match(limpio) or RE_SQLI_DANGEROUS.search(limpio):
+            raise ValueError("El nombre del centro de costo contiene caracteres no permitidos o código SQL.")
+        return limpio
+
+    @field_validator("monthly_budget")
+    @classmethod
+    def validar_presupuesto(cls, v: Decimal) -> Decimal:
+        if v < Decimal("0.00"):
+            raise ValueError("El presupuesto mensual no puede ser negativo.")
+        if v > Decimal("1000000000.00"):
+            raise ValueError("El presupuesto mensual excede el límite permitido.")
+        return v.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+    @field_validator("status")
+    @classmethod
+    def validar_cco_estado(cls, v: str) -> str:
+        limpio = str(v or "ACT").strip().upper()
+        if limpio not in {"ACT", "INA"}:
+            raise ValueError("El estado del centro de costo debe ser 'ACT' o 'INA'.")
+        return limpio
 
 
 # ==========================================
@@ -1765,6 +2199,11 @@ def crear_empleado(emp: EmployeeInput):
         if not dept_row:
             cur.execute("INSERT IGNORE INTO DEPARTAMENTOS (id_Departamento, dep_Nombre, ESTADO_DEP) VALUES (%s, 'General', 'ACT')", (dep_id,))
 
+        # Validar duplicidad de cédula
+        cur.execute("SELECT id_Empleado FROM EMPLEADOS WHERE emp_Cedula = %s LIMIT 1", (emp.ci,))
+        if cur.fetchone():
+            raise HTTPException(status_code=409, detail=f"Ya existe un empleado registrado con la cédula {emp.ci}.")
+
         cur.execute(
             """
             INSERT INTO EMPLEADOS (
@@ -1826,6 +2265,12 @@ def actualizar_empleado(employee_id: str, emp: EmployeeInput):
         cur.execute("SELECT id_Departamento FROM DEPARTAMENTOS WHERE id_Departamento = %s", (dep_id,))
         if not cur.fetchone():
             cur.execute("INSERT IGNORE INTO DEPARTAMENTOS (id_Departamento, dep_Nombre, ESTADO_DEP) VALUES (%s, 'General', 'ACT')", (dep_id,))
+
+        # Validar duplicidad de cédula en otro empleado
+        cur.execute("SELECT id_Empleado FROM EMPLEADOS WHERE emp_Cedula = %s AND id_Empleado <> %s LIMIT 1", (emp.ci, employee_id))
+        dupe = cur.fetchone()
+        if dupe:
+            raise HTTPException(status_code=409, detail=f"La cédula {emp.ci} ya se encuentra asignada a otro colaborador ({dupe[0]}).")
 
         cur.execute(
             """
@@ -2013,6 +2458,11 @@ def registrar_carga_empleado(employee_id: str, carga: DependentInput):
                         max_num = n
             carga_id = f"CAR-{max_num + 1:06d}"
 
+        # Validar duplicidad de cédula en cargas familiares activas
+        cur.execute("SELECT id_Carga FROM CARGAS WHERE car_Cedula = %s AND (ESTADO_CAR = 'ACT' OR ESTADO_CAR IS NULL) LIMIT 1", (carga.cedula,))
+        if cur.fetchone():
+            raise HTTPException(status_code=409, detail=f"Ya existe una carga familiar activa registrada con la cédula {carga.cedula}.")
+
         cur.execute(
             """
             INSERT INTO CARGAS (
@@ -2054,6 +2504,12 @@ def actualizar_carga_empleado(employee_id: str, carga_id: str, carga: DependentI
         conn = mysql.connector.connect(**get_db_config())
         cur = conn.cursor()
         user_id = get_user_id(cur)
+        # Validar duplicidad de cédula en otras cargas familiares activas
+        cur.execute("SELECT id_Carga FROM CARGAS WHERE car_Cedula = %s AND id_Carga <> %s AND (ESTADO_CAR = 'ACT' OR ESTADO_CAR IS NULL) LIMIT 1", (carga.cedula, carga_id))
+        dupe_carga = cur.fetchone()
+        if dupe_carga:
+            raise HTTPException(status_code=409, detail=f"La cédula {carga.cedula} ya se encuentra registrada en otra carga familiar ({dupe_carga[0]}).")
+
         cur.execute(
             """
             UPDATE CARGAS
@@ -2288,7 +2744,17 @@ def crear_rol_pago(payroll: PayrollInput):
         else:
             total_descuentos = payroll.deductions
 
+        if payroll.start_date > payroll.end_date:
+            raise HTTPException(status_code=422, detail="La fecha de inicio del rol no puede ser posterior a la fecha de fin.")
+
+        cur.execute("SELECT id_Empleado, ESTADO_EMP FROM EMPLEADOS WHERE id_Empleado = %s LIMIT 1", (payroll.employee_id,))
+        emp_exists = cur.fetchone()
+        if not emp_exists:
+            raise HTTPException(status_code=404, detail=f"No se encontró el colaborador con código {payroll.employee_id}.")
+
         neto = (payroll.base_salary + total_bonos - total_descuentos).quantize(CENT, rounding=ROUND_HALF_UP)
+        if neto < Decimal("0.00"):
+            raise HTTPException(status_code=422, detail="El valor neto a pagar no puede ser negativo. Los descuentos superan los ingresos del colaborador.")
 
         try:
             cur.callproc(
@@ -2462,7 +2928,11 @@ def crear_banco(banco: BancoInput):
             cur.execute("SELECT MAX(CAST(SUBSTRING(id_Banco, 5) AS UNSIGNED)) FROM BANCOS WHERE id_Banco LIKE 'BAN-%'")
             row = cur.fetchone()
             seq = (row[0] or 0) + 1 if row else 1
-            banco_id = f"BAN-{seq:06d}"
+        # Validar duplicidad de nombre de banco
+        cur.execute("SELECT id_Banco FROM BANCOS WHERE LOWER(TRIM(ban_Nombre)) = LOWER(%s) LIMIT 1", (banco.name.strip(),))
+        existing_ban = cur.fetchone()
+        if existing_ban:
+            raise HTTPException(status_code=409, detail=f"Ya existe una entidad bancaria registrada con el nombre '{banco.name.strip()}'.")
 
         cur.execute(
             """
@@ -2555,6 +3025,11 @@ def crear_centro_costo(cco: CentroCostoInput):
         cur.execute("SELECT id_Departamento FROM DEPARTAMENTOS WHERE id_Departamento = %s", (dep_id,))
         if not cur.fetchone():
             cur.execute("INSERT IGNORE INTO DEPARTAMENTOS (id_Departamento, dep_Nombre, ESTADO_DEP) VALUES (%s, 'General', 'ACT')", (dep_id,))
+
+        # Validar duplicidad de nombre de centro de costo en el departamento
+        cur.execute("SELECT id_CentroCosto FROM CENTROS_COSTOS WHERE LOWER(TRIM(cco_Nombre)) = LOWER(%s) AND id_Departamento = %s LIMIT 1", (cco.name.strip(), dep_id))
+        if cur.fetchone():
+            raise HTTPException(status_code=409, detail=f"Ya existe un centro de costo con el nombre '{cco.name.strip()}' en este departamento.")
 
         cur.execute(
             """
@@ -2743,8 +3218,15 @@ def listar_asientos():
 def crear_asiento(entry: JournalEntryInput):
     total_debe = sum((line.debit for line in entry.lines), Decimal("0"))
     total_haber = sum((line.credit for line in entry.lines), Decimal("0"))
+    if total_debe <= Decimal("0"):
+        raise HTTPException(status_code=422, detail="El valor total del asiento debe ser un monto positivo mayor a cero.")
     if total_debe != total_haber:
         raise HTTPException(status_code=422, detail="El asiento debe estar cuadrado (Debe == Haber).")
+    for idx, line in enumerate(entry.lines, 1):
+        if line.debit == Decimal("0") and line.credit == Decimal("0"):
+            raise HTTPException(status_code=422, detail=f"Línea #{idx}: Debe ingresar un valor en el Debe o en el Haber.")
+        if line.debit > Decimal("0") and line.credit > Decimal("0"):
+            raise HTTPException(status_code=422, detail=f"Línea #{idx}: Una línea no puede tener importes simultáneos en Debe y Haber.")
 
     asiento_id = f"ASI{uuid4().hex[:7].upper()}"
     conn, cur = None, None

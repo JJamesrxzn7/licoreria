@@ -10,6 +10,8 @@ import { hrApi } from '../api';
 const money = (val: number | string | undefined) =>
   `$${Number(val || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
+const RE_SQLI = /(--|\/\*|\*\/|;|'|"|<script|UNION\s+SELECT|INSERT\s+INTO|UPDATE\s+\w+\s+SET|DELETE\s+FROM|DROP\s+TABLE|ALTER\s+TABLE|TRUNCATE\s+TABLE|EXEC\s*\()/i;
+
 interface BonusLineEntry {
   bonusId: string;
   bonusName: string;
@@ -152,12 +154,19 @@ export const PayrollManagement: React.FC = () => {
 
   // Agregar línea de bonificación
   const handleAddBonusLine = () => {
-    if (!selectedBonusId) return;
+    if (!selectedBonusId) {
+      setNotice({ type: 'error', message: 'Debe seleccionar una bonificación del catálogo.' });
+      return;
+    }
     const cat = bonusCatalog.find(b => b.id === selectedBonusId);
     const name = cat?.nombre || selectedBonusId;
 
     if (bonusAmount <= 0) {
       setNotice({ type: 'error', message: 'El valor de la bonificación debe ser mayor a 0.' });
+      return;
+    }
+    if (bonusAmount > 10000) {
+      setNotice({ type: 'error', message: 'El valor de la bonificación no puede exceder $10,000.00.' });
       return;
     }
 
@@ -172,12 +181,19 @@ export const PayrollManagement: React.FC = () => {
 
   // Agregar línea de deducción
   const handleAddDeductionLine = () => {
-    if (!selectedDeductionId) return;
+    if (!selectedDeductionId) {
+      setNotice({ type: 'error', message: 'Debe seleccionar un descuento del catálogo.' });
+      return;
+    }
     const cat = deductionCatalog.find(d => d.id === selectedDeductionId);
     const name = cat?.nombre || selectedDeductionId;
 
     if (deductionAmount <= 0) {
       setNotice({ type: 'error', message: 'El valor del descuento debe ser mayor a 0.' });
+      return;
+    }
+    if (deductionAmount > 10000) {
+      setNotice({ type: 'error', message: 'El valor del descuento no puede exceder $10,000.00.' });
       return;
     }
 
@@ -219,12 +235,25 @@ export const PayrollManagement: React.FC = () => {
       setNotice({ type: 'error', message: 'Selecciona un colaborador para preparar el rol de pagos.' });
       return;
     }
+    const cleanDesc = description.trim();
+    if (!cleanDesc || cleanDesc.length < 5 || cleanDesc.length > 40) {
+      setNotice({ type: 'error', message: 'La descripción del rol debe tener entre 5 y 40 caracteres.' });
+      return;
+    }
+    if (RE_SQLI.test(cleanDesc)) {
+      setNotice({ type: 'error', message: 'La descripción contiene caracteres o sentencias no permitidas (SQL injection detectado).' });
+      return;
+    }
     if (!startDate || !endDate) {
       setNotice({ type: 'error', message: 'Debes definir la fecha de inicio y fin del periodo (PAGOS).' });
       return;
     }
     if (new Date(startDate) > new Date(endDate)) {
       setNotice({ type: 'error', message: 'La fecha de inicio no puede ser posterior a la fecha de fin.' });
+      return;
+    }
+    if (baseSalary < 0 || baseSalary > 50000) {
+      setNotice({ type: 'error', message: 'El sueldo base debe estar entre $0.00 y $50,000.00.' });
       return;
     }
     if (netoPagar < 0) {
@@ -366,7 +395,10 @@ export const PayrollManagement: React.FC = () => {
               Descripción / Glosa del Rol (pag_Descripcion) *
               <input
                 className="input"
+                minLength={5}
                 maxLength={40}
+                pattern="[A-Za-zÁÉÍÓÚáéíóúÑñÜü0-9\s\.\-&/]+"
+                title="Entre 5 y 40 caracteres (letras, números y signos básicos)."
                 value={description}
                 onChange={e => setDescription(e.target.value)}
                 placeholder="Ej: Nómina mensual Octubre 2026"
