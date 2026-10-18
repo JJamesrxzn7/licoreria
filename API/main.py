@@ -180,9 +180,18 @@ def validar_cedula_ecuador(cedula: str) -> bool:
 
 
 class PurchaseItemInput(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
     product_id: str = Field(alias="idProducto", min_length=1, max_length=10)
-    quantity: int = Field(alias="cantidad", gt=0)
-    unit_cost: Decimal = Field(alias="costoUnitario", ge=0, max_digits=7, decimal_places=2)
+    quantity: int = Field(alias="cantidad", gt=0, le=100000)
+    unit_cost: Decimal = Field(alias="costoUnitario", gt=0, le=Decimal("99999.99"), max_digits=7, decimal_places=2)
+
+    @field_validator("product_id")
+    @classmethod
+    def validar_producto_id(cls, v: str) -> str:
+        limpio = str(v or "").strip()
+        if not limpio or RE_SQLI_DANGEROUS.search(limpio) or not re.match(r"^[A-Za-z0-9\-]+$", limpio):
+            raise ValueError("Identificador de producto inválido.")
+        return limpio[:10]
 
 
 class PurchaseOrderInput(BaseModel):
@@ -190,32 +199,42 @@ class PurchaseOrderInput(BaseModel):
     supplier_id: str = Field(alias="idProveedor", min_length=1, max_length=10)
     delivery_date: datetime | date | str | None = Field(default=None, alias="fechaEntrega")
     tax_rate: Decimal = Field(default=Decimal("0"), alias="tasaIVA", ge=0, le=100)
-    items: list[PurchaseItemInput] = Field(min_length=1)
+    items: list[PurchaseItemInput] = Field(min_length=1, max_length=100)
 
     @field_validator("supplier_id")
     @classmethod
     def validar_proveedor_id(cls, v: str) -> str:
         limpio = str(v or "").strip()
-        if not limpio or RE_SQLI_DANGEROUS.search(limpio):
+        if not limpio or RE_SQLI_DANGEROUS.search(limpio) or not re.match(r"^[A-Za-z0-9_\-]+$", limpio):
             raise ValueError("Identificador de proveedor inválido.")
         return limpio[:10]
 
     @field_validator("delivery_date")
     @classmethod
-    def validar_fecha_entrega(cls, v: datetime | date | str | None) -> datetime | None:
+    def validar_fecha_entrega(cls, v: datetime | date | str | None) -> datetime:
         if not v:
-            return None
+            raise ValueError("La fecha estimada de entrega (fechaEntrega) es obligatoria.")
+        res = None
         if isinstance(v, datetime):
-            return v
-        if isinstance(v, date):
-            return datetime.combine(v, datetime.min.time())
-        try:
-            cleaned = str(v).strip()
-            if len(cleaned) == 10:
-                return datetime.strptime(cleaned, "%Y-%m-%d")
-            return datetime.fromisoformat(cleaned.replace("Z", "+00:00"))
-        except Exception:
-            raise ValueError("Formato de fecha de entrega inválido. Utilice el formato YYYY-MM-DD.")
+            res = v
+        elif isinstance(v, date):
+            res = datetime.combine(v, datetime.min.time())
+        else:
+            try:
+                cleaned = str(v).strip()
+                if len(cleaned) == 10:
+                    res = datetime.strptime(cleaned, "%Y-%m-%d")
+                else:
+                    res = datetime.fromisoformat(cleaned.replace("Z", "+00:00"))
+            except Exception:
+                raise ValueError("Formato de fecha de entrega inválido. Utilice el formato YYYY-MM-DD.")
+
+        today = datetime.now().date()
+        if res.date() < today:
+            raise ValueError(f"La fecha de entrega ({res.date()}) no puede ser anterior a la fecha actual ({today}).")
+        if res.date() > today + timedelta(days=730):
+            raise ValueError("La fecha de entrega no puede superar 2 años hacia el futuro.")
+        return res
 
 
 class UnidadMedidaInput(BaseModel):
@@ -310,6 +329,7 @@ class CustomerInput(BaseModel):
 
 
 class SupplierInput(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
     id: str | None = None
     name: str = Field(alias="nombre", min_length=2, max_length=40)
     ruc: str = Field(alias="ruc", min_length=10, max_length=13)
@@ -319,6 +339,102 @@ class SupplierInput(BaseModel):
     mobile: str = Field(default="", alias="celular")
     address: str = Field(default="", alias="direccion")
     status: str = Field(default="ACT", alias="estado")
+
+    @field_validator("id")
+    @classmethod
+    def validar_id(cls, v: str | None) -> str | None:
+        if not v:
+            return None
+        limpio = str(v).strip()
+        if not limpio:
+            return None
+        if len(limpio) > 10 or RE_SQLI_DANGEROUS.search(limpio) or not re.match(r"^[A-Za-z0-9_\-]+$", limpio):
+            raise ValueError("El identificador de proveedor contiene caracteres no válidos.")
+        return limpio[:10]
+
+    @field_validator("name")
+    @classmethod
+    def validar_nombre(cls, v: str) -> str:
+        limpio = str(v or "").strip()
+        if len(limpio) < 2 or len(limpio) > 40:
+            raise ValueError("La razón social / nombre debe tener entre 2 y 40 caracteres.")
+        if RE_SQLI_DANGEROUS.search(limpio):
+            raise ValueError("El nombre del proveedor contiene caracteres o sentencias no permitidas (anti-SQLi detectado).")
+        return limpio
+
+    @field_validator("ruc")
+    @classmethod
+    def validar_ruc(cls, v: str) -> str:
+        limpio = str(v or "").strip()
+        if not limpio.isdigit() or len(limpio) not in (10, 13):
+            raise ValueError("El RUC / Cédula debe contener exactamente 10 o 13 dígitos numéricos sin letras ni símbolos.")
+        if len(limpio) == 10 and not validar_cedula_ecuador(limpio):
+            raise ValueError("El número de cédula ingresado no es válido según el algoritmo del Registro Civil del Ecuador.")
+        if len(limpio) == 13 and not (limpio.endswith("001") or limpio.endswith("002") or limpio.endswith("003")):
+            raise ValueError("El RUC de persona jurídica o natural en Ecuador debe terminar típicamente en 001.")
+        return limpio
+
+    @field_validator("phone")
+    @classmethod
+    def validar_telefono(cls, v: str) -> str:
+        limpio = str(v or "").strip()
+        if not limpio:
+            return ""
+        digits = re.sub(r"\D", "", limpio)
+        if len(digits) > 10 or (len(digits) > 0 and len(digits) < 7):
+            raise ValueError("El teléfono convencional debe tener entre 7 y 10 dígitos numéricos.")
+        if RE_SQLI_DANGEROUS.search(limpio):
+            raise ValueError("El teléfono contiene caracteres no permitidos.")
+        return digits[:10]
+
+    @field_validator("mobile")
+    @classmethod
+    def validar_celular(cls, v: str) -> str:
+        limpio = str(v or "").strip()
+        if not limpio:
+            return ""
+        digits = re.sub(r"\D", "", limpio)
+        if not RE_MOBILE.match(digits):
+            raise ValueError("El celular debe tener 10 dígitos y empezar con 09 (ej: 0991234567).")
+        return digits
+
+    @field_validator("email")
+    @classmethod
+    def validar_email(cls, v: str) -> str:
+        limpio = str(v or "").strip()
+        if not limpio:
+            return ""
+        if len(limpio) > 60 or not RE_EMAIL.match(limpio) or RE_SQLI_DANGEROUS.search(limpio):
+            raise ValueError("El correo electrónico es inválido o excede 60 caracteres (ej: contacto@proveedor.com).")
+        return limpio
+
+    @field_validator("city_id")
+    @classmethod
+    def validar_ciudad(cls, v: str) -> str:
+        limpio = str(v or "").strip().upper()
+        if not limpio or len(limpio) > 3 or RE_SQLI_DANGEROUS.search(limpio) or not re.match(r"^[A-Z0-9]+$", limpio):
+            raise ValueError("El código de ciudad debe ser un identificador alfanumérico de hasta 3 caracteres (ej: UIO).")
+        return limpio
+
+    @field_validator("address")
+    @classmethod
+    def validar_direccion(cls, v: str) -> str:
+        limpio = str(v or "").strip()
+        if not limpio:
+            return ""
+        if len(limpio) > 60 or RE_SQLI_DANGEROUS.search(limpio):
+            raise ValueError("La dirección contiene caracteres o sentencias no permitidas o excede 60 caracteres.")
+        return limpio[:60]
+
+    @field_validator("status")
+    @classmethod
+    def validar_estado(cls, v: str) -> str:
+        limpio = str(v or "ACT").strip().upper()
+        if limpio in ("ACTIVE", "ACT"):
+            return "ACT"
+        if limpio in ("INACTIVE", "INA"):
+            return "INA"
+        raise ValueError("El estado del proveedor debe ser 'ACT' (Activo) o 'INA' (Inactivo).")
 
 
 class ProductInput(BaseModel):
@@ -1197,19 +1313,33 @@ def crear_compra(purchase: PurchaseOrderInput):
             detail="El total supera la capacidad NUMERIC(7,2) de la base de datos.",
         )
 
-    order_id = f"OC{uuid4().hex[:8].upper()}"
+    order_id = None
     conn, cur = None, None
     try:
         conn = mysql.connector.connect(**get_db_config())
         cur = conn.cursor()
         user_id = get_user_id(cur)
+
+        # Generar ID correlativo estándar: COM-000001 (CHAR(10))
+        cur.execute("SELECT id_Compra FROM COMPRAS")
+        existing_orders = cur.fetchall()
+        max_order_num = 0
+        for r in existing_orders:
+            val = str(r[0] if isinstance(r, (list, tuple)) else r.get("id_Compra", ""))
+            m = re.match(r"^(?:COM-|OC-?)(\d+)$", val, re.IGNORECASE)
+            if m:
+                num = int(m.group(1))
+                if num > max_order_num:
+                    max_order_num = num
+        order_id = f"COM-{max_order_num + 1:06d}"
+
         cur.execute(
             "SELECT 1 FROM PROVEEDORES WHERE id_Proveedor = %s AND ESTADO_PRV = 'ACT'",
             (purchase.supplier_id,),
         )
         if cur.fetchone() is None:
             raise HTTPException(
-                status_code=422, detail="El proveedor no existe o no está activo."
+                status_code=422, detail="El proveedor seleccionado no existe o no se encuentra activo."
             )
         product_ids = [item.product_id for item in purchase.items]
         placeholders = ", ".join(["%s"] * len(product_ids))
@@ -1218,10 +1348,11 @@ def crear_compra(purchase: PurchaseOrderInput):
             tuple(product_ids),
         )
         active_product_ids = {row[0] for row in cur.fetchall()}
-        if active_product_ids != set(product_ids):
+        missing_ids = set(product_ids) - active_product_ids
+        if missing_ids:
             raise HTTPException(
                 status_code=422,
-                detail="Uno o más productos no existen o no están activos.",
+                detail=f"Los siguientes productos no existen o no están activos: {', '.join(missing_ids)}.",
             )
         try:
             cur.callproc(
@@ -1249,21 +1380,36 @@ def crear_compra(purchase: PurchaseOrderInput):
             else:
                 raise
         for item, line_subtotal in items_with_subtotal:
-            cur.execute(
-                """
-                INSERT INTO PROxOC
-                    (id_Compra, id_Producto, pxo_Cantidad, pxo_Valor,
-                     pxo_Subtotal, ESTADO_PxOC)
-                VALUES (%s, %s, %s, %s, %s, 'ABI')
-                """,
-                (
-                    order_id,
-                    item.product_id,
-                    item.quantity,
-                    item.unit_cost,
-                    line_subtotal,
-                ),
-            )
+            try:
+                cur.callproc(
+                    "SP_COMPRA_AGREGAR_PRODUCTO",
+                    (
+                        order_id,
+                        item.product_id,
+                        item.quantity,
+                        item.unit_cost,
+                        user_id,
+                    )
+                )
+            except mysql.connector.Error as add_err:
+                if add_err.errno in {1305, 1452}:
+                    cur.execute(
+                        """
+                        INSERT INTO PROxOC
+                            (id_Compra, id_Producto, pxo_Cantidad, pxo_Valor,
+                             pxo_Subtotal, ESTADO_PxOC)
+                        VALUES (%s, %s, %s, %s, %s, 'ABI')
+                        """,
+                        (
+                            order_id,
+                            item.product_id,
+                            item.quantity,
+                            item.unit_cost,
+                            line_subtotal,
+                        ),
+                    )
+                else:
+                    raise
         conn.commit()
         return {
             "id": order_id,
@@ -1271,7 +1417,7 @@ def crear_compra(purchase: PurchaseOrderInput):
             "subtotal": str(subtotal),
             "iva": str(tax),
             "total": str(total),
-            "mensaje": f"Orden {order_id} creada.",
+            "mensaje": f"Orden {order_id} creada exitosamente.",
         }
     except HTTPException:
         if conn: conn.rollback()
@@ -1285,20 +1431,37 @@ def crear_compra(purchase: PurchaseOrderInput):
 
 
 def cambiar_estado_compra(order_id: str, procedure: str) -> dict[str, str]:
-    if len(order_id) > 10:
+    clean_id = str(order_id or "").strip()
+    if not clean_id or len(clean_id) > 10 or RE_SQLI_DANGEROUS.search(clean_id) or not re.match(r"^[A-Za-z0-9\-]+$", clean_id):
         raise HTTPException(status_code=422, detail="El identificador de compra no es válido.")
+
     conn, cur = None, None
     try:
         conn = mysql.connector.connect(**get_db_config())
         cur = conn.cursor()
+
+        # Validar existencia y estado actual de la orden en la BD
+        cur.execute("SELECT ESTADO_OC FROM COMPRAS WHERE id_Compra = %s", (clean_id,))
+        order_row = cur.fetchone()
+        if not order_row:
+            raise HTTPException(status_code=404, detail=f"La orden de compra '{clean_id}' no existe.")
+
+        current_state = order_row[0].strip()
+        if current_state != "ABI":
+            estado_texto = "Aprobada (APR)" if current_state == "APR" else ("Anulada (ANU)" if current_state == "ANU" else current_state)
+            raise HTTPException(
+                status_code=400,
+                detail=f"La orden {clean_id} ya se encuentra en estado '{estado_texto}' y no puede volver a modificarse."
+            )
+
         user_id = get_user_id(cur)
         try:
-            cur.callproc(procedure, (order_id, user_id))
+            cur.callproc(procedure, (clean_id, user_id))
         except mysql.connector.Error as proc_err:
             if proc_err.errno in {1305, 1452}:
                 new_state = "APR" if procedure == "SP_COMPRA_APROBAR" else "ANU"
-                cur.execute("UPDATE COMPRAS SET ESTADO_OC = %s WHERE id_Compra = %s", (new_state, order_id))
-                cur.execute("UPDATE PROxOC SET ESTADO_PxOC = %s WHERE id_Compra = %s", (new_state, order_id))
+                cur.execute("UPDATE COMPRAS SET ESTADO_OC = %s WHERE id_Compra = %s", (new_state, clean_id))
+                cur.execute("UPDATE PROxOC SET ESTADO_PxOC = %s WHERE id_Compra = %s", (new_state, clean_id))
             else:
                 raise
         if procedure == "SP_COMPRA_APROBAR":
@@ -1309,11 +1472,21 @@ def cambiar_estado_compra(order_id: str, procedure: str) -> dict[str, str]:
                 ORDER BY rec_FechaHora DESC
                 LIMIT 1
                 """,
-                (order_id,),
+                (clean_id,),
             )
             receipt = cur.fetchone()
             if receipt is None:
-                receipt_id = f"R{uuid4().hex[:9].upper()}"
+                cur.execute("SELECT id_Recibo FROM RECEPCIONES")
+                existing_rec = cur.fetchall()
+                max_rec_num = 0
+                for r in existing_rec:
+                    val = str(r[0] if isinstance(r, (list, tuple)) else r.get("id_Recibo", ""))
+                    m = re.match(r"^REC-(\d+)$", val, re.IGNORECASE)
+                    if m:
+                        num = int(m.group(1))
+                        if num > max_rec_num:
+                            max_rec_num = num
+                receipt_id = f"REC-{max_rec_num + 1:06d}"
                 cur.execute(
                     """
                     INSERT INTO RECEPCIONES
@@ -1321,7 +1494,7 @@ def cambiar_estado_compra(order_id: str, procedure: str) -> dict[str, str]:
                          rec_Num_Produc, ESTADO_REC)
                     VALUES (%s, %s, 'Recepción de compra', NOW(), 0, 'PEN')
                     """,
-                    (receipt_id, order_id),
+                    (receipt_id, clean_id),
                 )
             else:
                 receipt_id = receipt[0].strip()
@@ -1331,7 +1504,7 @@ def cambiar_estado_compra(order_id: str, procedure: str) -> dict[str, str]:
                 FROM PROxOC
                 WHERE id_Compra = %s
                 """,
-                (order_id,),
+                (clean_id,),
             )
             order_items = cur.fetchall()
             for product_id, quantity in order_items:
@@ -1350,8 +1523,9 @@ def cambiar_estado_compra(order_id: str, procedure: str) -> dict[str, str]:
             )
         conn.commit()
         return {
-            "id": order_id,
+            "id": clean_id,
             "estado": "APR" if procedure == "SP_COMPRA_APROBAR" else "ANU",
+            "mensaje": f"Orden {clean_id} {'aprobada' if procedure == 'SP_COMPRA_APROBAR' else 'anulada'} exitosamente.",
         }
     except HTTPException:
         if conn: conn.rollback()
@@ -1724,10 +1898,28 @@ def crear_proveedor(prv: SupplierInput):
     try:
         conn = mysql.connector.connect(**get_db_config())
         cur = conn.cursor()
+
+        # 1. Validar que no exista otro proveedor con el mismo RUC/Cédula
+        cur.execute("SELECT id_Proveedor, prv_Nombre FROM PROVEEDORES WHERE prv_RUC_CED = %s", (prv.ruc,))
+        duplicado = cur.fetchone()
+        if duplicado:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Ya existe un proveedor registrado con el RUC/Cédula {prv.ruc} ({duplicado[1].strip()})."
+            )
+
+        # 2. Validar que la ciudad exista
+        cur.execute("SELECT 1 FROM CIUDADES WHERE id_Ciudad = %s", (prv.city_id,))
+        if not cur.fetchone():
+            raise HTTPException(status_code=422, detail=f"La ciudad con código '{prv.city_id}' no existe en el catálogo.")
+
+        # 3. ID de proveedor seguro y correlativo
         if prv.id and prv.id.strip():
             supplier_id = prv.id.strip()[:10]
+            cur.execute("SELECT 1 FROM PROVEEDORES WHERE id_Proveedor = %s", (supplier_id,))
+            if cur.fetchone():
+                raise HTTPException(status_code=409, detail=f"Ya existe un proveedor con el ID {supplier_id}.")
         else:
-            import re
             cur.execute("SELECT id_Proveedor FROM PROVEEDORES")
             existing_rows = cur.fetchall()
             max_id = 0
@@ -1759,6 +1951,9 @@ def crear_proveedor(prv: SupplierInput):
         )
         conn.commit()
         return {"id": supplier_id, "mensaje": f"Proveedor {prv.name} registrado exitosamente."}
+    except HTTPException:
+        if conn: conn.rollback()
+        raise
     except mysql.connector.Error as error:
         if conn: conn.rollback()
         raise_database_error(error)
@@ -1769,10 +1964,37 @@ def crear_proveedor(prv: SupplierInput):
 
 @app.put("/api/proveedores/{supplier_id}")
 def actualizar_proveedor(supplier_id: str, prv: SupplierInput):
+    clean_id = str(supplier_id or "").strip()
+    if not clean_id or len(clean_id) > 10 or RE_SQLI_DANGEROUS.search(clean_id) or not re.match(r"^[A-Za-z0-9_\-]+$", clean_id):
+        raise HTTPException(status_code=422, detail="Identificador de proveedor inválido.")
+
     conn, cur = None, None
     try:
         conn = mysql.connector.connect(**get_db_config())
         cur = conn.cursor()
+
+        # Verificar existencia
+        cur.execute("SELECT 1 FROM PROVEEDORES WHERE id_Proveedor = %s", (clean_id,))
+        if not cur.fetchone():
+            raise HTTPException(status_code=404, detail=f"El proveedor {clean_id} no existe.")
+
+        # Verificar RUC duplicado en otro proveedor
+        cur.execute(
+            "SELECT id_Proveedor, prv_Nombre FROM PROVEEDORES WHERE prv_RUC_CED = %s AND id_Proveedor != %s",
+            (prv.ruc, clean_id)
+        )
+        duplicado = cur.fetchone()
+        if duplicado:
+            raise HTTPException(
+                status_code=409,
+                detail=f"El RUC/Cédula {prv.ruc} ya pertenece a otro proveedor registrado ({duplicado[1].strip()})."
+            )
+
+        # Validar ciudad
+        cur.execute("SELECT 1 FROM CIUDADES WHERE id_Ciudad = %s", (prv.city_id,))
+        if not cur.fetchone():
+            raise HTTPException(status_code=422, detail=f"La ciudad con código '{prv.city_id}' no existe en el catálogo.")
+
         cur.execute(
             """
             UPDATE PROVEEDORES
@@ -1793,11 +2015,14 @@ def actualizar_proveedor(supplier_id: str, prv: SupplierInput):
                 prv.email[:60],
                 prv.city_id[:3],
                 prv.address[:60],
-                supplier_id,
+                clean_id,
             ),
         )
         conn.commit()
-        return {"id": supplier_id, "mensaje": "Proveedor actualizado exitosamente."}
+        return {"id": clean_id, "mensaje": "Proveedor actualizado exitosamente."}
+    except HTTPException:
+        if conn: conn.rollback()
+        raise
     except mysql.connector.Error as error:
         if conn: conn.rollback()
         raise_database_error(error)
@@ -1808,26 +2033,41 @@ def actualizar_proveedor(supplier_id: str, prv: SupplierInput):
 
 @app.patch("/api/proveedores/{supplier_id}/estado")
 def cambiar_estado_proveedor(supplier_id: str, payload: dict):
-    nuevo_estado = payload.get("estado", "INA")
-    if nuevo_estado in ["ACTIVE", "ACT"]:
+    clean_id = str(supplier_id or "").strip()
+    if not clean_id or len(clean_id) > 10 or RE_SQLI_DANGEROUS.search(clean_id) or not re.match(r"^[A-Za-z0-9_\-]+$", clean_id):
+        raise HTTPException(status_code=422, detail="Identificador de proveedor inválido.")
+
+    raw_estado = str(payload.get("estado", "")).strip().upper()
+    if raw_estado in ["ACTIVE", "ACT"]:
         db_estado = "ACT"
-    else:
+    elif raw_estado in ["INACTIVE", "INA"]:
         db_estado = "INA"
+    else:
+        raise HTTPException(status_code=422, detail="Estado inválido. Solo se admite 'ACT' (Activo) o 'INA' (Inactivo).")
 
     conn, cur = None, None
     try:
         conn = mysql.connector.connect(**get_db_config())
         cur = conn.cursor()
+
+        cur.execute("SELECT prv_Nombre FROM PROVEEDORES WHERE id_Proveedor = %s", (clean_id,))
+        prov = cur.fetchone()
+        if not prov:
+            raise HTTPException(status_code=404, detail=f"El proveedor {clean_id} no existe.")
+
         cur.execute(
             "UPDATE PROVEEDORES SET ESTADO_PRV = %s WHERE id_Proveedor = %s",
-            (db_estado, supplier_id),
+            (db_estado, clean_id),
         )
         conn.commit()
         return {
-            "id": supplier_id,
+            "id": clean_id,
             "estado": "ACTIVE" if db_estado == "ACT" else "INACTIVE",
-            "mensaje": f"Estado del proveedor actualizado a {'Activo' if db_estado == 'ACT' else 'Inactivo'}.",
+            "mensaje": f"Estado del proveedor {prov[0].strip()} actualizado a {'Activo' if db_estado == 'ACT' else 'Inactivo'}.",
         }
+    except HTTPException:
+        if conn: conn.rollback()
+        raise
     except mysql.connector.Error as error:
         if conn: conn.rollback()
         raise_database_error(error)

@@ -281,21 +281,33 @@ export const Suppliers = ({ onNavigate }: { onNavigate?: (route: string) => void
     }).catch(() => null);
   }, []);
 
+  const RE_SQLI = /(--|\/\*|\*\/|;|'|"|<script|UNION\s+SELECT|INSERT\s+INTO|UPDATE\s+\w+\s+SET|DELETE\s+FROM|DROP\s+TABLE|ALTER\s+TABLE|TRUNCATE\s+TABLE|EXEC\s*\()/i;
+
   // Funciones de validación
   const validateField = (name: string, value: string): string => {
     const val = (value || '').trim();
+    if (val && RE_SQLI.test(val)) {
+      return 'Se detectaron caracteres o patrones no permitidos (protección anti-SQLi).';
+    }
     switch (name) {
       case 'ruc':
-        if (!val) return 'El RUC es obligatorio.';
-        if (val.length !== 13) return `El RUC debe tener exactamente 13 dígitos numéricos (actual: ${val.length}).`;
+        if (!val) return 'El RUC / Cédula es obligatorio.';
+        if (!/^\d+$/.test(val)) return 'Solo se permiten dígitos numéricos sin letras ni símbolos.';
+        if (val.length !== 10 && val.length !== 13) return `Debe tener 10 dígitos (cédula) o 13 dígitos (RUC) (actual: ${val.length}).`;
+        if (val.length === 13 && !val.endsWith('001') && !val.endsWith('002') && !val.endsWith('003')) {
+          return 'El RUC debe terminar normalmente en 001.';
+        }
         return '';
       case 'name':
         if (!val) return 'La razón social / nombre es obligatoria.';
         if (val.length < 3) return 'Debe tener al menos 3 caracteres.';
+        if (val.length > 40) return 'No puede exceder 40 caracteres (restricción CHAR(40)).';
+        if (!/^[A-Za-zÁÉÍÓÚáéíóúÑñÜü0-9\s\.\-&/]+$/.test(val)) return 'Solo se permiten caracteres alfanuméricos y signos básicos (. - & /).';
         return '';
       case 'contact':
         if (!val) return '';
-        if (val.length < 9 || val.length > 10) return 'El teléfono debe tener entre 9 y 10 dígitos numéricos.';
+        if (!/^\d+$/.test(val)) return 'Solo se permiten dígitos numéricos.';
+        if (val.length < 7 || val.length > 10) return 'El teléfono convencional debe tener entre 7 y 10 dígitos.';
         return '';
       case 'mobile':
         if (!val) return 'El número de celular es obligatorio.';
@@ -303,14 +315,15 @@ export const Suppliers = ({ onNavigate }: { onNavigate?: (route: string) => void
         return '';
       case 'email':
         if (!val) return 'El correo electrónico es obligatorio.';
-        if (!val.includes('@') || !val.includes('.')) return 'El correo debe contener "@" y un punto "." obligatoriamente.';
-        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(val)) return 'Formato de correo no válido (ej: proveedor@empresa.com).';
+        if (val.length > 60) return 'El correo no puede exceder 60 caracteres.';
+        if (!/^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$/.test(val)) return 'Formato de correo no válido (ej: proveedor@empresa.com).';
         return '';
       case 'cityId':
         if (!val) return 'Por favor seleccione una ciudad de la lista.';
         return '';
       case 'address':
         if (!val) return 'La dirección es obligatoria.';
+        if (val.length > 60) return 'La dirección no puede exceder 60 caracteres.';
         if (!/\bav/i.test(val)) return 'La dirección debe incluir la palabra o abreviatura "Av" (ej: Av. Amazonas).';
         return '';
       default:
@@ -462,11 +475,10 @@ export const Suppliers = ({ onNavigate }: { onNavigate?: (route: string) => void
       return;
     }
 
-    const selectedCity = cities.find(c => c.id === form.cityId);
     const assignedId = nextSupplierId;
 
     try {
-      await supplierApi.createSupplier({
+      const res = await supplierApi.createSupplier({
         id: assignedId,
         nombre: form.name.trim(),
         ruc: form.ruc.trim(),
@@ -477,27 +489,12 @@ export const Suppliers = ({ onNavigate }: { onNavigate?: (route: string) => void
         direccion: form.address?.trim() || '',
       });
       setNoticeType('success');
-      setNotice(`Proveedor ${form.name.trim()} (${assignedId}) registrado exitosamente.`);
+      setNotice(res.mensaje || `Proveedor ${form.name.trim()} (${assignedId}) registrado exitosamente.`);
       void loadSuppliers();
-    } catch {
-      const supplier: Supplier = {
-        id: assignedId,
-        name: form.name.trim(),
-        ruc: form.ruc.trim(),
-        contact: form.contact?.trim() ?? '',
-        mobile: form.mobile?.trim() ?? '',
-        email: form.email?.trim() ?? '',
-        city: selectedCity?.nombre ?? 'Quito',
-        cityId: form.cityId || 'UIO',
-        address: form.address?.trim() ?? '',
-        status: 'ACTIVE',
-      };
-      updateState(draft => {
-        draft.suppliers.push(supplier);
-        return draft;
-      });
-      setNoticeType('success');
-      setNotice(`Proveedor ${form.name.trim()} (${assignedId}) registrado exitosamente.`);
+    } catch (err: any) {
+      setNoticeType('error');
+      setNotice(err?.message || 'Error al registrar el proveedor.');
+      return;
     }
 
     setForm({
@@ -538,8 +535,6 @@ export const Suppliers = ({ onNavigate }: { onNavigate?: (route: string) => void
       return;
     }
 
-    const selectedCity = cities.find(c => c.id === editForm.cityId);
-
     try {
       await supplierApi.updateSupplier(editingSupplier.id, {
         nombre: editForm.name.trim(),
@@ -553,23 +548,10 @@ export const Suppliers = ({ onNavigate }: { onNavigate?: (route: string) => void
       setNoticeType('success');
       setNotice(`Proveedor ${editingSupplier.id} actualizado exitosamente.`);
       void loadSuppliers();
-    } catch {
-      updateState(draft => {
-        const found = draft.suppliers.find(s => s.id === editingSupplier.id);
-        if (found) {
-          found.name = editForm.name.trim();
-          found.ruc = editForm.ruc.trim();
-          found.contact = editForm.contact?.trim() || '';
-          found.mobile = editForm.mobile?.trim() || '';
-          found.email = editForm.email?.trim() || '';
-          found.cityId = editForm.cityId || 'UIO';
-          found.city = selectedCity?.nombre || found.city;
-          found.address = editForm.address?.trim() || '';
-        }
-        return draft;
-      });
-      setNoticeType('success');
-      setNotice(`Proveedor ${editingSupplier.id} actualizado exitosamente.`);
+    } catch (err: any) {
+      setNoticeType('error');
+      setNotice(err?.message || 'Error al actualizar el proveedor.');
+      return;
     }
 
     setEditingSupplier(null);

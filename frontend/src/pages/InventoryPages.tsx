@@ -901,6 +901,15 @@ export const PurchaseOrders = () => {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
 
+  // Modal de confirmación para Aprobar / Anular orden
+  const [orderModal, setOrderModal] = useState<{
+    isOpen: boolean;
+    orderId: string;
+    action: 'APR' | 'ANU';
+    total: string | number;
+    provider: string;
+  } | null>(null);
+
   const loadData = async (showLoading = true): Promise<boolean> => {
     if (showLoading) setLoading(true);
     try {
@@ -939,15 +948,50 @@ export const PurchaseOrders = () => {
     return { ...item, [field]: Number(value) };
   }));
 
+  const RE_SQLI = /(--|\/\*|\*\/|;|'|"|<script|UNION\s+SELECT|INSERT\s+INTO|UPDATE\s+\w+\s+SET|DELETE\s+FROM|DROP\s+TABLE|ALTER\s+TABLE|TRUNCATE\s+TABLE|EXEC\s*\()/i;
+
   const createOrder = async () => {
     if (!supplierId) return setNotice('Selecciona un proveedor para continuar.');
-    if (!deliveryDate) return setNotice('Por favor selecciona la fecha estimada de entrega (oc_FechaEntrega).');
+    if (RE_SQLI.test(supplierId) || (deliveryDate && RE_SQLI.test(deliveryDate))) {
+      return setNotice('Se detectaron caracteres o patrones no permitidos (anti-SQLi detectado).');
+    }
+
     const selectedSupplier = catalogs?.proveedores.find(s => s.id === supplierId);
     if (selectedSupplier && selectedSupplier.estado !== 'ACT') {
       return setNotice('No se puede realizar una compra a un proveedor inactivo. Debes activarlo primero en el directorio de proveedores.');
     }
-    if (!items.length || items.some(item => !item.productId || !Number.isInteger(item.qty) || item.qty < 1 || item.cost < 0 || !Number.isFinite(item.qty + item.cost))) return setNotice('Selecciona proveedor y productos con cantidades enteras y costos válidos.');
-    if (new Set(items.map(item => item.productId)).size !== items.length) return setNotice('Cada producto debe aparecer una sola vez en la orden.');
+
+    if (!deliveryDate) return setNotice('Por favor selecciona la fecha estimada de entrega (oc_FechaEntrega).');
+    const today = new Date().toISOString().split('T')[0];
+    if (deliveryDate < today) {
+      return setNotice(`La fecha de entrega (${deliveryDate}) no puede ser anterior a la fecha actual (${today}).`);
+    }
+
+    if (!items.length) return setNotice('Debe incluir al menos un producto en la orden.');
+
+    for (const item of items) {
+      if (!item.productId || RE_SQLI.test(item.productId)) {
+        return setNotice('Se detectó un producto con identificador no válido o malicioso.');
+      }
+      if (!Number.isInteger(item.qty) || item.qty < 1 || item.qty > 100000) {
+        return setNotice('La cantidad de cada producto debe ser un número entero entre 1 y 100,000.');
+      }
+      if (isNaN(item.cost) || item.cost <= 0 || item.cost > 99999.99) {
+        return setNotice('El costo unitario debe ser un valor positivo mayor a 0 y menor a $100,000.');
+      }
+    }
+
+    if (new Set(items.map(item => item.productId)).size !== items.length) {
+      return setNotice('Cada producto debe aparecer una sola vez en la orden.');
+    }
+
+    const subtotal = items.reduce((sum, item) => sum + item.qty * item.cost, 0);
+    const tax = Math.round(subtotal * state.settings.taxRate) / 100;
+    const total = subtotal + tax;
+    if (total >= 100000) {
+      return setNotice(`El total de la orden (${money(total)}) supera la capacidad máxima de $99,999.99 permitida por el sistema contable.`);
+    }
+
     setSaving(true);
     try {
       const result = await purchaseApi.createOrder({
@@ -971,6 +1015,10 @@ export const PurchaseOrders = () => {
   };
 
   const changeStatus = async (orderId: string, status: 'APR' | 'ANU') => {
+    if (RE_SQLI.test(orderId)) {
+      setNotice('Identificador de orden inválido.');
+      return;
+    }
     setSaving(true);
     try {
       if (status === 'APR') await purchaseApi.approveOrder(orderId);
@@ -982,6 +1030,13 @@ export const PurchaseOrders = () => {
     } finally {
       setSaving(false);
     }
+  };
+
+  const executeChangeStatus = async () => {
+    if (!orderModal) return;
+    const { orderId, action } = orderModal;
+    setOrderModal(null);
+    await changeStatus(orderId, action);
   };
 
   const activeSuppliers = catalogs?.proveedores.filter(supplier => supplier.estado === 'ACT') ?? [];
@@ -1103,8 +1158,35 @@ export const PurchaseOrders = () => {
                   <td>
                     {order.estado === 'ABI' && (
                       <div className="inline-actions">
-                        <button type="button" className="btn btn-secondary" disabled={saving} onClick={() => void changeStatus(order.id, 'APR')}>Aprobar</button>
-                        <button type="button" className="btn btn-outline" disabled={saving} onClick={() => void changeStatus(order.id, 'ANU')}>Anular</button>
+                        <button
+                          type="button"
+                          className="btn btn-secondary"
+                          disabled={saving}
+                          onClick={() => setOrderModal({
+                            isOpen: true,
+                            orderId: order.id,
+                            action: 'APR',
+                            total: order.total,
+                            provider: order.proveedor
+                          })}
+                        >
+                          Aprobar
+                        </button>
+                        <button
+                          type="button"
+                          className="btn btn-outline"
+                          disabled={saving}
+                          style={{ color: '#b42318' }}
+                          onClick={() => setOrderModal({
+                            isOpen: true,
+                            orderId: order.id,
+                            action: 'ANU',
+                            total: order.total,
+                            provider: order.proveedor
+                          })}
+                        >
+                          Anular
+                        </button>
                       </div>
                     )}
                   </td>
@@ -1117,6 +1199,52 @@ export const PurchaseOrders = () => {
           </table>
         </div>
       </section>
+
+      {/* Modal de confirmación para Aprobar / Anular Orden de Compra */}
+      {orderModal && orderModal.isOpen && (
+        <div className="modal-backdrop">
+          <div className="modal-card" style={{ maxWidth: '480px' }}>
+            <h2 style={{ margin: '0 0 10px', fontSize: '18px' }}>
+              {orderModal.action === 'APR' ? '¿Aprobar orden de compra?' : '¿Anular orden de compra?'}
+            </h2>
+            <div style={{ margin: '0 0 16px', fontSize: '13px', color: '#475569', lineHeight: 1.5 }}>
+              {orderModal.action === 'APR' ? (
+                <>
+                  ¿Estás seguro de que deseas aprobar la orden de compra <code style={{ fontWeight: 600, color: 'var(--primary)' }}>{orderModal.orderId}</code> del proveedor <strong>{orderModal.provider}</strong> por un total de <strong>{money(Number(orderModal.total))}</strong>?
+                  <div style={{ marginTop: '10px', color: '#0369a1', fontSize: '12px', background: '#f0f9ff', padding: '10px', borderRadius: '6px', border: '1px solid #bae6fd' }}>
+                    ℹ️ <strong>Efecto en inventario:</strong> La orden pasará a estado <strong>APR</strong> y se generará automáticamente el registro de recepción para que bodega verifique las cantidades físicas recibidas.
+                  </div>
+                </>
+              ) : (
+                <>
+                  ¿Estás seguro de que deseas anular la orden de compra <code style={{ fontWeight: 600, color: '#b42318' }}>{orderModal.orderId}</code> del proveedor <strong>{orderModal.provider}</strong>?
+                  <div style={{ marginTop: '10px', color: '#991b1b', fontSize: '12px', background: '#fef2f2', padding: '10px', borderRadius: '6px', border: '1px solid #fecaca' }}>
+                    ⚠️ <strong>Advertencia:</strong> La orden pasará a estado <strong>ANU</strong> y quedará descartada. Esta acción no se puede deshacer.
+                  </div>
+                </>
+              )}
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px' }}>
+              <button
+                type="button"
+                className="btn btn-outline"
+                disabled={saving}
+                onClick={() => setOrderModal(null)}
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                className={orderModal.action === 'APR' ? 'btn btn-secondary' : 'btn btn-danger'}
+                disabled={saving}
+                onClick={executeChangeStatus}
+              >
+                {orderModal.action === 'APR' ? 'Sí, aprobar orden' : 'Sí, anular orden'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
