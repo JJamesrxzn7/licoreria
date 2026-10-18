@@ -446,9 +446,19 @@ class ProductInput(BaseModel):
     shelf_id: str | None = Field(default=None, alias="idPercha")
     buy_unit: str = Field(default="CAJ", alias="umCompra")
     sell_unit: str = Field(default="BOT", alias="umVenta")
-    buy_cost: Decimal = Field(alias="costoCompra", ge=0)
-    sell_price: Decimal = Field(alias="precioVenta", ge=0)
-    initial_stock: int = Field(default=0, alias="stockInicial", ge=0)
+    buy_cost: Decimal = Field(alias="costoCompra", ge=0, le=Decimal("99999.99"))
+    sell_price: Decimal = Field(alias="precioVenta", ge=0, le=Decimal("99999.99"))
+    initial_stock: int = Field(default=0, alias="stockInicial", ge=0, le=100000)
+
+    @field_validator("id")
+    @classmethod
+    def validar_id_producto(cls, v: str | None) -> str | None:
+        if not v or not str(v).strip():
+            return None
+        limpio = str(v).strip().upper()
+        if not re.match(r"^[A-Za-z0-9\-]{3,10}$", limpio) or RE_SQLI_DANGEROUS.search(limpio):
+            raise ValueError("El código/ID del producto debe ser alfanumérico de 3 a 10 caracteres.")
+        return limpio
 
     @field_validator("name")
     @classmethod
@@ -460,6 +470,24 @@ class ProductInput(BaseModel):
             raise ValueError("La descripción contiene caracteres no permitidos (anti-SQLi detectado).")
         return limpio
 
+    @field_validator("category_id", "brand_id")
+    @classmethod
+    def validar_fk_producto(cls, v: str, info) -> str:
+        limpio = str(v or "").strip()
+        if not re.match(r"^[A-Za-z0-9\-]+$", limpio) or RE_SQLI_DANGEROUS.search(limpio):
+            raise ValueError(f"Identificador de {info.field_name} inválido.")
+        return limpio[:10]
+
+    @field_validator("shelf_id")
+    @classmethod
+    def validar_percha_producto(cls, v: str | None) -> str | None:
+        if not v or not str(v).strip():
+            return None
+        limpio = str(v).strip()
+        if not re.match(r"^[A-Za-z0-9\-]+$", limpio) or RE_SQLI_DANGEROUS.search(limpio):
+            raise ValueError("Identificador de percha inválido.")
+        return limpio[:10]
+
     @field_validator("buy_unit", "sell_unit")
     @classmethod
     def validar_unidad_producto(cls, v: str) -> str:
@@ -468,6 +496,13 @@ class ProductInput(BaseModel):
             raise ValueError("El código de unidad de medida debe tener de 1 a 3 caracteres alfanuméricos.")
         return limpio
 
+    @field_validator("buy_cost", "sell_price")
+    @classmethod
+    def validar_montos_producto(cls, v: Decimal) -> Decimal:
+        if v < Decimal("0.00") or v > Decimal("99999.99"):
+            raise ValueError("El costo y precio deben estar entre $0.00 y $99,999.99 (NUMERIC(7,2)).")
+        return v.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
     @model_validator(mode="after")
     def validar_costo_precio(self):
         if self.sell_price < self.buy_cost:
@@ -475,12 +510,64 @@ class ProductInput(BaseModel):
         return self
 
 
+class ProductStatusInput(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+    status: str = Field(alias="estado")
+
+    @field_validator("status")
+    @classmethod
+    def validar_estado_prod(cls, v: str) -> str:
+        limpio = str(v or "").strip().upper()
+        if limpio in ("ACT", "ACTIVE", "ACTIVO"):
+            return "ACT"
+        if limpio in ("INA", "INACTIVE", "INACTIVO"):
+            return "INA"
+        raise ValueError("El estado del producto debe ser 'ACT' (Activo) o 'INA' (Inactivo).")
+
+
 class PhysicalAdjustmentInput(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
     employee_id: str = Field(default="EMP-000001", alias="idEmpleado")
     product_id: str = Field(alias="idProducto")
     type: str = Field(alias="tipo")  # 'IN' o 'OUT'
-    quantity: int = Field(alias="cantidad", gt=0)
-    reason: str = Field(alias="motivo")
+    quantity: int = Field(alias="cantidad", gt=0, le=100000)
+    reason: str = Field(alias="motivo", min_length=3, max_length=100)
+
+    @field_validator("employee_id")
+    @classmethod
+    def validar_empleado_ajuste(cls, v: str) -> str:
+        limpio = str(v or "EMP-000001").strip()
+        if not re.match(r"^[A-Za-z0-9\-]+$", limpio) or RE_SQLI_DANGEROUS.search(limpio):
+            raise ValueError("Identificador de empleado no válido.")
+        return limpio[:10]
+
+    @field_validator("product_id")
+    @classmethod
+    def validar_producto_ajuste(cls, v: str) -> str:
+        limpio = str(v or "").strip()
+        if not re.match(r"^[A-Za-z0-9\-]+$", limpio) or RE_SQLI_DANGEROUS.search(limpio):
+            raise ValueError("Identificador de producto no válido.")
+        return limpio[:10]
+
+    @field_validator("type")
+    @classmethod
+    def validar_tipo_ajuste(cls, v: str) -> str:
+        limpio = str(v or "").strip().upper()
+        if limpio in ("IN", "ENTRADA", "INGRESO"):
+            return "IN"
+        if limpio in ("OUT", "SALIDA", "EGRESO"):
+            return "OUT"
+        raise ValueError("El tipo de ajuste debe ser 'IN' (Ingreso) o 'OUT' (Egreso).")
+
+    @field_validator("reason")
+    @classmethod
+    def validar_motivo_ajuste(cls, v: str) -> str:
+        limpio = str(v or "").strip()
+        if len(limpio) < 3 or len(limpio) > 100:
+            raise ValueError("El motivo del ajuste debe tener entre 3 y 100 caracteres.")
+        if RE_SQLI_DANGEROUS.search(limpio):
+            raise ValueError("El motivo del ajuste contiene caracteres no permitidos (anti-SQLi detectado).")
+        return limpio
 
 
 class JournalEntryLineInput(BaseModel):
@@ -548,8 +635,58 @@ class JournalEntryInput(BaseModel):
         return v
 
 
+class ReceptionItemConfirm(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+    product_id: str = Field(alias="productId", min_length=1, max_length=10)
+    received_qty: int = Field(alias="receivedQty", ge=0, le=100000)
+    reason: str = Field(default="", alias="reason", max_length=100)
+
+    @field_validator("product_id")
+    @classmethod
+    def validar_prod_recep(cls, v: str) -> str:
+        limpio = str(v or "").strip()
+        if not re.match(r"^[A-Za-z0-9\-]+$", limpio) or RE_SQLI_DANGEROUS.search(limpio):
+            raise ValueError("Identificador de producto inválido.")
+        return limpio[:10]
+
+    @field_validator("reason")
+    @classmethod
+    def validar_motivo_recep(cls, v: str) -> str:
+        limpio = str(v or "").strip()
+        if limpio and RE_SQLI_DANGEROUS.search(limpio):
+            raise ValueError("El motivo contiene caracteres o sentencias no permitidas (anti-SQLi detectado).")
+        return limpio[:100]
+
+
 class ReceptionConfirmInput(BaseModel):
-    items: list[dict[str, object]]  # [{ "productId": str, "receivedQty": int, "reason": str }]
+    items: list[ReceptionItemConfirm] = Field(min_length=1)
+
+
+class DeliveryItemConfirm(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+    product_id: str = Field(alias="productId", min_length=1, max_length=10)
+    delivered_qty: int = Field(alias="deliveredQty", ge=0, le=100000)
+    reason: str = Field(default="", alias="reason", max_length=100)
+
+    @field_validator("product_id")
+    @classmethod
+    def validar_prod_deliv(cls, v: str) -> str:
+        limpio = str(v or "").strip()
+        if not re.match(r"^[A-Za-z0-9\-]+$", limpio) or RE_SQLI_DANGEROUS.search(limpio):
+            raise ValueError("Identificador de producto inválido.")
+        return limpio[:10]
+
+    @field_validator("reason")
+    @classmethod
+    def validar_motivo_deliv(cls, v: str) -> str:
+        limpio = str(v or "").strip()
+        if limpio and RE_SQLI_DANGEROUS.search(limpio):
+            raise ValueError("El motivo contiene caracteres o sentencias no permitidas (anti-SQLi detectado).")
+        return limpio[:100]
+
+
+class DeliveryConfirmInput(BaseModel):
+    items: list[DeliveryItemConfirm] = Field(min_length=1)
 
 
 class EmployeeInput(BaseModel):
@@ -1620,10 +1757,49 @@ def crear_producto(prod: ProductInput):
     try:
         conn = mysql.connector.connect(**get_db_config())
         cur = conn.cursor()
+
+        # Validación anti-duplicados por nombre
+        cur.execute(
+            "SELECT id_Producto FROM PRODUCTOS WHERE LOWER(TRIM(pro_Descripcion)) = LOWER(TRIM(%s)) LIMIT 1",
+            (prod.name,),
+        )
+        if cur.fetchone():
+            raise HTTPException(
+                status_code=400,
+                detail=f"Ya existe un producto registrado con la descripción '{prod.name}'.",
+            )
+
+        # Validación de claves foráneas
+        cur.execute("SELECT id_Categoria FROM CATEGORIAS WHERE id_Categoria = %s", (prod.category_id,))
+        if not cur.fetchone():
+            raise HTTPException(status_code=400, detail=f"La categoría '{prod.category_id}' no existe en el catálogo.")
+
+        cur.execute("SELECT id_Marca FROM MARCAS WHERE id_Marca = %s", (prod.brand_id,))
+        if not cur.fetchone():
+            raise HTTPException(status_code=400, detail=f"La marca '{prod.brand_id}' no existe en el catálogo.")
+
+        cur.execute("SELECT id_Unidad_Medida FROM UNIDADES_MEDIDAS WHERE id_Unidad_Medida = %s", (prod.buy_unit,))
+        if not cur.fetchone():
+            raise HTTPException(status_code=400, detail=f"La unidad de compra '{prod.buy_unit}' no existe en la base de datos.")
+
+        cur.execute("SELECT id_Unidad_Medida FROM UNIDADES_MEDIDAS WHERE id_Unidad_Medida = %s", (prod.sell_unit,))
+        if not cur.fetchone():
+            raise HTTPException(status_code=400, detail=f"La unidad de venta '{prod.sell_unit}' no existe en la base de datos.")
+
+        cur.execute("SHOW COLUMNS FROM PRODUCTOS LIKE 'id_Percha'")
+        has_shelf = bool(cur.fetchone())
+        if has_shelf and prod.shelf_id:
+            cur.execute("SELECT id_Percha FROM PERCHAS WHERE id_Percha = %s", (prod.shelf_id,))
+            if not cur.fetchone():
+                raise HTTPException(status_code=400, detail=f"La percha '{prod.shelf_id}' no existe.")
+
         if prod.id and prod.id.strip():
-            product_id = prod.id.strip()[:10]
+            clean_id = prod.id.strip()[:10]
+            cur.execute("SELECT id_Producto FROM PRODUCTOS WHERE id_Producto = %s", (clean_id,))
+            if cur.fetchone():
+                raise HTTPException(status_code=400, detail=f"El código de producto '{clean_id}' ya se encuentra registrado.")
+            product_id = clean_id
         else:
-            import re
             cur.execute("SELECT id_Producto FROM PRODUCTOS")
             existing_rows = cur.fetchall()
             max_id = 0
@@ -1637,8 +1813,6 @@ def crear_producto(prod: ProductInput):
             product_id = f"PRD-{max_id + 1:06d}"
 
         user_id = get_user_id(cur)
-        cur.execute("SHOW COLUMNS FROM PRODUCTOS LIKE 'id_Percha'")
-        has_shelf = bool(cur.fetchone())
 
         try:
             cur.callproc(
@@ -1709,6 +1883,9 @@ def crear_producto(prod: ProductInput):
                 raise
         conn.commit()
         return {"id": product_id, "mensaje": f"Producto {prod.name} creado exitosamente."}
+    except HTTPException:
+        if conn: conn.rollback()
+        raise
     except mysql.connector.Error as error:
         if conn: conn.rollback()
         raise_database_error(error)
@@ -1719,22 +1896,125 @@ def crear_producto(prod: ProductInput):
 
 @app.put("/api/productos/{product_id}")
 def actualizar_producto(product_id: str, prod: ProductInput):
+    clean_id = str(product_id or "").strip()
+    if not re.match(r"^[A-Za-z0-9\-]+$", clean_id) or RE_SQLI_DANGEROUS.search(clean_id):
+        raise HTTPException(status_code=400, detail="Identificador de producto no válido.")
+
     conn, cur = None, None
     try:
         conn = mysql.connector.connect(**get_db_config())
         cur = conn.cursor()
+
+        # Verificar existencia
+        cur.execute("SELECT id_Producto FROM PRODUCTOS WHERE id_Producto = %s", (clean_id,))
+        if not cur.fetchone():
+            raise HTTPException(status_code=404, detail="El producto especificado no existe.")
+
+        # Verificar duplicado de descripción con otro producto
         cur.execute(
-            """
-            UPDATE PRODUCTOS
-            SET pro_Descripcion = %s,
-                pro_Valor_Compra = %s,
-                pro_Precio_Venta = %s
-            WHERE id_Producto = %s
-            """,
-            (prod.name[:40], prod.buy_cost, prod.sell_price, product_id),
+            "SELECT id_Producto FROM PRODUCTOS WHERE LOWER(TRIM(pro_Descripcion)) = LOWER(TRIM(%s)) AND id_Producto != %s LIMIT 1",
+            (prod.name, clean_id),
+        )
+        if cur.fetchone():
+            raise HTTPException(
+                status_code=400,
+                detail=f"Ya existe otro producto registrado con la descripción '{prod.name}'.",
+            )
+
+        # Validar claves foráneas
+        cur.execute("SELECT id_Categoria FROM CATEGORIAS WHERE id_Categoria = %s", (prod.category_id,))
+        if not cur.fetchone():
+            raise HTTPException(status_code=400, detail=f"La categoría '{prod.category_id}' no existe.")
+
+        cur.execute("SELECT id_Marca FROM MARCAS WHERE id_Marca = %s", (prod.brand_id,))
+        if not cur.fetchone():
+            raise HTTPException(status_code=400, detail=f"La marca '{prod.brand_id}' no existe.")
+
+        cur.execute("SELECT id_Unidad_Medida FROM UNIDADES_MEDIDAS WHERE id_Unidad_Medida = %s", (prod.buy_unit,))
+        if not cur.fetchone():
+            raise HTTPException(status_code=400, detail=f"La unidad de compra '{prod.buy_unit}' no existe.")
+
+        cur.execute("SELECT id_Unidad_Medida FROM UNIDADES_MEDIDAS WHERE id_Unidad_Medida = %s", (prod.sell_unit,))
+        if not cur.fetchone():
+            raise HTTPException(status_code=400, detail=f"La unidad de venta '{prod.sell_unit}' no existe.")
+
+        cur.execute("SHOW COLUMNS FROM PRODUCTOS LIKE 'id_Percha'")
+        has_shelf = bool(cur.fetchone())
+
+        if has_shelf and prod.shelf_id:
+            cur.execute("SELECT id_Percha FROM PERCHAS WHERE id_Percha = %s", (prod.shelf_id,))
+            if not cur.fetchone():
+                raise HTTPException(status_code=400, detail=f"La percha '{prod.shelf_id}' no existe.")
+            cur.execute(
+                """
+                UPDATE PRODUCTOS
+                SET pro_Descripcion = %s,
+                    id_Categoria = %s,
+                    id_Marca = %s,
+                    id_Percha = %s,
+                    pro_UM_Compra = %s,
+                    pro_UM_Venta = %s,
+                    pro_Valor_Compra = %s,
+                    pro_Precio_Venta = %s
+                WHERE id_Producto = %s
+                """,
+                (prod.name[:40], prod.category_id, prod.brand_id, prod.shelf_id, prod.buy_unit[:3], prod.sell_unit[:3], prod.buy_cost, prod.sell_price, clean_id),
+            )
+        else:
+            cur.execute(
+                """
+                UPDATE PRODUCTOS
+                SET pro_Descripcion = %s,
+                    id_Categoria = %s,
+                    id_Marca = %s,
+                    pro_UM_Compra = %s,
+                    pro_UM_Venta = %s,
+                    pro_Valor_Compra = %s,
+                    pro_Precio_Venta = %s
+                WHERE id_Producto = %s
+                """,
+                (prod.name[:40], prod.category_id, prod.brand_id, prod.buy_unit[:3], prod.sell_unit[:3], prod.buy_cost, prod.sell_price, clean_id),
+            )
+        conn.commit()
+        return {"id": clean_id, "mensaje": "Producto actualizado exitosamente."}
+    except HTTPException:
+        if conn: conn.rollback()
+        raise
+    except mysql.connector.Error as error:
+        if conn: conn.rollback()
+        raise_database_error(error)
+    finally:
+        if cur: cur.close()
+        if conn and conn.is_connected(): conn.close()
+
+
+@app.put("/api/productos/{product_id}/estado")
+def cambiar_estado_producto(product_id: str, payload: ProductStatusInput):
+    clean_id = str(product_id or "").strip()
+    if not re.match(r"^[A-Za-z0-9\-]+$", clean_id) or RE_SQLI_DANGEROUS.search(clean_id):
+        raise HTTPException(status_code=400, detail="Identificador de producto no válido.")
+
+    conn, cur = None, None
+    try:
+        conn = mysql.connector.connect(**get_db_config())
+        cur = conn.cursor()
+        cur.execute("SELECT id_Producto FROM PRODUCTOS WHERE id_Producto = %s", (clean_id,))
+        if not cur.fetchone():
+            raise HTTPException(status_code=404, detail="El producto especificado no existe.")
+
+        cur.execute(
+            "UPDATE PRODUCTOS SET ESTADO_PROD = %s WHERE id_Producto = %s",
+            (payload.status, clean_id),
         )
         conn.commit()
-        return {"id": product_id, "mensaje": "Producto actualizado exitosamente."}
+        return {
+            "id": clean_id,
+            "estado": payload.status,
+            "mensaje": f"Estado del producto actualizado a {payload.status}.",
+        }
+    except HTTPException:
+        if conn: conn.rollback()
+        raise
     except mysql.connector.Error as error:
         if conn: conn.rollback()
         raise_database_error(error)
@@ -2319,22 +2599,46 @@ def listar_recepciones():
 
 @app.post("/api/recepciones/{receipt_id}/confirmar")
 def confirmar_recepcion(receipt_id: str, payload: ReceptionConfirmInput):
+    clean_id = str(receipt_id or "").strip()
+    if not re.match(r"^[A-Za-z0-9\-]+$", clean_id) or RE_SQLI_DANGEROUS.search(clean_id):
+        raise HTTPException(status_code=400, detail="Identificador de recibo inválido.")
+
     conn, cur = None, None
     try:
         conn = mysql.connector.connect(**get_db_config())
         cur = conn.cursor()
+
+        cur.execute("SELECT ESTADO_REC FROM RECEPCIONES WHERE id_Recibo = %s", (clean_id,))
+        row = cur.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="El recibo de mercadería especificado no existe.")
+        status_rec = row[0] if isinstance(row, (tuple, list)) else row.get("ESTADO_REC")
+        if status_rec in ("APR", "COMPLETED", "APROBADO"):
+            raise HTTPException(status_code=400, detail="Esta recepción ya fue confirmada previamente.")
+        if status_rec in ("ANU", "ANULADO"):
+            raise HTTPException(status_code=400, detail="No se puede confirmar una recepción que se encuentra anulada.")
+
         for item in payload.items:
-            prod_id = str(item.get("productId", ""))
-            received_qty = int(item.get("receivedQty", 0))
-            reason = str(item.get("reason", ""))
-            
-            # Obtener cantidad previa recibida para no duplicar sumas de stock
+            prod_id = item.product_id
+            received_qty = item.received_qty
+            reason = item.reason.strip()
+
             cur.execute(
-                "SELECT pxr_Qty_Recibida FROM PROxREC WHERE id_Recibo = %s AND id_Producto = %s",
-                (receipt_id, prod_id),
+                "SELECT pxr_Cantidad, pxr_Qty_Recibida FROM PROxREC WHERE id_Recibo = %s AND id_Producto = %s",
+                (clean_id, prod_id),
             )
-            prev_row = cur.fetchone()
-            prev_qty = prev_row[0] if prev_row else 0
+            detail_row = cur.fetchone()
+            if not detail_row:
+                raise HTTPException(status_code=404, detail=f"El producto '{prod_id}' no forma parte de este recibo.")
+            expected_qty = detail_row[0]
+            prev_qty = detail_row[1] or 0
+            diff = received_qty - expected_qty
+            if diff != 0 and not reason:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"Debe registrar un motivo para la diferencia de cantidad en el producto {prod_id} (esperado: {expected_qty}, recibido: {received_qty}).",
+                )
+
             diff_to_add = received_qty - prev_qty
 
             cur.execute(
@@ -2345,7 +2649,7 @@ def confirmar_recepcion(receipt_id: str, payload: ReceptionConfirmInput):
                     ESTADO_PxREC = 'APR'
                 WHERE id_Recibo = %s AND id_Producto = %s
                 """,
-                (received_qty, reason[:60] if reason else None, receipt_id, prod_id),
+                (received_qty, reason[:60] if reason else None, clean_id, prod_id),
             )
             if diff_to_add != 0:
                 cur.execute(
@@ -2360,10 +2664,13 @@ def confirmar_recepcion(receipt_id: str, payload: ReceptionConfirmInput):
 
         cur.execute(
             "UPDATE RECEPCIONES SET ESTADO_REC = 'APR' WHERE id_Recibo = %s",
-            (receipt_id,),
+            (clean_id,),
         )
         conn.commit()
-        return {"id": receipt_id, "estado": "APR", "mensaje": "Ingreso a bodega confirmado."}
+        return {"id": clean_id, "estado": "APR", "mensaje": "Ingreso a bodega confirmado exitosamente."}
+    except HTTPException:
+        if conn: conn.rollback()
+        raise
     except mysql.connector.Error as error:
         if conn: conn.rollback()
         raise_database_error(error)
@@ -2424,14 +2731,45 @@ def listar_entregas():
 
 @app.post("/api/entregas/{delivery_id}/confirmar")
 def confirmar_entrega(delivery_id: str, payload: DeliveryConfirmInput):
+    clean_id = str(delivery_id or "").strip()
+    if not re.match(r"^[A-Za-z0-9\-]+$", clean_id) or RE_SQLI_DANGEROUS.search(clean_id):
+        raise HTTPException(status_code=400, detail="Identificador de entrega no válido.")
+
     conn, cur = None, None
     try:
         conn = mysql.connector.connect(**get_db_config())
         cur = conn.cursor()
+
+        cur.execute("SELECT ESTADO_ENT FROM ENTREGAS WHERE id_Entrega = %s", (clean_id,))
+        row = cur.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="La orden de entrega especificada no existe.")
+        status_ent = row[0] if isinstance(row, (tuple, list)) else row.get("ESTADO_ENT")
+        if status_ent in ("APR", "COMPLETED", "APROBADO"):
+            raise HTTPException(status_code=400, detail="Este despacho de entrega ya fue confirmado previamente.")
+        if status_ent in ("ANU", "ANULADO"):
+            raise HTTPException(status_code=400, detail="No se puede confirmar un despacho que ha sido anulado.")
+
         for item in payload.items:
-            prod_id = str(item.get("productId", ""))
-            delivered_qty = int(item.get("deliveredQty", 0))
-            reason = str(item.get("reason", ""))
+            prod_id = item.product_id
+            delivered_qty = item.delivered_qty
+            reason = item.reason.strip()
+
+            cur.execute(
+                "SELECT pxe_Cantidad FROM PROxENT WHERE id_Entrega = %s AND id_Producto = %s",
+                (clean_id, prod_id),
+            )
+            detail_row = cur.fetchone()
+            if not detail_row:
+                raise HTTPException(status_code=404, detail=f"El producto '{prod_id}' no forma parte de este despacho.")
+            expected_qty = detail_row[0]
+            diff = delivered_qty - expected_qty
+            if diff != 0 and not reason:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"Debe registrar un motivo para la diferencia de cantidad en el producto {prod_id} (facturado: {expected_qty}, entregado: {delivered_qty}).",
+                )
+
             cur.execute(
                 """
                 UPDATE PROxENT
@@ -2440,14 +2778,18 @@ def confirmar_entrega(delivery_id: str, payload: DeliveryConfirmInput):
                     ESTADO_PxENT = 'APR'
                 WHERE id_Entrega = %s AND id_Producto = %s
                 """,
-                (delivered_qty, reason[:60] if reason else None, delivery_id, prod_id),
+                (delivered_qty, reason[:60] if reason else None, clean_id, prod_id),
             )
+
         cur.execute(
             "UPDATE ENTREGAS SET ESTADO_ENT = 'APR' WHERE id_Entrega = %s",
-            (delivery_id,),
+            (clean_id,),
         )
         conn.commit()
-        return {"id": delivery_id, "estado": "APR", "mensaje": "Despacho de venta confirmado."}
+        return {"id": clean_id, "estado": "APR", "mensaje": "Despacho de venta confirmado exitosamente."}
+    except HTTPException:
+        if conn: conn.rollback()
+        raise
     except mysql.connector.Error as error:
         if conn: conn.rollback()
         raise_database_error(error)
@@ -2494,24 +2836,66 @@ def listar_ajustes():
 
 @app.post("/api/ajustes")
 def crear_ajuste(aju: PhysicalAdjustmentInput):
-    adjustment_id = f"AJU{uuid4().hex[:10].upper()}"
     conn, cur = None, None
     try:
         conn = mysql.connector.connect(**get_db_config())
         cur = conn.cursor()
+
+        # Validar existencia de producto
+        cur.execute("SELECT pro_Saldo_Final, ESTADO_PROD FROM PRODUCTOS WHERE id_Producto = %s", (aju.product_id,))
+        prod_row = cur.fetchone()
+        if not prod_row:
+            raise HTTPException(status_code=404, detail=f"El producto '{aju.product_id}' no existe en el catálogo.")
+        if prod_row[1] != "ACT":
+            raise HTTPException(status_code=400, detail="No se pueden realizar ajustes sobre un producto inactivo.")
+
+        # Validar empleado
+        cur.execute("SELECT id_Empleado FROM EMPLEADOS WHERE id_Empleado = %s", (aju.employee_id,))
+        if not cur.fetchone():
+            cur.execute("SELECT id_Empleado FROM EMPLEADOS ORDER BY id_Empleado ASC LIMIT 1")
+            emp_fallback = cur.fetchone()
+            if emp_fallback:
+                aju.employee_id = emp_fallback[0]
+            else:
+                raise HTTPException(status_code=400, detail="No existe un empleado responsable registrado.")
+
+        # Generar ID secuencial AJU-000001
+        cur.execute("SELECT id_Ajuste FROM AJUSTES")
+        existing_rows = cur.fetchall()
+        max_id = 0
+        for r in existing_rows:
+            val = str(r[0] if isinstance(r, (list, tuple)) else r.get("id_Ajuste", ""))
+            m = re.match(r"^AJU-(\d+)$", val, re.IGNORECASE)
+            if m:
+                num = int(m.group(1))
+                if num > max_id:
+                    max_id = num
+        adjustment_id = f"AJU-{max_id + 1:06d}"
+
         user_id = get_user_id(cur)
 
-        # Invocar SP_AJUSTE_CREAR
-        cur.callproc(
-            "SP_AJUSTE_CREAR",
-            (
-                adjustment_id,
-                aju.employee_id,
-                aju.reason[:30],
-                1,
-                user_id,
-            ),
-        )
+        try:
+            cur.callproc(
+                "SP_AJUSTE_CREAR",
+                (
+                    adjustment_id,
+                    aju.employee_id,
+                    aju.reason[:30],
+                    1,
+                    user_id,
+                ),
+            )
+        except mysql.connector.Error as proc_err:
+            if proc_err.errno in {1305, 1318, 1452}:
+                cur.execute(
+                    """
+                    INSERT INTO AJUSTES (id_Ajuste, id_Empleado, aju_FechaHora, aju_Descripcion, ESTADO_AJU)
+                    VALUES (%s, %s, NOW(), %s, 'ABI')
+                    """,
+                    (adjustment_id, aju.employee_id, aju.reason[:30]),
+                )
+            else:
+                raise
 
         signed_qty = aju.quantity if aju.type == "IN" else -aju.quantity
         cur.execute(
@@ -2522,7 +2906,10 @@ def crear_ajuste(aju: PhysicalAdjustmentInput):
             (adjustment_id, aju.product_id, aju.quantity, signed_qty),
         )
         conn.commit()
-        return {"id": adjustment_id, "estado": "ABI", "mensaje": "Ajuste físico registrado."}
+        return {"id": adjustment_id, "estado": "ABI", "mensaje": "Ajuste físico registrado en estado Abierto (ABI)."}
+    except HTTPException:
+        if conn: conn.rollback()
+        raise
     except mysql.connector.Error as error:
         if conn: conn.rollback()
         raise_database_error(error)
@@ -2533,17 +2920,41 @@ def crear_ajuste(aju: PhysicalAdjustmentInput):
 
 @app.post("/api/ajustes/{adjustment_id}/aprobar")
 def aprobar_ajuste(adjustment_id: str):
+    clean_id = str(adjustment_id or "").strip()
+    if not re.match(r"^[A-Za-z0-9\-]+$", clean_id) or RE_SQLI_DANGEROUS.search(clean_id):
+        raise HTTPException(status_code=400, detail="Identificador de ajuste no válido.")
+
     conn, cur = None, None
     try:
         conn = mysql.connector.connect(**get_db_config())
         cur = conn.cursor()
+
+        cur.execute("SELECT ESTADO_AJU FROM AJUSTES WHERE id_Ajuste = %s", (clean_id,))
+        row = cur.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="El ajuste de inventario no existe.")
+        estado = row[0]
+        if estado == "APR":
+            raise HTTPException(status_code=400, detail="El ajuste ya se encuentra aprobado.")
+        if estado == "ANU":
+            raise HTTPException(status_code=400, detail="No se puede aprobar un ajuste que ha sido anulado.")
+        if estado != "ABI":
+            raise HTTPException(status_code=400, detail=f"Solo se pueden aprobar ajustes en estado Abierto (estado actual: {estado}).")
+
         user_id = get_user_id(cur)
-        cur.callproc("SP_AJUSTE_APROBAR", (adjustment_id, user_id))
+        try:
+            cur.callproc("SP_AJUSTE_APROBAR", (clean_id, user_id))
+        except mysql.connector.Error as proc_err:
+            if proc_err.errno in {1305, 1318, 1452}:
+                cur.execute("UPDATE AJUSTES SET ESTADO_AJU = 'APR' WHERE id_Ajuste = %s", (clean_id,))
+                cur.execute("UPDATE PROxAJU SET ESTADO_PxAJU = 'APR' WHERE id_Ajuste = %s", (clean_id,))
+            else:
+                raise
 
         # Al aprobar, impactar en saldo del producto
         cur.execute(
             "SELECT id_Producto, pxa_Qty_Ajustada FROM PROxAJU WHERE id_Ajuste = %s",
-            (adjustment_id,),
+            (clean_id,),
         )
         for prod_id, delta in cur.fetchall():
             cur.execute(
@@ -2556,7 +2967,10 @@ def aprobar_ajuste(adjustment_id: str):
                 (delta, delta, prod_id),
             )
         conn.commit()
-        return {"id": adjustment_id, "estado": "APR", "mensaje": "Ajuste aprobado e impactado en inventario."}
+        return {"id": clean_id, "estado": "APR", "mensaje": "Ajuste aprobado e impactado en inventario."}
+    except HTTPException:
+        if conn: conn.rollback()
+        raise
     except mysql.connector.Error as error:
         if conn: conn.rollback()
         raise_database_error(error)
@@ -2567,17 +2981,42 @@ def aprobar_ajuste(adjustment_id: str):
 
 @app.post("/api/ajustes/{adjustment_id}/anular")
 def anular_ajuste(adjustment_id: str):
+    clean_id = str(adjustment_id or "").strip()
+    if not re.match(r"^[A-Za-z0-9\-]+$", clean_id) or RE_SQLI_DANGEROUS.search(clean_id):
+        raise HTTPException(status_code=400, detail="Identificador de ajuste no válido.")
+
     conn, cur = None, None
     try:
         conn = mysql.connector.connect(**get_db_config())
         cur = conn.cursor()
+
+        cur.execute("SELECT ESTADO_AJU FROM AJUSTES WHERE id_Ajuste = %s", (clean_id,))
+        row = cur.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="El ajuste de inventario no existe.")
+        estado = row[0]
+        if estado == "ANU":
+            raise HTTPException(status_code=400, detail="El ajuste ya se encuentra anulado.")
+        if estado == "APR":
+            raise HTTPException(status_code=400, detail="No se puede anular un ajuste que ya ha sido aprobado e impactado en inventario.")
+        if estado != "ABI":
+            raise HTTPException(status_code=400, detail=f"Solo se pueden anular ajustes en estado Abierto (estado actual: {estado}).")
+
         user_id = get_user_id(cur)
-        cur.callproc("SP_AJUSTE_ANULAR", (adjustment_id, user_id))
+        try:
+            cur.callproc("SP_AJUSTE_ANULAR", (clean_id, user_id))
+        except mysql.connector.Error as proc_err:
+            if proc_err.errno in {1305, 1318, 1452}:
+                cur.execute("UPDATE AJUSTES SET ESTADO_AJU = 'ANU' WHERE id_Ajuste = %s", (clean_id,))
+                cur.execute("UPDATE PROxAJU SET ESTADO_PxAJU = 'ANU' WHERE id_Ajuste = %s", (clean_id,))
+            else:
+                raise
+
         conn.commit()
-        return {"id": adjustment_id, "estado": "ANU", "mensaje": "Ajuste anulado."}
-    except mysql.connector.Error as error:
+        return {"id": clean_id, "estado": "ANU", "mensaje": "Ajuste anulado exitosamente."}
+    except HTTPException:
         if conn: conn.rollback()
-        raise_database_error(error)
+        raise
     finally:
         if cur: cur.close()
         if conn and conn.is_connected(): conn.close()

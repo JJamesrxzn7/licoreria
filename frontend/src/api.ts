@@ -147,12 +147,22 @@ export const productApi = {
   }),
   updateProduct: (id: string, product: {
     nombre: string;
+    idCategoria?: string;
+    idMarca?: string;
+    idPercha?: string;
+    umCompra?: string;
+    umVenta?: string;
     costoCompra: number;
     precioVenta: number;
   }) => request<{ id: string; mensaje: string }>(`/api/productos/${encodeURIComponent(id)}`, {
     method: 'PUT',
     body: JSON.stringify(product),
   }),
+  toggleStatus: (id: string, status: 'ACTIVE' | 'INACTIVE') =>
+    request<{ id: string; estado: string; mensaje: string }>(`/api/productos/${encodeURIComponent(id)}/estado`, {
+      method: 'PUT',
+      body: JSON.stringify({ estado: status === 'ACTIVE' ? 'ACT' : 'INA' }),
+    }),
 };
 
 // 3. Módulo Clientes

@@ -5,6 +5,7 @@ import { catalogApi, productApi, purchaseApi, warehouseApi, GeneralCatalogs, Pur
 import { Adjustment, Delivery, Product, Reception } from '../types';
 
 const money = (value: number) => `$${value.toFixed(2)}`;
+const RE_SQLI = /(\b(UNION|SELECT|INSERT|UPDATE|DELETE|DROP|ALTER|TRUNCATE|EXEC|EXECUTE)\b|--|\/\*|\*\/|;|'|"|<script)/i;
 
 export const Catalog = () => {
   const { state, updateState } = useGlobalStore();
@@ -105,25 +106,21 @@ export const Catalog = () => {
 
   const saveProduct = async () => {
     if (!form.name?.trim()) return setNotice('La descripción del producto es obligatoria.');
-    if (form.name.trim().length > 40) return setNotice('La descripción no puede exceder 40 caracteres (restricción de base de datos).');
+    if (form.name.trim().length < 2 || form.name.trim().length > 40) return setNotice('La descripción debe tener entre 2 y 40 caracteres (restricción de base de datos).');
+    if (RE_SQLI.test(form.name.trim())) return setNotice('La descripción contiene caracteres o comandos no permitidos (anti-SQLi detectado).');
     const cost = Number(form.cost || 0);
     const price = Number(form.price || 0);
     const initialStock = Number(form.stock || 0);
-    if (price <= 0) return setNotice('El precio de venta debe ser mayor a 0.');
+    if (cost < 0 || cost > 99999.99) return setNotice('El costo de compra debe estar entre $0.00 y $99,999.99.');
+    if (price <= 0 || price > 99999.99) return setNotice('El precio de venta debe ser mayor a 0 y menor o igual a $99,999.99.');
     if (price < cost) return setNotice('El precio de venta debe ser mayor o igual al costo de compra.');
-    if (!Number.isInteger(initialStock) || initialStock < 0) return setNotice('El saldo inicial debe ser un número entero mayor o igual a 0.');
+    if (!Number.isInteger(initialStock) || initialStock < 0 || initialStock > 100000) return setNotice('El saldo inicial debe ser un número entero entre 0 y 100,000.');
 
     const catId = form.categoryId || catalogs.categorias[0]?.id || 'CAT-000001';
     const brId = form.brandId || catalogs.marcas[0]?.id || 'MAR-000001';
     const buyUId = form.buyUnitId || catalogs.unidadesMedida[0]?.id || 'CAJ';
     const sellUId = form.sellUnitId || catalogs.unidadesMedida[0]?.id || 'BOT';
     const shId = form.shelfId || catalogs.perchas[0]?.id || 'PCH-000001';
-
-    const selectedCategory = catalogs.categorias.find(c => c.id === catId);
-    const selectedBrand = catalogs.marcas.find(m => m.id === brId);
-    const selectedBuyUnit = catalogs.unidadesMedida.find(u => u.id === buyUId);
-    const selectedSellUnit = catalogs.unidadesMedida.find(u => u.id === sellUId);
-    const selectedShelf = catalogs.perchas.find(p => p.id === shId);
 
     const generatedId = nextProductId;
 
@@ -142,40 +139,9 @@ export const Catalog = () => {
       });
       setNotice(`Producto ${res.id} registrado exitosamente.`);
       void loadProducts();
-    } catch {
-      const buyFactor = Number(selectedBuyUnit?.factor) || 1;
-      const sellFactor = Number(selectedSellUnit?.factor) || 1;
-      const product: Product = {
-        id: generatedId,
-        name: form.name.trim(),
-        sku: generatedId,
-        barcode: '',
-        brand: selectedBrand?.nombre || 'General',
-        brandId: brId,
-        category: selectedCategory?.nombre || 'Licores',
-        categoryId: catId,
-        ml: 750,
-        abv: 0,
-        cost,
-        price,
-        stock: initialStock,
-        minStock: initialStock,
-        buyUnit: selectedBuyUnit?.nombre || buyUId,
-        buyUnitId: buyUId,
-        sellUnit: selectedSellUnit?.nombre || sellUId,
-        sellUnitId: sellUId,
-        purchaseFactor: buyFactor,
-        sellFactor: sellFactor,
-        factorConversion: sellFactor > 0 ? Number((buyFactor / sellFactor).toFixed(2)) : 1,
-        shelf: selectedShelf ? `Percha ${selectedShelf.letra}${selectedShelf.nivel}` : '—',
-        shelfId: shId,
-        status: 'ACTIVE',
-      };
-      updateState(draft => {
-        draft.products.push(product);
-        return draft;
-      });
-      setNotice(`Producto ${product.id} (${product.name}) registrado exitosamente.`);
+    } catch (err: any) {
+      setNotice(err?.message || 'Error al registrar el producto en la base de datos.');
+      return;
     }
 
     setForm({
@@ -208,10 +174,12 @@ export const Catalog = () => {
   const saveEdit = async () => {
     if (!editingProduct) return;
     if (!editForm.name?.trim()) return setEditNotice('La descripción del producto no puede estar vacía.');
-    if (editForm.name.trim().length > 40) return setEditNotice('La descripción no puede exceder 40 caracteres.');
+    if (editForm.name.trim().length < 2 || editForm.name.trim().length > 40) return setEditNotice('La descripción debe tener entre 2 y 40 caracteres.');
+    if (RE_SQLI.test(editForm.name.trim())) return setEditNotice('La descripción contiene caracteres o sentencias no permitidas (anti-SQLi detectado).');
     const cost = Number(editForm.cost || 0);
     const price = Number(editForm.price || 0);
-    if (price <= 0) return setEditNotice('El precio de venta debe ser mayor a 0.');
+    if (cost < 0 || cost > 99999.99) return setEditNotice('El costo debe estar entre $0.00 y $99,999.99.');
+    if (price <= 0 || price > 99999.99) return setEditNotice('El precio de venta debe ser mayor a 0 y no superar $99,999.99.');
     if (price < cost) return setEditNotice('El precio de venta debe ser mayor o igual al costo de compra.');
 
     const catId = editForm.categoryId || catalogs.categorias[0]?.id || 'CAT-000001';
@@ -229,11 +197,18 @@ export const Catalog = () => {
     try {
       await productApi.updateProduct(editingProduct.id, {
         nombre: editForm.name.trim(),
+        idCategoria: catId,
+        idMarca: brId,
+        idPercha: shId,
+        umCompra: buyUId,
+        umVenta: sellUId,
         costoCompra: cost,
         precioVenta: price,
       });
-    } catch {
-      // Guardado en store
+      void loadProducts();
+    } catch (err: any) {
+      setEditNotice(err?.message || 'Error al actualizar el producto en la base de datos.');
+      return;
     }
 
     updateState(draft => {
@@ -273,22 +248,28 @@ export const Catalog = () => {
     });
   };
 
-  const executeToggleStatus = () => {
+  const executeToggleStatus = async () => {
     const { product, targetStatus } = confirmModal;
     if (!product) return;
 
-    updateState(draft => {
-      const p = draft.products.find(candidate => candidate.id === product.id);
-      if (p) p.status = targetStatus;
-      return draft;
-    });
+    try {
+      await productApi.toggleStatus(product.id, targetStatus);
+      updateState(draft => {
+        const p = draft.products.find(candidate => candidate.id === product.id);
+        if (p) p.status = targetStatus;
+        return draft;
+      });
 
-    setNotice(
-      targetStatus === 'ACTIVE'
-        ? `Producto ${product.name} reactivado exitosamente.`
-        : `Producto ${product.name} dado de baja (inactivo) exitosamente.`
-    );
-    setConfirmModal({ isOpen: false, product: null, targetStatus: 'INACTIVE' });
+      setNotice(
+        targetStatus === 'ACTIVE'
+          ? `Producto ${product.name} reactivado exitosamente.`
+          : `Producto ${product.name} dado de baja (inactivo) exitosamente.`
+      );
+    } catch (err: any) {
+      setNotice(err?.message || 'Error al cambiar estado del producto en el servidor.');
+    } finally {
+      setConfirmModal({ isOpen: false, product: null, targetStatus: 'INACTIVE' });
+    }
   };
 
   const currentBuyUnit = catalogs.unidadesMedida.find(u => u.id === (form.buyUnitId || 'CAJ'));
@@ -1254,6 +1235,18 @@ export const Receptions = () => {
   const [quantities, setQuantities] = useState<Record<string, Record<string, string>>>({});
   const [reasons, setReasons] = useState<Record<string, Record<string, string>>>({});
   const [notice, setNotice] = useState('');
+  const [confirmModal, setConfirmModal] = useState<{
+    reception: Reception;
+    rows: Array<{
+      productId: string;
+      productName: string;
+      expectedQty: number;
+      receivedQty: number;
+      diff: number;
+      reason: string;
+    }>;
+  } | null>(null);
+  const [submitting, setSubmitting] = useState(false);
 
   const loadReceptions = async () => {
     try {
@@ -1273,28 +1266,57 @@ export const Receptions = () => {
     void loadReceptions();
   }, []);
 
-  const completeReception = async (reception: Reception) => {
+  const initiateReception = (reception: Reception) => {
+    setNotice('');
     const rows = reception.items.map(item => {
       const raw = quantities[reception.id]?.[item.productId] ?? String(item.expectedQty);
       const receivedQty = Number(raw);
-      return { ...item, receivedQty, diff: receivedQty - item.expectedQty, reason: reasons[reception.id]?.[item.productId]?.trim() ?? '' };
+      const reason = reasons[reception.id]?.[item.productId]?.trim() ?? '';
+      const productName = state.products.find(p => p.id === item.productId)?.name ?? item.productId;
+      return {
+        ...item,
+        productName,
+        receivedQty,
+        diff: receivedQty - item.expectedQty,
+        reason,
+      };
     });
-    if (rows.some(item => !Number.isInteger(item.receivedQty) || item.receivedQty < 0)) return setNotice('La cantidad recibida debe ser un entero no negativo.');
 
+    for (const r of rows) {
+      if (!Number.isInteger(r.receivedQty) || r.receivedQty < 0 || r.receivedQty > 100000) {
+        return setNotice(`La cantidad recibida para el producto '${r.productName}' debe ser un número entero entre 0 y 100,000.`);
+      }
+      if (r.diff !== 0 && !r.reason) {
+        return setNotice(`Debe registrar obligatoriamente el motivo de la diferencia para '${r.productName}' (esperado: ${r.expectedQty}, recibido: ${r.receivedQty}).`);
+      }
+      if (r.reason && RE_SQLI.test(r.reason)) {
+        return setNotice(`El motivo para '${r.productName}' contiene caracteres o comandos no permitidos (anti-SQLi detectado).`);
+      }
+      if (r.reason.length > 60) {
+        return setNotice(`El motivo para '${r.productName}' no puede exceder 60 caracteres.`);
+      }
+    }
+
+    setConfirmModal({ reception, rows });
+  };
+
+  const executeConfirmReception = async () => {
+    if (!confirmModal) return;
+    setSubmitting(true);
     try {
-      await warehouseApi.confirmReception(reception.id, rows);
-      setNotice(`Recepción ${reception.id} confirmada e ingresada exitosamente.`);
+      const payloadItems = confirmModal.rows.map(r => ({
+        productId: r.productId,
+        receivedQty: r.receivedQty,
+        reason: r.reason,
+      }));
+      await warehouseApi.confirmReception(confirmModal.reception.id, payloadItems);
+      setNotice(`Recepción ${confirmModal.reception.id} confirmada e ingresada exitosamente.`);
+      setConfirmModal(null);
       void loadReceptions();
-    } catch (err) {
-      updateState(draft => {
-        const draftReception = draft.receptions.find(r => r.id === reception.id);
-        if (draftReception) {
-          draftReception.status = 'COMPLETED';
-          draftReception.items = rows;
-        }
-        return draft;
-      });
-      setNotice('Recepción actualizada exitosamente.');
+    } catch (err: any) {
+      setNotice(err?.message || 'Error al confirmar la recepción en la base de datos.');
+    } finally {
+      setSubmitting(false);
     }
   };
 
@@ -1307,17 +1329,73 @@ export const Receptions = () => {
         <div className="section-heading"><div><h2>{reception.id} <span className="badge badge-PENDING">Pendiente</span></h2><p>Orden de compra {reception.poId} · {new Date(reception.date).toLocaleDateString('es-EC')}</p></div></div>
         <div className="table-scroll"><table><thead><tr><th>Producto</th><th>Solicitado</th><th>Recibido</th><th>Diferencia</th><th>Motivo de diferencia</th></tr></thead><tbody>
           {reception.items.map(item => <tr key={item.productId}><td>{state.products.find(product => product.id === item.productId)?.name ?? item.productId}</td><td>{item.expectedQty}</td>
-            <td><input className="input compact-input" type="number" min="0" value={quantities[reception.id]?.[item.productId] ?? item.expectedQty} onChange={event => setQuantities(previous => ({ ...previous, [reception.id]: { ...previous[reception.id], [item.productId]: event.target.value } }))} /></td>
-            <td>{Number(quantities[reception.id]?.[item.productId] ?? item.expectedQty) - item.expectedQty}</td>
-            <td><input className="input" aria-label={`Motivo de diferencia para ${item.productId}`} value={reasons[reception.id]?.[item.productId] ?? ''} onChange={event => setReasons(previous => ({ ...previous, [reception.id]: { ...previous[reception.id], [item.productId]: event.target.value } }))} placeholder="Obligatorio si hay diferencia" /></td>
+            <td><input className="input compact-input" type="number" min="0" max="100000" value={quantities[reception.id]?.[item.productId] ?? item.expectedQty} onChange={event => setQuantities(previous => ({ ...previous, [reception.id]: { ...previous[reception.id], [item.productId]: event.target.value } }))} /></td>
+            <td>
+              <span style={{ fontWeight: 600, color: (Number(quantities[reception.id]?.[item.productId] ?? item.expectedQty) - item.expectedQty) !== 0 ? '#b42318' : '#027a48' }}>
+                {Number(quantities[reception.id]?.[item.productId] ?? item.expectedQty) - item.expectedQty}
+              </span>
+            </td>
+            <td><input className="input" maxLength={60} aria-label={`Motivo de diferencia para ${item.productId}`} value={reasons[reception.id]?.[item.productId] ?? ''} onChange={event => setReasons(previous => ({ ...previous, [reception.id]: { ...previous[reception.id], [item.productId]: event.target.value } }))} placeholder="Obligatorio si hay diferencia" /></td>
           </tr>)}
         </tbody></table></div>
-        <button type="button" className="btn btn-primary" onClick={() => completeReception(reception)}>Registrar cantidades recibidas</button>
+        <button type="button" className="btn btn-primary" onClick={() => initiateReception(reception)}>Registrar cantidades recibidas</button>
       </section>)}
       <section className="card"><div className="section-heading"><div><h2>Historial de recepciones</h2><p>Recepciones procesadas y pendientes.</p></div></div><div className="table-scroll"><table><thead><tr><th>Recepción</th><th>Orden</th><th>Fecha</th><th>Estado</th><th>Detalle</th></tr></thead><tbody>
         {state.receptions.map(reception => <tr key={reception.id}><td>{reception.id}</td><td>{reception.poId}</td><td>{new Date(reception.date).toLocaleDateString('es-EC')}</td><td><span className={`badge badge-${reception.status}`}>{reception.status}</span></td><td>{reception.items.map(item => `${item.productId}: ${item.receivedQty}/${item.expectedQty}`).join(' · ')}</td></tr>)}
         {!state.receptions.length && <tr><td colSpan={5} className="empty-state">Las órdenes aprobadas generarán recepciones aquí.</td></tr>}
       </tbody></table></div></section>
+
+      {/* Modal de Confirmación de Recepción */}
+      {confirmModal && (
+        <div className="modal-backdrop">
+          <div className="modal-card" style={{ maxWidth: '580px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <CheckCircle2 size={20} color="var(--primary)" />
+                <h2 style={{ margin: 0, fontSize: '18px' }}>Confirmar ingreso físico a bodega</h2>
+              </div>
+              <button type="button" className="icon-button" onClick={() => setConfirmModal(null)} aria-label="Cerrar modal">
+                <X size={18} />
+              </button>
+            </div>
+            <p style={{ fontSize: '14px', color: '#475467', marginBottom: '12px' }}>
+              ¿Está seguro de registrar el ingreso de la recepción <strong>{confirmModal.reception.id}</strong> (Orden <strong>{confirmModal.reception.poId}</strong>)? Esta acción actualizará los saldos de inventario en la base de datos.
+            </p>
+            <div className="table-scroll" style={{ maxHeight: '200px', marginBottom: '16px' }}>
+              <table>
+                <thead>
+                  <tr>
+                    <th>Producto</th>
+                    <th>Solicitado</th>
+                    <th>Recibido</th>
+                    <th>Diferencia</th>
+                    <th>Motivo</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {confirmModal.rows.map(r => (
+                    <tr key={r.productId}>
+                      <td><strong>{r.productName}</strong></td>
+                      <td>{r.expectedQty}</td>
+                      <td><strong>{r.receivedQty}</strong></td>
+                      <td style={{ color: r.diff !== 0 ? '#b42318' : '#027a48', fontWeight: 600 }}>{r.diff}</td>
+                      <td><small>{r.reason || 'Sin novedad'}</small></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px' }}>
+              <button type="button" className="btn btn-outline" onClick={() => setConfirmModal(null)} disabled={submitting}>
+                Cancelar
+              </button>
+              <button type="button" className="btn btn-primary" onClick={executeConfirmReception} disabled={submitting}>
+                {submitting ? 'Confirmando...' : 'Sí, confirmar ingreso a bodega'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
@@ -1327,6 +1405,18 @@ export const Deliveries = () => {
   const [quantities, setQuantities] = useState<Record<string, Record<string, string>>>({});
   const [reasons, setReasons] = useState<Record<string, Record<string, string>>>({});
   const [notice, setNotice] = useState('');
+  const [confirmModal, setConfirmModal] = useState<{
+    delivery: Delivery;
+    rows: Array<{
+      productId: string;
+      productName: string;
+      expectedQty: number;
+      deliveredQty: number;
+      diff: number;
+      reason: string;
+    }>;
+  } | null>(null);
+  const [submitting, setSubmitting] = useState(false);
 
   const loadDeliveries = async () => {
     try {
@@ -1346,27 +1436,56 @@ export const Deliveries = () => {
     void loadDeliveries();
   }, []);
 
-  const completeDelivery = async (delivery: Delivery) => {
+  const initiateDelivery = (delivery: Delivery) => {
+    setNotice('');
     const rows = delivery.items.map(item => {
       const deliveredQty = Number(quantities[delivery.id]?.[item.productId] ?? item.expectedQty);
-      return { ...item, deliveredQty, diff: deliveredQty - item.expectedQty, reason: reasons[delivery.id]?.[item.productId]?.trim() ?? '' };
+      const reason = reasons[delivery.id]?.[item.productId]?.trim() ?? '';
+      const productName = state.products.find(p => p.id === item.productId)?.name ?? item.productId;
+      return {
+        ...item,
+        productName,
+        deliveredQty,
+        diff: deliveredQty - item.expectedQty,
+        reason,
+      };
     });
-    if (rows.some(item => !Number.isInteger(item.deliveredQty) || item.deliveredQty < 0)) return setNotice('La cantidad entregada debe ser un entero no negativo.');
 
+    for (const r of rows) {
+      if (!Number.isInteger(r.deliveredQty) || r.deliveredQty < 0 || r.deliveredQty > 100000) {
+        return setNotice(`La cantidad entregada para el producto '${r.productName}' debe ser un número entero entre 0 y 100,000.`);
+      }
+      if (r.diff !== 0 && !r.reason) {
+        return setNotice(`Debe registrar obligatoriamente el motivo de la diferencia para '${r.productName}' (facturado: ${r.expectedQty}, entregado: ${r.deliveredQty}).`);
+      }
+      if (r.reason && RE_SQLI.test(r.reason)) {
+        return setNotice(`El motivo para '${r.productName}' contiene caracteres o sentencias no permitidas (anti-SQLi detectado).`);
+      }
+      if (r.reason.length > 60) {
+        return setNotice(`El motivo para '${r.productName}' no puede exceder 60 caracteres.`);
+      }
+    }
+
+    setConfirmModal({ delivery, rows });
+  };
+
+  const executeConfirmDelivery = async () => {
+    if (!confirmModal) return;
+    setSubmitting(true);
     try {
-      await warehouseApi.confirmDelivery(delivery.id, rows);
-      setNotice(`Entrega ${delivery.id} confirmada y despachada exitosamente.`);
+      const payloadItems = confirmModal.rows.map(r => ({
+        productId: r.productId,
+        deliveredQty: r.deliveredQty,
+        reason: r.reason,
+      }));
+      await warehouseApi.confirmDelivery(confirmModal.delivery.id, payloadItems);
+      setNotice(`Entrega ${confirmModal.delivery.id} confirmada y despachada exitosamente.`);
+      setConfirmModal(null);
       void loadDeliveries();
-    } catch (err) {
-      updateState(draft => {
-        const draftDelivery = draft.deliveries.find(d => d.id === delivery.id);
-        if (draftDelivery) {
-          draftDelivery.status = 'COMPLETED';
-          draftDelivery.items = rows;
-        }
-        return draft;
-      });
-      setNotice('Entrega actualizada exitosamente.');
+    } catch (err: any) {
+      setNotice(err?.message || 'Error al confirmar el despacho de entrega.');
+    } finally {
+      setSubmitting(false);
     }
   };
 
@@ -1381,18 +1500,74 @@ export const Deliveries = () => {
           <div className="section-heading"><div><h2>{delivery.id} <span className="badge badge-PENDING">Pendiente</span></h2><p>Factura {delivery.invoiceId} · {state.customers.find(customer => customer.id === invoice?.customerId)?.name ?? 'Cliente'} · {new Date(delivery.date).toLocaleDateString('es-EC')}</p></div></div>
           <div className="table-scroll"><table><thead><tr><th>Producto</th><th>Solicitado</th><th>Entregado</th><th>Diferencia</th><th>Motivo</th></tr></thead><tbody>
             {delivery.items.map(item => <tr key={item.productId}><td>{state.products.find(product => product.id === item.productId)?.name ?? item.productId}</td><td>{item.expectedQty}</td>
-              <td><input className="input compact-input" type="number" min="0" value={quantities[delivery.id]?.[item.productId] ?? item.expectedQty} onChange={event => setQuantities(previous => ({ ...previous, [delivery.id]: { ...previous[delivery.id], [item.productId]: event.target.value } }))} /></td>
-              <td>{Number(quantities[delivery.id]?.[item.productId] ?? item.expectedQty) - item.expectedQty}</td>
-              <td><input className="input" aria-label={`Motivo de diferencia para ${item.productId}`} placeholder="Obligatorio si hay diferencia" value={reasons[delivery.id]?.[item.productId] ?? ''} onChange={event => setReasons(previous => ({ ...previous, [delivery.id]: { ...previous[delivery.id], [item.productId]: event.target.value } }))} /></td>
+              <td><input className="input compact-input" type="number" min="0" max="100000" value={quantities[delivery.id]?.[item.productId] ?? item.expectedQty} onChange={event => setQuantities(previous => ({ ...previous, [delivery.id]: { ...previous[delivery.id], [item.productId]: event.target.value } }))} /></td>
+              <td>
+                <span style={{ fontWeight: 600, color: (Number(quantities[delivery.id]?.[item.productId] ?? item.expectedQty) - item.expectedQty) !== 0 ? '#b42318' : '#027a48' }}>
+                  {Number(quantities[delivery.id]?.[item.productId] ?? item.expectedQty) - item.expectedQty}
+                </span>
+              </td>
+              <td><input className="input" maxLength={60} aria-label={`Motivo de diferencia para ${item.productId}`} placeholder="Obligatorio si hay diferencia" value={reasons[delivery.id]?.[item.productId] ?? ''} onChange={event => setReasons(previous => ({ ...previous, [delivery.id]: { ...previous[delivery.id], [item.productId]: event.target.value } }))} /></td>
             </tr>)}
           </tbody></table></div>
-          <button type="button" className="btn btn-primary" onClick={() => completeDelivery(delivery)}>Confirmar cantidades entregadas</button>
+          <button type="button" className="btn btn-primary" onClick={() => initiateDelivery(delivery)}>Confirmar cantidades entregadas</button>
         </section>;
       })}
       <section className="card"><div className="section-heading"><div><h2>Historial de entregas</h2><p>Despachos registrados desde el punto de venta.</p></div></div><div className="table-scroll"><table><thead><tr><th>Entrega</th><th>Factura</th><th>Cliente</th><th>Fecha</th><th>Estado</th><th>Detalle</th></tr></thead><tbody>
         {state.deliveries.map(delivery => <tr key={delivery.id}><td>{delivery.id}</td><td>{delivery.invoiceId}</td><td>{delivery.invoiceId}</td><td>{new Date(delivery.date).toLocaleDateString('es-EC')}</td><td><span className={`badge badge-${delivery.status}`}>{delivery.status}</span></td><td>{delivery.items.map(item => `${item.productId}: ${item.deliveredQty}/${item.expectedQty}`).join(' · ')}</td></tr>)}
         {!state.deliveries.length && <tr><td colSpan={6} className="empty-state">Las facturas aprobadas en el POS generarán órdenes de entrega aquí.</td></tr>}
       </tbody></table></div></section>
+
+      {/* Modal de Confirmación de Despacho */}
+      {confirmModal && (
+        <div className="modal-backdrop">
+          <div className="modal-card" style={{ maxWidth: '580px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <CheckCircle2 size={20} color="var(--primary)" />
+                <h2 style={{ margin: 0, fontSize: '18px' }}>Confirmar despacho de mercadería</h2>
+              </div>
+              <button type="button" className="icon-button" onClick={() => setConfirmModal(null)} aria-label="Cerrar modal">
+                <X size={18} />
+              </button>
+            </div>
+            <p style={{ fontSize: '14px', color: '#475467', marginBottom: '12px' }}>
+              ¿Está seguro de despachar la orden de entrega <strong>{confirmModal.delivery.id}</strong> (Factura <strong>{confirmModal.delivery.invoiceId}</strong>)?
+            </p>
+            <div className="table-scroll" style={{ maxHeight: '200px', marginBottom: '16px' }}>
+              <table>
+                <thead>
+                  <tr>
+                    <th>Producto</th>
+                    <th>Facturado</th>
+                    <th>Entregado</th>
+                    <th>Diferencia</th>
+                    <th>Motivo</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {confirmModal.rows.map(r => (
+                    <tr key={r.productId}>
+                      <td><strong>{r.productName}</strong></td>
+                      <td>{r.expectedQty}</td>
+                      <td><strong>{r.deliveredQty}</strong></td>
+                      <td style={{ color: r.diff !== 0 ? '#b42318' : '#027a48', fontWeight: 600 }}>{r.diff}</td>
+                      <td><small>{r.reason || 'Sin novedad'}</small></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px' }}>
+              <button type="button" className="btn btn-outline" onClick={() => setConfirmModal(null)} disabled={submitting}>
+                Cancelar
+              </button>
+              <button type="button" className="btn btn-primary" onClick={executeConfirmDelivery} disabled={submitting}>
+                {submitting ? 'Confirmando...' : 'Sí, confirmar despacho'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
@@ -1401,6 +1576,11 @@ export const Adjustments = () => {
   const { state, updateState } = useGlobalStore();
   const [form, setForm] = useState({ type: 'OUT' as Adjustment['type'], productId: '', qty: 1, reason: '', responsible: 'EMP-000001' });
   const [notice, setNotice] = useState('');
+  const [actionModal, setActionModal] = useState<{
+    adjustment: Adjustment;
+    action: 'APR' | 'ANU';
+  } | null>(null);
+  const [submitting, setSubmitting] = useState(false);
 
   const loadAdjustments = async () => {
     try {
@@ -1421,7 +1601,17 @@ export const Adjustments = () => {
   }, []);
 
   const saveManualAdjustment = async () => {
-    if (!form.productId || !form.reason.trim()) return setNotice('Selecciona producto e ingresa motivo.');
+    setNotice('');
+    if (!form.type) return setNotice('Debe seleccionar el tipo de ajuste (Entrada o Salida).');
+    if (!form.productId) return setNotice('Debe seleccionar un producto del catálogo.');
+    if (!Number.isInteger(form.qty) || form.qty < 1 || form.qty > 100000) return setNotice('La cantidad del ajuste debe ser un número entero entre 1 y 100,000.');
+    if (!form.reason?.trim() || form.reason.trim().length < 3 || form.reason.trim().length > 100) {
+      return setNotice('El motivo del ajuste debe tener entre 3 y 100 caracteres.');
+    }
+    if (RE_SQLI.test(form.reason.trim())) {
+      return setNotice('El motivo contiene caracteres o comandos no permitidos (anti-SQLi detectado).');
+    }
+
     try {
       const res = await warehouseApi.createAdjustment({
         idProducto: form.productId,
@@ -1429,29 +1619,36 @@ export const Adjustments = () => {
         cantidad: form.qty,
         motivo: form.reason.trim(),
       });
-      setNotice(`Ajuste ${res.id} registrado exitosamente como ABI.`);
+      setNotice(`Ajuste ${res.id} registrado exitosamente en estado Abierto (ABI).`);
       void loadAdjustments();
-    } catch {
-      const adjustment: Adjustment = { id: `AJ-${Date.now()}`, date: new Date().toISOString(), type: form.type, productId: form.productId, qty: form.qty, reason: form.reason.trim(), responsible: form.responsible, status: 'ABI' };
-      updateState(draft => { draft.adjustments.push(adjustment); return draft; });
-      setNotice('Ajuste guardado exitosamente.');
+      setForm({ type: 'OUT', productId: '', qty: 1, reason: '', responsible: 'EMP-000001' });
+    } catch (err: any) {
+      setNotice(err?.message || 'Error al registrar el ajuste físico.');
     }
-    setForm({ type: 'OUT', productId: '', qty: 1, reason: '', responsible: 'EMP-000001' });
   };
 
-  const changeAdjustmentStatus = async (adjustmentId: string, status: 'APR' | 'ANU') => {
+  const askAction = (adjustment: Adjustment, action: 'APR' | 'ANU') => {
+    setActionModal({ adjustment, action });
+  };
+
+  const executeAction = async () => {
+    if (!actionModal) return;
+    const { adjustment, action } = actionModal;
+    setSubmitting(true);
     try {
-      if (status === 'APR') await warehouseApi.approveAdjustment(adjustmentId);
-      else await warehouseApi.annulAdjustment(adjustmentId);
-      setNotice(status === 'APR' ? `Ajuste ${adjustmentId} aprobado exitosamente.` : `Ajuste ${adjustmentId} anulado exitosamente.`);
+      if (action === 'APR') {
+        await warehouseApi.approveAdjustment(adjustment.id);
+        setNotice(`Ajuste ${adjustment.id} aprobado exitosamente e impactado en inventario.`);
+      } else {
+        await warehouseApi.annulAdjustment(adjustment.id);
+        setNotice(`Ajuste ${adjustment.id} anulado exitosamente.`);
+      }
+      setActionModal(null);
       void loadAdjustments();
-    } catch {
-      updateState(draft => {
-        const draftAdjustment = draft.adjustments.find(a => a.id === adjustmentId);
-        if (draftAdjustment) draftAdjustment.status = status;
-        return draft;
-      });
-      setNotice(`Ajuste ${status === 'APR' ? 'aprobado' : 'anulado'} exitosamente.`);
+    } catch (err: any) {
+      setNotice(err?.message || 'Error al procesar el ajuste.');
+    } finally {
+      setSubmitting(false);
     }
   };
 
@@ -1460,7 +1657,7 @@ export const Adjustments = () => {
       <div className="page-heading"><div><span className="eyebrow">CONTROL DE BODEGA</span><h1>Ajustes físicos</h1><p>Registro de mermas y sobrantes con impacto en inventario.</p></div></div>
       <section className="card"><h2 className="section-title">Registrar ajuste</h2><div className="grid-4">
         <label className="form-group">
-          Tipo
+          Tipo <strong style={{ color: '#ef4444' }}>*</strong>
           <select className="select" value={form.type} onChange={event => setForm({ ...form, type: event.target.value as Adjustment['type'] })}>
             <option value="">-- Seleccione tipo de ajuste --</option>
             <option value="OUT">Salida · merma / rotura</option>
@@ -1468,21 +1665,74 @@ export const Adjustments = () => {
           </select>
         </label>
         <label className="form-group">
-          Producto
+          Producto <strong style={{ color: '#ef4444' }}>*</strong>
           <select className="select" value={form.productId} onChange={event => setForm({ ...form, productId: event.target.value })}>
             <option value="">-- Seleccione un producto --</option>
             {state.products.map(product => <option key={product.id} value={product.id}>{product.name} · stock {product.stock}</option>)}
           </select>
         </label>
-        <label className="form-group">Cantidad<input className="input" type="number" min="1" step="1" value={form.qty} onChange={event => setForm({ ...form, qty: Number(event.target.value) })} /></label>
-        <label className="form-group">Motivo<input className="input" value={form.reason} onChange={event => setForm({ ...form, reason: event.target.value })} placeholder="Causa del ajuste" /></label>
+        <label className="form-group">
+          Cantidad <strong style={{ color: '#ef4444' }}>*</strong>
+          <input className="input" type="number" min="1" max="100000" step="1" value={form.qty} onChange={event => setForm({ ...form, qty: Number(event.target.value) })} />
+        </label>
+        <label className="form-group">
+          Motivo <strong style={{ color: '#ef4444' }}>*</strong>
+          <input className="input" maxLength={100} value={form.reason} onChange={event => setForm({ ...form, reason: event.target.value })} placeholder="Causa del ajuste (3 a 100 caracteres)" />
+        </label>
         <div className="form-action"><button type="button" className="btn btn-primary" onClick={saveManualAdjustment}>Crear ajuste ABI</button></div>
       </div></section>
       {notice && <p className="form-notice" role="status">{notice}</p>}
       <section className="card"><h2 className="section-title">Historial de ajustes</h2><div className="table-scroll"><table><thead><tr><th>Fecha</th><th>Producto</th><th>Tipo</th><th>Cantidad</th><th>Responsable</th><th>Motivo</th><th>Estado</th><th>Acciones</th></tr></thead><tbody>
-        {state.adjustments.map(adjustment => <tr key={adjustment.id}><td>{new Date(adjustment.date).toLocaleDateString('es-EC')}</td><td>{state.products.find(product => product.id === adjustment.productId)?.name ?? adjustment.productId}</td><td>{adjustment.type === 'IN' ? 'Ingreso' : 'Egreso'}</td><td>{adjustment.qty}</td><td>{adjustment.responsible}</td><td>{adjustment.reason}</td><td><span className={`badge badge-${adjustment.status}`}>{adjustment.status}</span></td><td>{adjustment.status === 'ABI' && <div className="inline-actions"><button className="btn btn-secondary" type="button" onClick={() => changeAdjustmentStatus(adjustment.id, 'APR')}>Aprobar</button><button className="btn btn-outline" type="button" onClick={() => changeAdjustmentStatus(adjustment.id, 'ANU')}>Anular</button></div>}</td></tr>)}
+        {state.adjustments.map(adjustment => <tr key={adjustment.id}><td>{new Date(adjustment.date).toLocaleDateString('es-EC')}</td><td>{state.products.find(product => product.id === adjustment.productId)?.name ?? adjustment.productId}</td><td>{adjustment.type === 'IN' ? 'Ingreso' : 'Egreso'}</td><td>{adjustment.qty}</td><td>{adjustment.responsible}</td><td>{adjustment.reason}</td><td><span className={`badge badge-${adjustment.status}`}>{adjustment.status}</span></td><td>{adjustment.status === 'ABI' && <div className="inline-actions"><button className="btn btn-secondary" type="button" onClick={() => askAction(adjustment, 'APR')}>Aprobar</button><button className="btn btn-outline" type="button" onClick={() => askAction(adjustment, 'ANU')}>Anular</button></div>}</td></tr>)}
         {!state.adjustments.length && <tr><td colSpan={8} className="empty-state">No hay ajustes registrados.</td></tr>}
       </tbody></table></div></section>
+
+      {/* Modal de Confirmación de Acción para Ajuste */}
+      {actionModal && (
+        <div className="modal-backdrop">
+          <div className="modal-card" style={{ maxWidth: '480px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <CheckCircle2 size={20} color={actionModal.action === 'APR' ? '#027a48' : '#b42318'} />
+                <h2 style={{ margin: 0, fontSize: '18px' }}>
+                  {actionModal.action === 'APR' ? 'Confirmar Aprobación de Ajuste' : 'Confirmar Anulación de Ajuste'}
+                </h2>
+              </div>
+              <button type="button" className="icon-button" onClick={() => setActionModal(null)} aria-label="Cerrar modal">
+                <X size={18} />
+              </button>
+            </div>
+            <p style={{ fontSize: '14px', color: '#475467', marginBottom: '16px', lineHeight: 1.5 }}>
+              {actionModal.action === 'APR' ? (
+                <>
+                  ¿Está seguro de que desea <strong>aprobar</strong> el ajuste <strong>{actionModal.adjustment.id}</strong>?
+                  <br />
+                  Se {actionModal.adjustment.type === 'IN' ? 'sumarán' : 'descontarán'} <strong>{actionModal.adjustment.qty}</strong> unidades del stock del producto <strong>{state.products.find(p => p.id === actionModal.adjustment.productId)?.name ?? actionModal.adjustment.productId}</strong> de forma permanente en MariaDB.
+                </>
+              ) : (
+                <>
+                  ¿Está seguro de que desea <strong>anular</strong> el ajuste <strong>{actionModal.adjustment.id}</strong>?
+                  <br />
+                  El ajuste pasará a estado ANULADO y no afectará el inventario físico.
+                </>
+              )}
+            </p>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px' }}>
+              <button type="button" className="btn btn-outline" onClick={() => setActionModal(null)} disabled={submitting}>
+                Cancelar
+              </button>
+              <button
+                type="button"
+                className={actionModal.action === 'APR' ? 'btn btn-secondary' : 'btn btn-danger'}
+                onClick={executeAction}
+                disabled={submitting}
+              >
+                {submitting ? 'Procesando...' : actionModal.action === 'APR' ? 'Sí, aprobar ajuste' : 'Sí, anular ajuste'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
