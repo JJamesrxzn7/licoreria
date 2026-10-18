@@ -294,3 +294,27 @@ export interface StoreState {
   journalEntries: JournalEntry[];
   settings: { taxRate: number };
 }
+
+export interface AuthUser {
+  id: string;
+  username: string;
+  employeeId: string;
+  fullName: string;
+  department: string;
+  primaryRole: string;
+  roles: string[];
+  roleIds: string[];
+  permissions: string[];
+  allowedRoutes: string[];
+  token?: string;
+}
+
+export interface DemoAccount {
+  role: string;
+  roleId: string;
+  username: string;
+  password: string;
+  description: string;
+  color: string;
+}
+

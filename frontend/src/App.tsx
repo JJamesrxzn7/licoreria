@@ -2,9 +2,11 @@ import { useState } from 'react';
 import {
   Bell, BookOpen, Briefcase, Calculator, FileText, LayoutDashboard, Menu,
   PanelLeftClose, PanelLeftOpen, ShoppingCart, Truck, Users, Wine, X,
-  Building2, PieChart, Scale
+  Building2, PieChart, Scale, LogOut
 } from 'lucide-react';
 import { StoreProvider } from './context';
+import { AuthProvider, useAuth } from './context/AuthContext';
+import Login from './pages/Login';
 import { POS } from './pages/POS';
 import { Customers, Dashboard, EmployeeFile, PayrollManagement, Suppliers } from './pages/CorePages';
 import { Adjustments, Catalog, Deliveries, PurchaseOrders, Receptions } from './pages/InventoryPages';
@@ -32,14 +34,43 @@ const navItems = [
 ];
 
 const AppContent = () => {
+  const { user, isAuthenticated, logout, isLoading } = useAuth();
   const [currentRoute, setCurrentRoute] = useState('dashboard');
   const [collapsed, setCollapsed] = useState(false);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
+
+  if (isLoading && !isAuthenticated) {
+    return (
+      <div className="login-page">
+        <div className="login-container">
+          <div className="login-card">
+            <div className="login-header">
+              <h3>Cargando sesión...</h3>
+              <p>Por favor espera mientras se restaura tu acceso.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (!isAuthenticated) {
+    return <Login />;
+  }
+
   const activePage = navItems.find(item => item.id === currentRoute);
-  const groups = [...new Set(navItems.map(item => item.group))];
+
+  const allowedNavItems = navItems.filter(item => user?.allowedRoutes.includes(item.id));
+  const allowedGroups = [...new Set(allowedNavItems.map(item => item.group))];
 
   const navigate = (route: string) => {
     setCurrentRoute(route);
+    setMobileNavOpen(false);
+  };
+
+  const handleLogout = async () => {
+    await logout();
+    setCurrentRoute('dashboard');
     setMobileNavOpen(false);
   };
 
@@ -78,10 +109,10 @@ const AppContent = () => {
           <button type="button" className="mobile-close" aria-label="Cerrar menú" onClick={() => setMobileNavOpen(false)}><X size={20} /></button>
         </div>
         <nav className="nav-links" aria-label="Navegación principal">
-          {groups.map(group => (
+          {allowedGroups.map(group => (
             <div className="nav-group" key={group}>
               <span className="nav-group-label">{group}</span>
-              {navItems.filter(item => item.group === group).map(item => {
+              {allowedNavItems.filter(item => item.group === group).map(item => {
                 const Icon = item.icon;
                 return (
                   <button key={item.id} type="button" className={`nav-link ${currentRoute === item.id ? 'active' : ''}`} aria-current={currentRoute === item.id ? 'page' : undefined} title={collapsed ? item.label : undefined} onClick={() => navigate(item.id)}>
@@ -92,13 +123,31 @@ const AppContent = () => {
             </div>
           ))}
         </nav>
-        <div className="sidebar-footer"><span className="status-dot" /> <span>Modo demostración</span></div>
+        <div className="sidebar-footer">
+          <div className="user-info">
+            <span className="status-dot" style={{ backgroundColor: '#71bd91' }} />
+            <div>
+              <div style={{ fontSize: '11px', fontWeight: 600, color: '#fff' }}>{user?.fullName}</div>
+              <div style={{ fontSize: '9px', color: '#bdc9bd', textTransform: 'uppercase' }}>{user?.primaryRole}</div>
+            </div>
+          </div>
+          <button type="button" className="logout-btn" onClick={handleLogout} title="Cerrar sesión">
+            <LogOut size={16} />
+          </button>
+        </div>
       </aside>
       <main className="main-content">
         <header className="topbar">
           <button type="button" className="mobile-menu" aria-label="Abrir menú" onClick={() => setMobileNavOpen(true)}><Menu size={21} /></button>
           <span className="breadcrumb">La Cava <span>/</span> {activePage?.label}</span>
-          <div className="topbar-actions"><span className="demo-badge">DATOS DE PRUEBA</span><button type="button" className="notification-button" aria-label="Ver alertas de inventario" onClick={() => navigate('products')}><Bell size={18} /><i /></button><span className="avatar" aria-label="Usuario demostración">LC</span></div>
+          <div className="topbar-actions">
+            <button type="button" className="notification-button" aria-label="Ver alertas de inventario" onClick={() => navigate('products')}><Bell size={18} /></button>
+            <div className="user-profile" onClick={handleLogout} title="Cerrar sesión">
+              <span className="avatar">{user?.username.charAt(0).toUpperCase()}</span>
+              <span className="user-name">{user?.fullName}</span>
+              <LogOut size={14} className="logout-icon" />
+            </div>
+          </div>
         </header>
         <div className="page-content">{routeViews[currentRoute] ?? <Dashboard />}</div>
       </main>
@@ -107,5 +156,11 @@ const AppContent = () => {
 };
 
 export default function App() {
-  return <StoreProvider><AppContent /></StoreProvider>;
+  return (
+    <StoreProvider>
+      <AuthProvider>
+        <AppContent />
+      </AuthProvider>
+    </StoreProvider>
+  );
 }

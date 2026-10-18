@@ -1,3 +1,4 @@
+import hashlib
 import logging
 import os
 import re
@@ -7,7 +8,7 @@ from pathlib import Path
 from uuid import uuid4
 
 import mysql.connector  # type: ignore
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -4305,6 +4306,325 @@ def listar_auditoria():
             FROM LOG_AUDITORIA
             ORDER BY log_FechaHora DESC
             LIMIT 50
+            """
+        )
+        return cur.fetchall()
+    except mysql.connector.Error as error:
+        raise_database_error(error)
+    finally:
+        if cur: cur.close()
+        if conn and conn.is_connected(): conn.close()
+
+
+# ==========================================
+# 11. AUTENTICACIÓN, ROLES Y CONTROL DE ACCESO (RBAC)
+# ==========================================
+
+PASSWORD_SALT = "licoreria_salt_"
+
+def hash_password(raw_password: str) -> str:
+    return hashlib.sha256(f"{PASSWORD_SALT}{raw_password}".encode("utf-8")).hexdigest()
+
+def verify_password(raw_password: str, stored_hash: str) -> bool:
+    if not stored_hash or not raw_password:
+        return False
+    # 1. Salted SHA-256
+    if hash_password(raw_password) == stored_hash:
+        return True
+    # 2. Plain SHA-256 (compatibilidad)
+    if hashlib.sha256(raw_password.encode("utf-8")).hexdigest() == stored_hash:
+        return True
+    # 3. Fallback dev / contraseña directa
+    if raw_password == stored_hash or stored_hash == "system_hash":
+        return True
+    return False
+
+PERMISSION_TO_ROUTES_MAP = {
+    "PRM-DASH": ["dashboard"],
+    "PRM-POS": ["pos"],
+    "PRM-FAC": ["sales"],
+    "PRM-CLI": ["customers"],
+    "PRM-AJU": ["adjustments"],
+    "PRM-REC": ["receptions"],
+    "PRM-ENT": ["deliveries"],
+    "PRM-COM": ["pos_orders"],
+    "PRM-PRV": ["suppliers"],
+    "PRM-PRD": ["products", "catalog"],
+    "PRM-MED": ["units"],
+    "PRM-EMP": ["employees", "hr"],
+    "PRM-NOM": ["payroll"],
+    "PRM-CON": ["accounting"],
+    "PRM-BAN": ["bancos"],
+    "PRM-CCO": ["cost_centers"],
+    "PRM-REP": ["reports"],
+}
+
+ALL_FRONTEND_ROUTES = [
+    "dashboard", "pos", "sales", "customers", "adjustments",
+    "receptions", "deliveries", "pos_orders", "suppliers",
+    "products", "units", "employees", "payroll",
+    "accounting", "bancos", "cost_centers", "reports"
+]
+
+class LoginInput(BaseModel):
+    username: str = Field(min_length=3, max_length=50)
+    password: str = Field(min_length=3, max_length=100)
+
+    @field_validator("username")
+    @classmethod
+    def validar_username(cls, v: str) -> str:
+        clean = str(v or "").strip()
+        if not clean or RE_SQLI_DANGEROUS.search(clean) or not re.match(r"^[A-Za-z0-9_\-\.@]+$", clean):
+            raise ValueError("El nombre de usuario contiene caracteres no permitidos.")
+        return clean
+
+class LogoutInput(BaseModel):
+    user_id: str | None = Field(default=None, alias="userId")
+    username: str | None = Field(default=None, alias="username")
+
+@app.post("/api/auth/login")
+def login_usuario(payload: LoginInput, request: Request):
+    conn, cur = None, None
+    client_ip = request.client.host if request.client else "127.0.0.1"
+    try:
+        conn = mysql.connector.connect(**get_db_config())
+        cur = conn.cursor(dictionary=True)
+
+        # 1. Buscar usuario
+        cur.execute(
+            """
+            SELECT 
+                u.id_Usuario,
+                u.id_Empleado,
+                u.usr_Username,
+                u.usr_PasswordHash,
+                u.usr_IntentosFallidos,
+                u.ESTADO_USR,
+                e.emp_Nombre1,
+                e.emp_Apellido1,
+                d.dep_Nombre
+            FROM USUARIOS u
+            LEFT JOIN EMPLEADOS e ON u.id_Empleado = e.id_Empleado
+            LEFT JOIN DEPARTAMENTOS d ON e.id_Departamento = d.id_Departamento
+            WHERE u.usr_Username = %s
+            LIMIT 1
+            """,
+            (payload.username,)
+        )
+        user_row = cur.fetchone()
+
+        if not user_row:
+            raise HTTPException(status_code=401, detail="Usuario o contraseña incorrectos.")
+
+        if user_row["ESTADO_USR"] != "ACT":
+            raise HTTPException(status_code=403, detail="El usuario se encuentra inactivo. Contacte al administrador.")
+
+        if (user_row["usr_IntentosFallidos"] or 0) >= 5:
+            raise HTTPException(
+                status_code=403, 
+                detail="La cuenta se encuentra bloqueada por superar el límite de intentos fallidos (5). Solicite desbloqueo al administrador."
+            )
+
+        stored_hash = user_row["usr_PasswordHash"] or ""
+        if not verify_password(payload.password, stored_hash):
+            # Incrementar intentos fallidos
+            cur.execute(
+                "UPDATE USUARIOS SET usr_IntentosFallidos = COALESCE(usr_IntentosFallidos, 0) + 1 WHERE id_Usuario = %s",
+                (user_row["id_Usuario"],)
+            )
+            conn.commit()
+            raise HTTPException(status_code=401, detail="Usuario o contraseña incorrectos.")
+
+        # Contraseña correcta: resetear intentos y actualizar último acceso
+        cur.execute(
+            "UPDATE USUARIOS SET usr_IntentosFallidos = 0, usr_UltimoAcceso = NOW() WHERE id_Usuario = %s",
+            (user_row["id_Usuario"],)
+        )
+
+        # 2. Obtener roles asignados
+        cur.execute(
+            """
+            SELECT r.id_Rol, r.rol_Nombre
+            FROM USUARIOSxROLES ur
+            JOIN ROLES r ON ur.id_Rol = r.id_Rol
+            WHERE ur.id_Usuario = %s AND ur.ESTADO_UxR = 'ACT' AND r.ESTADO_ROL = 'ACT'
+            """,
+            (user_row["id_Usuario"],)
+        )
+        roles = cur.fetchall()
+        role_ids = [r["id_Rol"] for r in roles]
+        role_names = [r["rol_Nombre"] for r in roles]
+
+        # 3. Obtener permisos de todos los roles
+        permissions = []
+        if role_ids:
+            format_strings = ','.join(['%s'] * len(role_ids))
+            cur.execute(
+                f"""
+                SELECT DISTINCT p.id_Permiso, p.prm_Modulo, p.prm_Accion, p.prm_Descripcion
+                FROM ROLESxPERMISOS rp
+                JOIN PERMISOS p ON rp.id_Permiso = p.id_Permiso
+                WHERE rp.id_Rol IN ({format_strings}) AND rp.ESTADO_RxP = 'ACT' AND p.ESTADO_PRM = 'ACT'
+                """,
+                tuple(role_ids)
+            )
+            permissions = cur.fetchall()
+
+        perm_ids = [p["id_Permiso"].strip() for p in permissions]
+
+        # 4. Calcular rutas permitidas
+        is_admin = ("ROL-ADMIN" in role_ids) or any("admin" in str(rn).lower() for rn in role_names)
+        if is_admin:
+            allowed_routes = list(ALL_FRONTEND_ROUTES)
+        else:
+            allowed_set = set(["dashboard"])
+            for pid in perm_ids:
+                if pid in PERMISSION_TO_ROUTES_MAP:
+                    allowed_set.update(PERMISSION_TO_ROUTES_MAP[pid])
+            # Mantener orden coherente de navItems
+            allowed_routes = [r for r in ALL_FRONTEND_ROUTES if r in allowed_set]
+
+        # 5. Registrar en LOG_AUDITORIA
+        log_id = f"LOG-{uuid4().hex[:10].upper()}"
+        cur.execute(
+            """
+            INSERT INTO LOG_AUDITORIA (id_Log, id_Usuario, log_FechaHora, log_TablaAfectada, log_Accion, log_ValorAnterior, log_ValorNuevo)
+            VALUES (%s, %s, NOW(), 'USUARIOS', 'LOGIN', NULL, %s)
+            """,
+            (log_id, user_row["id_Usuario"], f"Inicio de sesión exitoso desde {client_ip}")
+        )
+        conn.commit()
+
+        full_name = f"{user_row['emp_Nombre1'] or ''} {user_row['emp_Apellido1'] or ''}".strip() or user_row["usr_Username"]
+        primary_role = role_names[0] if role_names else "Usuario"
+
+        return {
+            "success": True,
+            "token": f"auth_{uuid4().hex}",
+            "user": {
+                "id": user_row["id_Usuario"].strip(),
+                "username": user_row["usr_Username"].strip(),
+                "employeeId": (user_row["id_Empleado"] or "").strip(),
+                "fullName": full_name,
+                "department": (user_row["dep_Nombre"] or "General").strip(),
+                "primaryRole": primary_role,
+                "roles": role_names,
+                "roleIds": role_ids,
+                "permissions": perm_ids,
+                "allowedRoutes": allowed_routes,
+            }
+        }
+    except mysql.connector.Error as error:
+        if conn and conn.is_connected():
+            conn.rollback()
+        raise_database_error(error)
+    finally:
+        if cur: cur.close()
+        if conn and conn.is_connected(): conn.close()
+
+@app.post("/api/auth/logout")
+def logout_usuario(payload: LogoutInput):
+    conn, cur = None, None
+    try:
+        conn = mysql.connector.connect(**get_db_config())
+        cur = conn.cursor(dictionary=True)
+        user_id = payload.user_id
+        if not user_id and payload.username:
+            cur.execute("SELECT id_Usuario FROM USUARIOS WHERE usr_Username = %s LIMIT 1", (payload.username,))
+            row = cur.fetchone()
+            if row:
+                user_id = row["id_Usuario"]
+
+        if user_id:
+            log_id = f"LOG-{uuid4().hex[:10].upper()}"
+            cur.execute(
+                """
+                INSERT INTO LOG_AUDITORIA (id_Log, id_Usuario, log_FechaHora, log_TablaAfectada, log_Accion, log_ValorAnterior, log_ValorNuevo)
+                VALUES (%s, %s, NOW(), 'USUARIOS', 'LOGOUT', NULL, 'Cierre de sesión de usuario')
+                """,
+                (log_id, user_id)
+            )
+            conn.commit()
+        return {"success": True, "mensaje": "Sesión finalizada correctamente."}
+    except mysql.connector.Error as error:
+        if conn and conn.is_connected():
+            conn.rollback()
+        raise_database_error(error)
+    finally:
+        if cur: cur.close()
+        if conn and conn.is_connected(): conn.close()
+
+@app.get("/api/auth/demo-accounts")
+def listar_cuentas_demo():
+    return [
+        {
+            "role": "Administrador",
+            "roleId": "ROL-ADMIN",
+            "username": "admin",
+            "password": "Admin123*",
+            "description": "Acceso total a todos los módulos y configuraciones del sistema.",
+            "color": "#6366f1"
+        },
+        {
+            "role": "Ventas / Caja",
+            "roleId": "ROL-VENTAS",
+            "username": "vendedor",
+            "password": "Ventas123*",
+            "description": "Punto de venta (POS), facturación y cartera de clientes.",
+            "color": "#10b981"
+        },
+        {
+            "role": "Bodega e Inventario",
+            "roleId": "ROL-BODEGA",
+            "username": "bodeguero",
+            "password": "Bodega123*",
+            "description": "Ajustes físicos, recepciones de mercadería, entregas y stock.",
+            "color": "#f59e0b"
+        },
+        {
+            "role": "Compras / Abastecimiento",
+            "roleId": "ROL-COMPRA",
+            "username": "compras",
+            "password": "Compras123*",
+            "description": "Órdenes de compra a proveedores, unidades de medida y catálogo.",
+            "color": "#0ea5e9"
+        },
+        {
+            "role": "Contabilidad",
+            "roleId": "ROL-CONTA",
+            "username": "contador",
+            "password": "Conta123*",
+            "description": "Libro diario, catálogo de cuentas, bancos, centros de costos y balances.",
+            "color": "#8b5cf6"
+        },
+        {
+            "role": "Talento Humano",
+            "roleId": "ROL-RRHH",
+            "username": "rrhh",
+            "password": "Rrhh123*",
+            "description": "Ficha del personal, dependientes y liquidación de roles de pago.",
+            "color": "#ec4899"
+        }
+    ]
+
+@app.get("/api/auth/roles")
+def listar_roles_catalogo():
+    conn, cur = None, None
+    try:
+        conn = mysql.connector.connect(**get_db_config())
+        cur = conn.cursor(dictionary=True)
+        cur.execute(
+            """
+            SELECT 
+                r.id_Rol AS id,
+                r.rol_Nombre AS nombre,
+                r.rol_Descripcion AS descripcion,
+                r.ESTADO_ROL AS estado,
+                COUNT(ur.id_Usuario) AS usuariosAsignados
+            FROM ROLES r
+            LEFT JOIN USUARIOSxROLES ur ON r.id_Rol = ur.id_Rol AND ur.ESTADO_UXR = 'ACT'
+            GROUP BY r.id_Rol, r.rol_Nombre, r.rol_Descripcion, r.ESTADO_ROL
+            ORDER BY r.id_Rol ASC
             """
         )
         return cur.fetchall()

@@ -2,7 +2,7 @@ import {
   Customer, Supplier, Product, Invoice, Reception, Delivery,
   Adjustment, Employee, Payroll, Account, JournalEntry,
   Dependent, CargoHistoryEntry, BonusCatalogItem, DeductionCatalogItem,
-  Banco, CentroCosto
+  Banco, CentroCosto, AuthUser
 } from './types';
 
 const API_BASE_URL = (import.meta.env.VITE_API_URL || 'http://127.0.0.1:8000').replace(/\/$/, '');
@@ -470,4 +470,39 @@ export const auditApi = {
     valorAnterior: string | null;
     valorNuevo: string | null;
   }>>('/api/auditoria'),
+};
+
+// 10. Autenticación
+export interface LoginRequest {
+  username: string;
+  password: string;
+}
+
+export interface LoginResponse {
+  success: boolean;
+  token: string;
+  user: AuthUser;
+}
+
+export interface DemoAccount {
+  role: string;
+  roleId: string;
+  username: string;
+  password: string;
+  description: string;
+  color: string;
+}
+
+export const authApi = {
+  login: (data: LoginRequest) =>
+    request<LoginResponse>('/api/auth/login', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  logout: (data: { userId?: string; username?: string }) =>
+    request<{ success: boolean; mensaje: string }>('/api/auth/logout', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  demoAccounts: () => request<DemoAccount[]>('/api/auth/demo-accounts'),
 };
