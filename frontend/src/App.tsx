@@ -2,12 +2,13 @@ import { useState } from 'react';
 import {
   Bell, BookOpen, Briefcase, Calculator, FileText, LayoutDashboard, Menu,
   PanelLeftClose, PanelLeftOpen, ShoppingCart, Truck, Users, Wine, X,
-  Building2, PieChart
+  Building2, PieChart, Scale
 } from 'lucide-react';
 import { StoreProvider } from './context';
 import { POS } from './pages/POS';
 import { Customers, Dashboard, EmployeeFile, PayrollManagement, Suppliers } from './pages/CorePages';
 import { Adjustments, Catalog, Deliveries, PurchaseOrders, Receptions } from './pages/InventoryPages';
+import { UnitsOfMeasure } from './pages/UnitsOfMeasure';
 import { Accounting, Reports, Sales } from './pages/FinancialPages';
 
 const navItems = [
@@ -21,6 +22,7 @@ const navItems = [
   { id: 'pos_orders', label: 'Compras', icon: Briefcase, group: 'ABASTECIMIENTO' },
   { id: 'suppliers', label: 'Proveedores', icon: Users, group: 'ABASTECIMIENTO' },
   { id: 'products', label: 'Productos', icon: Wine, group: 'ABASTECIMIENTO' },
+  { id: 'units', label: 'Unidades de medida', icon: Scale, group: 'ABASTECIMIENTO' },
   { id: 'employees', label: 'Ficha del personal', icon: Users, group: 'ADMINISTRACIÓN' },
   { id: 'payroll', label: 'Roles de pago', icon: Calculator, group: 'ADMINISTRACIÓN' },
   { id: 'accounting', label: 'Contabilidad', icon: Calculator, group: 'ADMINISTRACIÓN' },
@@ -46,6 +48,7 @@ const AppContent = () => {
     pos: <POS />,
     products: <Catalog />,
     catalog: <Catalog />,
+    units: <UnitsOfMeasure />,
     adjustments: <Adjustments />,
     deliveries: <Deliveries />,
     sales: <Sales />,

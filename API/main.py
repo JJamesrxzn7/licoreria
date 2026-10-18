@@ -186,10 +186,97 @@ class PurchaseItemInput(BaseModel):
 
 
 class PurchaseOrderInput(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
     supplier_id: str = Field(alias="idProveedor", min_length=1, max_length=10)
-    delivery_date: datetime | None = Field(default=None, alias="fechaEntrega")
+    delivery_date: datetime | date | str | None = Field(default=None, alias="fechaEntrega")
     tax_rate: Decimal = Field(default=Decimal("0"), alias="tasaIVA", ge=0, le=100)
     items: list[PurchaseItemInput] = Field(min_length=1)
+
+    @field_validator("supplier_id")
+    @classmethod
+    def validar_proveedor_id(cls, v: str) -> str:
+        limpio = str(v or "").strip()
+        if not limpio or RE_SQLI_DANGEROUS.search(limpio):
+            raise ValueError("Identificador de proveedor inválido.")
+        return limpio[:10]
+
+    @field_validator("delivery_date")
+    @classmethod
+    def validar_fecha_entrega(cls, v: datetime | date | str | None) -> datetime | None:
+        if not v:
+            return None
+        if isinstance(v, datetime):
+            return v
+        if isinstance(v, date):
+            return datetime.combine(v, datetime.min.time())
+        try:
+            cleaned = str(v).strip()
+            if len(cleaned) == 10:
+                return datetime.strptime(cleaned, "%Y-%m-%d")
+            return datetime.fromisoformat(cleaned.replace("Z", "+00:00"))
+        except Exception:
+            raise ValueError("Formato de fecha de entrega inválido. Utilice el formato YYYY-MM-DD.")
+
+
+class UnidadMedidaInput(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+    id: str = Field(alias="id", min_length=1, max_length=3)
+    nombre: str = Field(alias="nombre", min_length=2, max_length=20)
+    factor: Decimal = Field(default=Decimal("1.00"), alias="factor", gt=0)
+
+    @field_validator("id")
+    @classmethod
+    def validar_id_um(cls, v: str) -> str:
+        limpio = str(v or "").strip().upper()
+        if not limpio or len(limpio) > 3 or RE_SQLI_DANGEROUS.search(limpio):
+            raise ValueError("El código de unidad de medida debe tener de 1 a 3 caracteres alfanuméricos.")
+        if not re.match(r"^[A-Z0-9]+$", limpio):
+            raise ValueError("El código de unidad de medida solo puede contener letras y números.")
+        return limpio
+
+    @field_validator("nombre")
+    @classmethod
+    def validar_nombre_um(cls, v: str) -> str:
+        limpio = str(v or "").strip()
+        if len(limpio) < 2 or len(limpio) > 20:
+            raise ValueError("La descripción de la unidad de medida debe tener entre 2 y 20 caracteres.")
+        if RE_SQLI_DANGEROUS.search(limpio):
+            raise ValueError("La descripción contiene caracteres no permitidos (anti-SQLi detectado).")
+        return limpio
+
+    @field_validator("factor")
+    @classmethod
+    def validar_factor_um(cls, v: Decimal) -> Decimal:
+        if v <= Decimal("0.00"):
+            raise ValueError("El factor de conversión debe ser un número positivo mayor a 0.")
+        if v > Decimal("99999.99"):
+            raise ValueError("El factor de conversión no puede exceder 99,999.99.")
+        return v.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+
+class UnidadMedidaUpdateInput(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+    nombre: str = Field(alias="nombre", min_length=2, max_length=20)
+    factor: Decimal = Field(alias="factor", gt=0)
+
+    @field_validator("nombre")
+    @classmethod
+    def validar_nombre_um(cls, v: str) -> str:
+        limpio = str(v or "").strip()
+        if len(limpio) < 2 or len(limpio) > 20:
+            raise ValueError("La descripción de la unidad de medida debe tener entre 2 y 20 caracteres.")
+        if RE_SQLI_DANGEROUS.search(limpio):
+            raise ValueError("La descripción contiene caracteres no permitidos (anti-SQLi detectado).")
+        return limpio
+
+    @field_validator("factor")
+    @classmethod
+    def validar_factor_um(cls, v: Decimal) -> Decimal:
+        if v <= Decimal("0.00"):
+            raise ValueError("El factor de conversión debe ser un número positivo mayor a 0.")
+        if v > Decimal("99999.99"):
+            raise ValueError("El factor de conversión no puede exceder 99,999.99.")
+        return v.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
 
 class SaleItemInput(BaseModel):
@@ -235,6 +322,7 @@ class SupplierInput(BaseModel):
 
 
 class ProductInput(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
     id: str | None = None
     name: str = Field(alias="nombre", min_length=2, max_length=40)
     category_id: str = Field(default="CAT-000001", alias="idCategoria")
@@ -244,7 +332,31 @@ class ProductInput(BaseModel):
     sell_unit: str = Field(default="BOT", alias="umVenta")
     buy_cost: Decimal = Field(alias="costoCompra", ge=0)
     sell_price: Decimal = Field(alias="precioVenta", ge=0)
-    initial_stock: int = Field(default=0, alias="stockInicial")
+    initial_stock: int = Field(default=0, alias="stockInicial", ge=0)
+
+    @field_validator("name")
+    @classmethod
+    def validar_nombre_producto(cls, v: str) -> str:
+        limpio = str(v or "").strip()
+        if len(limpio) < 2 or len(limpio) > 40:
+            raise ValueError("La descripción del producto debe tener entre 2 y 40 caracteres.")
+        if RE_SQLI_DANGEROUS.search(limpio):
+            raise ValueError("La descripción contiene caracteres no permitidos (anti-SQLi detectado).")
+        return limpio
+
+    @field_validator("buy_unit", "sell_unit")
+    @classmethod
+    def validar_unidad_producto(cls, v: str) -> str:
+        limpio = str(v or "").strip().upper()
+        if not limpio or len(limpio) > 3 or RE_SQLI_DANGEROUS.search(limpio):
+            raise ValueError("El código de unidad de medida debe tener de 1 a 3 caracteres alfanuméricos.")
+        return limpio
+
+    @model_validator(mode="after")
+    def validar_costo_precio(self):
+        if self.sell_price < self.buy_cost:
+            raise ValueError("El precio de venta no puede ser inferior al costo de compra.")
+        return self
 
 
 class PhysicalAdjustmentInput(BaseModel):
@@ -776,6 +888,26 @@ def obtener_catalogos_generales():
 
         cur.execute("SELECT TRIM(id_Unidad_Medida) AS id, TRIM(um_Descripcion) AS nombre, um_FactorConversion AS factor FROM UNIDADES_MEDIDAS ORDER BY um_Descripcion")
         unidades = cur.fetchall()
+        if not unidades:
+            default_units = [
+                ('BOT', 'Botella', Decimal('1.00')),
+                ('CAJ', 'Caja x12', Decimal('12.00')),
+                ('SIX', 'Six-pack x6', Decimal('6.00')),
+                ('LIT', 'Litro', Decimal('1.00')),
+                ('UND', 'Unidad', Decimal('1.00')),
+            ]
+            for uid, desc, factor in default_units:
+                cur.execute(
+                    "INSERT IGNORE INTO UNIDADES_MEDIDAS (id_Unidad_Medida, um_Descripcion, um_FactorConversion) VALUES (%s, %s, %s)",
+                    (uid, desc, factor)
+                )
+            conn.commit()
+            cur.execute("SELECT TRIM(id_Unidad_Medida) AS id, TRIM(um_Descripcion) AS nombre, um_FactorConversion AS factor FROM UNIDADES_MEDIDAS ORDER BY um_Descripcion")
+            unidades = cur.fetchall()
+
+        for u in unidades:
+            if u.get("factor") is not None:
+                u["factor"] = float(u["factor"])
 
         cur.execute("SELECT TRIM(id_Categoria) AS id, TRIM(cat_Nombre) AS nombre FROM CATEGORIAS WHERE ESTADO_CAT = 'ACT' OR ESTADO_CAT IS NULL ORDER BY cat_Nombre")
         categorias = cur.fetchall()
@@ -811,7 +943,134 @@ def listar_ciudades():
 
 @app.get("/api/unidades-medida")
 def listar_unidades_medida():
-    return obtener_catalogos_generales()["unidadesMedida"]
+    conn, cur = None, None
+    try:
+        conn = mysql.connector.connect(**get_db_config())
+        cur = conn.cursor(dictionary=True)
+        cur.execute("SELECT TRIM(id_Unidad_Medida) AS id, TRIM(um_Descripcion) AS nombre, um_FactorConversion AS factor FROM UNIDADES_MEDIDAS ORDER BY um_Descripcion")
+        rows = cur.fetchall()
+        if not rows:
+            default_units = [
+                ('BOT', 'Botella', Decimal('1.00')),
+                ('CAJ', 'Caja x12', Decimal('12.00')),
+                ('SIX', 'Six-pack x6', Decimal('6.00')),
+                ('LIT', 'Litro', Decimal('1.00')),
+                ('UND', 'Unidad', Decimal('1.00')),
+            ]
+            for uid, desc, factor in default_units:
+                cur.execute(
+                    "INSERT IGNORE INTO UNIDADES_MEDIDAS (id_Unidad_Medida, um_Descripcion, um_FactorConversion) VALUES (%s, %s, %s)",
+                    (uid, desc, factor)
+                )
+            conn.commit()
+            cur.execute("SELECT TRIM(id_Unidad_Medida) AS id, TRIM(um_Descripcion) AS nombre, um_FactorConversion AS factor FROM UNIDADES_MEDIDAS ORDER BY um_Descripcion")
+            rows = cur.fetchall()
+        for r in rows:
+            if r.get("factor") is not None:
+                r["factor"] = float(r["factor"])
+        return rows
+    except mysql.connector.Error as error:
+        raise_database_error(error)
+    finally:
+        if cur: cur.close()
+        if conn and conn.is_connected(): conn.close()
+
+
+@app.post("/api/unidades-medida")
+def crear_unidad_medida(data: UnidadMedidaInput):
+    conn, cur = None, None
+    try:
+        conn = mysql.connector.connect(**get_db_config())
+        cur = conn.cursor()
+        cur.execute("SELECT 1 FROM UNIDADES_MEDIDAS WHERE id_Unidad_Medida = %s", (data.id,))
+        if cur.fetchone():
+            raise HTTPException(
+                status_code=400,
+                detail=f"Ya existe una unidad de medida con el código '{data.id}'.",
+            )
+        cur.execute(
+            """
+            INSERT INTO UNIDADES_MEDIDAS (id_Unidad_Medida, um_Descripcion, um_FactorConversion)
+            VALUES (%s, %s, %s)
+            """,
+            (data.id, data.nombre, data.factor),
+        )
+        conn.commit()
+        return {
+            "mensaje": f"Unidad de medida '{data.id}' registrada exitosamente.",
+            "id": data.id,
+        }
+    except mysql.connector.Error as error:
+        raise_database_error(error)
+    finally:
+        if cur: cur.close()
+        if conn and conn.is_connected(): conn.close()
+
+
+@app.put("/api/unidades-medida/{id_um}")
+def actualizar_unidad_medida(id_um: str, data: UnidadMedidaUpdateInput):
+    id_clean = id_um.strip().upper()[:3]
+    conn, cur = None, None
+    try:
+        conn = mysql.connector.connect(**get_db_config())
+        cur = conn.cursor()
+        cur.execute("SELECT 1 FROM UNIDADES_MEDIDAS WHERE id_Unidad_Medida = %s", (id_clean,))
+        if not cur.fetchone():
+            raise HTTPException(
+                status_code=404,
+                detail=f"No se encontró la unidad de medida con código '{id_clean}'.",
+            )
+        cur.execute(
+            """
+            UPDATE UNIDADES_MEDIDAS
+            SET um_Descripcion = %s, um_FactorConversion = %s
+            WHERE id_Unidad_Medida = %s
+            """,
+            (data.nombre, data.factor, id_clean),
+        )
+        conn.commit()
+        return {"mensaje": f"Unidad de medida '{id_clean}' actualizada exitosamente."}
+    except mysql.connector.Error as error:
+        raise_database_error(error)
+    finally:
+        if cur: cur.close()
+        if conn and conn.is_connected(): conn.close()
+
+
+@app.delete("/api/unidades-medida/{id_um}")
+def eliminar_unidad_medida(id_um: str):
+    id_clean = id_um.strip().upper()[:3]
+    conn, cur = None, None
+    try:
+        conn = mysql.connector.connect(**get_db_config())
+        cur = conn.cursor()
+        cur.execute("SELECT 1 FROM UNIDADES_MEDIDAS WHERE id_Unidad_Medida = %s", (id_clean,))
+        if not cur.fetchone():
+            raise HTTPException(
+                status_code=404,
+                detail=f"No se encontró la unidad de medida con código '{id_clean}'.",
+            )
+        cur.execute(
+            """
+            SELECT COUNT(*) FROM PRODUCTOS
+            WHERE pro_UM_Compra = %s OR pro_UM_Venta = %s
+            """,
+            (id_clean, id_clean),
+        )
+        count_prod = cur.fetchone()[0]
+        if count_prod > 0:
+            raise HTTPException(
+                status_code=400,
+                detail=f"No se puede eliminar la unidad de medida '{id_clean}' porque está asignada a {count_prod} producto(s) en el catálogo.",
+            )
+        cur.execute("DELETE FROM UNIDADES_MEDIDAS WHERE id_Unidad_Medida = %s", (id_clean,))
+        conn.commit()
+        return {"mensaje": f"Unidad de medida '{id_clean}' eliminada exitosamente."}
+    except mysql.connector.Error as error:
+        raise_database_error(error)
+    finally:
+        if cur: cur.close()
+        if conn and conn.is_connected(): conn.close()
 
 
 @app.get("/api/categorias")
@@ -1145,19 +1404,35 @@ def listar_productos():
                 P.pro_Precio_Venta AS price,
                 P.pro_Saldo_Final AS stock,
                 P.pro_Saldo_Inicial AS minStock,
-                TRIM(P.pro_UM_Compra) AS buyUnit,
-                TRIM(P.pro_UM_Venta) AS sellUnit,
-                12 AS purchaseFactor,
+                TRIM(P.pro_UM_Compra) AS buyUnitId,
+                COALESCE(TRIM(UC.um_Descripcion), TRIM(P.pro_UM_Compra)) AS buyUnit,
+                TRIM(P.pro_UM_Venta) AS sellUnitId,
+                COALESCE(TRIM(UV.um_Descripcion), TRIM(P.pro_UM_Venta)) AS sellUnit,
+                COALESCE(UC.um_FactorConversion, 1.00) AS purchaseFactor,
+                COALESCE(UV.um_FactorConversion, 1.00) AS sellFactor,
+                ROUND(COALESCE(UC.um_FactorConversion, 1.00) / NULLIF(COALESCE(UV.um_FactorConversion, 1.00), 0), 2) AS factorConversion,
                 {shelf_select}
                 IF(P.ESTADO_PROD = 'ACT', 'ACTIVE', 'INACTIVE') AS status
             FROM PRODUCTOS P
             LEFT JOIN MARCAS M ON P.id_Marca = M.id_Marca
             LEFT JOIN CATEGORIAS C ON P.id_Categoria = C.id_Categoria
+            LEFT JOIN UNIDADES_MEDIDAS UC ON P.pro_UM_Compra = UC.id_Unidad_Medida
+            LEFT JOIN UNIDADES_MEDIDAS UV ON P.pro_UM_Venta = UV.id_Unidad_Medida
             {shelf_join}
             ORDER BY P.pro_Descripcion
             """
         )
-        return cur.fetchall()
+        products = cur.fetchall()
+        for p in products:
+            if p.get("purchaseFactor") is not None:
+                p["purchaseFactor"] = float(p["purchaseFactor"])
+            if p.get("sellFactor") is not None:
+                p["sellFactor"] = float(p["sellFactor"])
+            if p.get("factorConversion") is not None:
+                p["factorConversion"] = float(p["factorConversion"])
+            else:
+                p["factorConversion"] = 1.0
+        return products
     except mysql.connector.Error as error:
         raise_database_error(error)
     finally:

@@ -112,6 +112,21 @@ export const catalogApi = {
   getMarcas: () => request<Array<{ id: string; nombre: string }>>('/api/marcas'),
 };
 
+export const unitApi = {
+  list: () => request<Array<{ id: string; nombre: string; factor: number }>>('/api/unidades-medida'),
+  create: (data: { id: string; nombre: string; factor: number }) => request<{ mensaje: string; id: string }>('/api/unidades-medida', {
+    method: 'POST',
+    body: JSON.stringify(data),
+  }),
+  update: (id: string, data: { nombre: string; factor: number }) => request<{ mensaje: string }>(`/api/unidades-medida/${encodeURIComponent(id)}`, {
+    method: 'PUT',
+    body: JSON.stringify(data),
+  }),
+  delete: (id: string) => request<{ mensaje: string }>(`/api/unidades-medida/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+  }),
+};
+
 // 2. Módulo Productos
 export const productApi = {
   listProducts: () => request<Product[]>('/api/productos'),

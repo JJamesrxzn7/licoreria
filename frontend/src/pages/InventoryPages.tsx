@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Check, CheckCircle2, Edit3, Plus, Save, Search, Trash2, X } from 'lucide-react';
+import { Calendar, Check, CheckCircle2, Edit3, Plus, Save, Scale, Search, Trash2, X } from 'lucide-react';
 import { useGlobalStore } from '../context';
 import { catalogApi, productApi, purchaseApi, warehouseApi, GeneralCatalogs, PurchaseCatalogs, PurchaseOrderRecord } from '../api';
 import { Adjustment, Delivery, Product, Reception } from '../types';
@@ -143,6 +143,8 @@ export const Catalog = () => {
       setNotice(`Producto ${res.id} registrado exitosamente.`);
       void loadProducts();
     } catch {
+      const buyFactor = Number(selectedBuyUnit?.factor) || 1;
+      const sellFactor = Number(selectedSellUnit?.factor) || 1;
       const product: Product = {
         id: generatedId,
         name: form.name.trim(),
@@ -162,7 +164,9 @@ export const Catalog = () => {
         buyUnitId: buyUId,
         sellUnit: selectedSellUnit?.nombre || sellUId,
         sellUnitId: sellUId,
-        purchaseFactor: 1,
+        purchaseFactor: buyFactor,
+        sellFactor: sellFactor,
+        factorConversion: sellFactor > 0 ? Number((buyFactor / sellFactor).toFixed(2)) : 1,
         shelf: selectedShelf ? `Percha ${selectedShelf.letra}${selectedShelf.nivel}` : '—',
         shelfId: shId,
         status: 'ACTIVE',
@@ -235,6 +239,8 @@ export const Catalog = () => {
     updateState(draft => {
       const p = draft.products.find(candidate => candidate.id === editingProduct.id);
       if (p) {
+        const buyFactor = Number(selectedBuyUnit?.factor) || 1;
+        const sellFactor = Number(selectedSellUnit?.factor) || 1;
         p.name = editForm.name!.trim();
         p.brand = selectedBrand?.nombre || p.brand;
         p.brandId = brId;
@@ -246,6 +252,9 @@ export const Catalog = () => {
         p.buyUnitId = buyUId;
         p.sellUnit = selectedSellUnit?.nombre || p.sellUnit;
         p.sellUnitId = sellUId;
+        p.purchaseFactor = buyFactor;
+        p.sellFactor = sellFactor;
+        p.factorConversion = sellFactor > 0 ? Number((buyFactor / sellFactor).toFixed(2)) : 1;
         p.shelf = selectedShelf ? `Percha ${selectedShelf.letra}${selectedShelf.nivel}` : p.shelf;
         p.shelfId = shId;
       }
@@ -281,6 +290,18 @@ export const Catalog = () => {
     );
     setConfirmModal({ isOpen: false, product: null, targetStatus: 'INACTIVE' });
   };
+
+  const currentBuyUnit = catalogs.unidadesMedida.find(u => u.id === (form.buyUnitId || 'CAJ'));
+  const currentSellUnit = catalogs.unidadesMedida.find(u => u.id === (form.sellUnitId || 'BOT'));
+  const currentBuyFactor = Number(currentBuyUnit?.factor) || 1;
+  const currentSellFactor = Number(currentSellUnit?.factor) || 1;
+  const currentRatio = currentSellFactor > 0 ? (currentBuyFactor / currentSellFactor) : 1;
+
+  const editBuyUnit = catalogs.unidadesMedida.find(u => u.id === (editForm.buyUnitId || 'CAJ'));
+  const editSellUnit = catalogs.unidadesMedida.find(u => u.id === (editForm.sellUnitId || 'BOT'));
+  const editBuyFactor = Number(editBuyUnit?.factor) || 1;
+  const editSellFactor = Number(editSellUnit?.factor) || 1;
+  const editRatio = editSellFactor > 0 ? (editBuyFactor / editSellFactor) : 1;
 
   return (
     <div>
@@ -397,6 +418,32 @@ export const Catalog = () => {
               </select>
             </label>
 
+            <div style={{
+              gridColumn: 'span 3',
+              background: '#f0fdf4',
+              border: '1px solid #bbf7d0',
+              borderRadius: '8px',
+              padding: '12px 16px',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '12px',
+              color: '#166534',
+              margin: '4px 0 8px'
+            }}>
+              <Scale size={22} style={{ flexShrink: 0, color: '#15803d' }} />
+              <div style={{ fontSize: '13px', lineHeight: 1.4 }}>
+                <strong>Factor de Conversión de Unidades (Bodegas & Compras ⇄ Ventas):</strong>
+                <div style={{ marginTop: '2px', color: '#1e293b' }}>
+                  Compra: <strong>{currentBuyUnit?.id || form.buyUnitId || 'CAJ'} ({currentBuyUnit?.nombre || 'Caja'})</strong> [factor {currentBuyFactor}] &nbsp;·&nbsp;
+                  Venta: <strong>{currentSellUnit?.id || form.sellUnitId || 'BOT'} ({currentSellUnit?.nombre || 'Botella'})</strong> [factor {currentSellFactor}]
+                </div>
+                <div style={{ marginTop: '4px', fontWeight: 600 }}>
+                  Factor calculado: <span style={{ fontSize: '15px', color: '#15803d', fontWeight: 700 }}>{currentRatio.toFixed(2)}x</span>
+                  &nbsp;➜ <em>1 {currentBuyUnit?.nombre || form.buyUnitId || 'Caja'} equivale a {currentRatio % 1 === 0 ? currentRatio.toFixed(0) : currentRatio.toFixed(2)} {currentSellUnit?.nombre || form.sellUnitId || 'Botellas'}</em>
+                </div>
+              </div>
+            </div>
+
             <label className="form-group">
               <span>Saldo Inicial (pro_Saldo_Inicial) <strong style={{ color: '#ef4444' }}>*</strong></span>
               <input
@@ -498,6 +545,7 @@ export const Catalog = () => {
                 <th>Categoría / Marca</th>
                 <th>U.M. Compra</th>
                 <th>U.M. Venta</th>
+                <th>Factor Conv.</th>
                 <th>Percha</th>
                 <th>Valor Compra</th>
                 <th>Precio Venta</th>
@@ -525,6 +573,23 @@ export const Catalog = () => {
                     </td>
                     <td>{product.buyUnit || 'CAJ'}</td>
                     <td>{product.sellUnit || 'BOT'}</td>
+                    <td>
+                      <span style={{
+                        display: 'inline-block',
+                        background: '#f0fdf4',
+                        color: '#166534',
+                        padding: '2px 8px',
+                        borderRadius: '4px',
+                        fontWeight: 600,
+                        fontSize: '12px',
+                        border: '1px solid #bbf7d0'
+                      }}>
+                        {product.factorConversion ? `${Number(product.factorConversion).toFixed(2)}x` : '1.00x'}
+                      </span>
+                      <small className="table-subtext" style={{ fontSize: '11px', display: 'block' }}>
+                        1 {product.buyUnit || 'CAJ'} = {product.factorConversion ? (Number(product.factorConversion) % 1 === 0 ? Number(product.factorConversion).toFixed(0) : Number(product.factorConversion).toFixed(2)) : 1} {product.sellUnit || 'BOT'}
+                      </small>
+                    </td>
                     <td>{product.shelf || '—'}</td>
                     <td>{money(product.cost)}</td>
                     <td style={{ fontWeight: 600, color: 'var(--primary)' }}>{money(product.price)}</td>
@@ -578,7 +643,7 @@ export const Catalog = () => {
               })}
               {!filteredProducts.length && (
                 <tr>
-                  <td className="empty-state" colSpan={12}>
+                  <td className="empty-state" colSpan={13}>
                     No hay productos que coincidan con el filtro.
                   </td>
                 </tr>
@@ -679,6 +744,24 @@ export const Catalog = () => {
                   {catalogs.unidadesMedida.map(u => <option key={u.id} value={u.id}>{u.id} · {u.nombre}</option>)}
                 </select>
               </label>
+
+              <div style={{
+                gridColumn: 'span 2',
+                background: '#f0fdf4',
+                border: '1px solid #bbf7d0',
+                borderRadius: '8px',
+                padding: '10px 14px',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '10px',
+                color: '#166534',
+                fontSize: '12px'
+              }}>
+                <Scale size={18} style={{ flexShrink: 0, color: '#15803d' }} />
+                <div>
+                  <strong>Factor de Conversión:</strong> 1 {editBuyUnit?.nombre || editForm.buyUnitId || 'Caja'} = <strong>{editRatio % 1 === 0 ? editRatio.toFixed(0) : editRatio.toFixed(2)} {editSellUnit?.nombre || editForm.sellUnitId || 'Botellas'}</strong> (Ratio: {editRatio.toFixed(2)}x)
+                </div>
+              </div>
 
               <label className="form-group">
                 <span>Valor / Costo compra ($) (pro_Valor_Compra)</span>
@@ -808,6 +891,11 @@ export const PurchaseOrders = () => {
   const [catalogs, setCatalogs] = useState<PurchaseCatalogs | null>(null);
   const [orders, setOrders] = useState<PurchaseOrderRecord[]>([]);
   const [supplierId, setSupplierId] = useState('');
+  const [deliveryDate, setDeliveryDate] = useState<string>(() => {
+    const d = new Date();
+    d.setDate(d.getDate() + 3);
+    return d.toISOString().split('T')[0];
+  });
   const [items, setItems] = useState<Array<{ productId: string; qty: number; cost: number }>>([]);
   const [notice, setNotice] = useState('');
   const [loading, setLoading] = useState(true);
@@ -853,6 +941,7 @@ export const PurchaseOrders = () => {
 
   const createOrder = async () => {
     if (!supplierId) return setNotice('Selecciona un proveedor para continuar.');
+    if (!deliveryDate) return setNotice('Por favor selecciona la fecha estimada de entrega (oc_FechaEntrega).');
     const selectedSupplier = catalogs?.proveedores.find(s => s.id === supplierId);
     if (selectedSupplier && selectedSupplier.estado !== 'ACT') {
       return setNotice('No se puede realizar una compra a un proveedor inactivo. Debes activarlo primero en el directorio de proveedores.');
@@ -863,7 +952,7 @@ export const PurchaseOrders = () => {
     try {
       const result = await purchaseApi.createOrder({
         idProveedor: supplierId,
-        fechaEntrega: null,
+        fechaEntrega: deliveryDate,
         tasaIVA: state.settings.taxRate,
         items: items.map(item => ({ idProducto: item.productId, cantidad: item.qty, costoUnitario: item.cost })),
       });
@@ -904,26 +993,129 @@ export const PurchaseOrders = () => {
     <div>
       <div className="page-heading"><div><span className="eyebrow">ABASTECIMIENTO</span><h1>Órdenes de compra</h1><p>Registro y seguimiento de órdenes de aprovisionamiento.</p></div></div>
       {loading && <p className="helper-text" role="status">Cargando órdenes de compra...</p>}
-      <section className="card"><h2 className="section-title">Nueva orden</h2>
-        <div className="grid-3"><label className="form-group">Proveedor<select className="select" value={supplierId} onChange={event => setSupplierId(event.target.value)} disabled={loading || saving}><option value="">-- Seleccione un proveedor --</option>{activeSuppliers.map(supplier => <option key={supplier.id} value={supplier.id}>{supplier.nombre}</option>)}</select></label>
-          {items.map((item, index) => <div className="purchase-line" key={index}>
-            <label className="form-group">Producto<select className="select" value={item.productId} onChange={event => updateItem(index, 'productId', event.target.value)} disabled={loading || saving}><option value="">-- Seleccione un producto --</option>{activeProducts.map(product => <option key={product.id} value={product.id}>{product.nombre}</option>)}</select></label>
-            <label className="form-group">Cantidad<input className="input" type="number" min="1" step="1" value={item.qty} onChange={event => updateItem(index, 'qty', event.target.value)} disabled={saving} /></label>
-            <label className="form-group">Costo unitario<input className="input" type="number" min="0" step="0.01" value={item.cost} onChange={event => updateItem(index, 'cost', event.target.value)} disabled={saving} /></label>
-            {items.length > 1 && <button type="button" className="icon-button" aria-label="Quitar producto de la orden" disabled={saving} onClick={() => setItems(previous => previous.filter((_, itemIndex) => itemIndex !== index))}><X size={16} /></button>}
-          </div>)}
+      <section className="card">
+        <h2 className="section-title">Nueva orden de compra</h2>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '16px', marginBottom: '20px' }}>
+          <label className="form-group">
+            <span>Proveedor <strong style={{ color: '#ef4444' }}>*</strong></span>
+            <select className="select" value={supplierId} onChange={event => setSupplierId(event.target.value)} disabled={loading || saving}>
+              <option value="">-- Seleccione un proveedor --</option>
+              {activeSuppliers.map(supplier => <option key={supplier.id} value={supplier.id}>{supplier.nombre}</option>)}
+            </select>
+          </label>
+          <label className="form-group">
+            <span>Fecha estimada de entrega (oc_FechaEntrega) <strong style={{ color: '#ef4444' }}>*</strong></span>
+            <input
+              type="date"
+              className="input"
+              value={deliveryDate}
+              min={new Date().toISOString().split('T')[0]}
+              onChange={event => setDeliveryDate(event.target.value)}
+              disabled={loading || saving}
+              required
+            />
+            <small style={{ fontSize: '11px', color: '#64748b' }}>Requerido para planificar la recepción en bodega</small>
+          </label>
         </div>
-        <div className="form-actions"><button type="button" className="btn btn-outline" disabled={loading || saving || !activeProducts.length} onClick={() => {
-          const product = activeProducts.find(candidate => !items.some(item => item.productId === candidate.id)) ?? activeProducts[0];
-          setItems(previous => [...previous, { productId: product?.id ?? '', qty: 1, cost: Number(product?.costo ?? 0) }]);
-        }}><Plus size={15} /> Añadir producto</button><button type="button" className="btn btn-primary" disabled={loading || saving || !activeSuppliers.length || !activeProducts.length} onClick={createOrder}>{saving ? 'Guardando...' : `Crear orden ABI · ${money(formSubtotal + formTax)}`}</button></div>
+
+        <div style={{ marginBottom: '16px' }}>
+          <h3 style={{ fontSize: '14px', fontWeight: 600, color: '#334155', marginBottom: '10px' }}>Productos a incluir en la orden:</h3>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+            {items.map((item, index) => (
+              <div className="purchase-line" key={index} style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1fr auto', gap: '12px', alignItems: 'end' }}>
+                <label className="form-group" style={{ margin: 0 }}>
+                  <span>Producto</span>
+                  <select className="select" value={item.productId} onChange={event => updateItem(index, 'productId', event.target.value)} disabled={loading || saving}>
+                    <option value="">-- Seleccione un producto --</option>
+                    {activeProducts.map(product => <option key={product.id} value={product.id}>{product.nombre}</option>)}
+                  </select>
+                </label>
+                <label className="form-group" style={{ margin: 0 }}>
+                  <span>Cantidad</span>
+                  <input className="input" type="number" min="1" step="1" value={item.qty} onChange={event => updateItem(index, 'qty', event.target.value)} disabled={saving} />
+                </label>
+                <label className="form-group" style={{ margin: 0 }}>
+                  <span>Costo unitario ($)</span>
+                  <input className="input" type="number" min="0" step="0.01" value={item.cost} onChange={event => updateItem(index, 'cost', event.target.value)} disabled={saving} />
+                </label>
+                {items.length > 1 && (
+                  <button type="button" className="icon-button" style={{ marginBottom: '4px' }} aria-label="Quitar producto de la orden" disabled={saving} onClick={() => setItems(previous => previous.filter((_, itemIndex) => itemIndex !== index))}>
+                    <X size={16} />
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="form-actions">
+          <button type="button" className="btn btn-outline" disabled={loading || saving || !activeProducts.length} onClick={() => {
+            const product = activeProducts.find(candidate => !items.some(item => item.productId === candidate.id)) ?? activeProducts[0];
+            setItems(previous => [...previous, { productId: product?.id ?? '', qty: 1, cost: Number(product?.costo ?? 0) }]);
+          }}><Plus size={15} /> Añadir producto</button>
+          <button type="button" className="btn btn-primary" disabled={loading || saving || !activeSuppliers.length || !activeProducts.length} onClick={createOrder}>
+            {saving ? 'Guardando...' : `Crear orden ABI · ${money(formSubtotal + formTax)}`}
+          </button>
+        </div>
         {catalogs && (!activeSuppliers.length || !activeProducts.length) && <p className="helper-text">Deben existir proveedores y productos activos para crear órdenes.</p>}
         {notice && <p className="form-notice" role="status">{notice}</p>}
       </section>
-      <section className="card"><h2 className="section-title">Historial de órdenes</h2><div className="table-scroll"><table><thead><tr><th>Orden</th><th>Fecha</th><th>Proveedor</th><th>Productos</th><th>Subtotal</th><th>IVA</th><th>Total</th><th>Estado</th><th>Acciones</th></tr></thead><tbody>
-        {orders.map(order => <tr key={order.id}><td>{order.id}</td><td>{new Date(order.fecha).toLocaleDateString('es-EC')}</td><td>{order.proveedor}</td><td>{order.items.map(item => `${item.producto} × ${item.cantidad}`).join(', ')}</td><td>{money(Number(order.subtotal))}</td><td>{money(Number(order.iva))}</td><td>{money(Number(order.total))}</td><td><span className={`badge badge-${order.estado}`}>{order.estado}</span></td><td>{order.estado === 'ABI' && <div className="inline-actions"><button type="button" className="btn btn-secondary" disabled={saving} onClick={() => void changeStatus(order.id, 'APR')}>Aprobar</button><button type="button" className="btn btn-outline" disabled={saving} onClick={() => void changeStatus(order.id, 'ANU')}>Anular</button></div>}</td></tr>)}
-        {!loading && !orders.length && <tr><td colSpan={9} className="empty-state">No hay órdenes registradas.</td></tr>}
-      </tbody></table></div>
+
+      <section className="card">
+        <h2 className="section-title">Historial de órdenes de compra</h2>
+        <div className="table-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th>Orden</th>
+                <th>Fecha Emisión</th>
+                <th>Fecha Entrega</th>
+                <th>Proveedor</th>
+                <th>Productos</th>
+                <th>Subtotal</th>
+                <th>IVA</th>
+                <th>Total</th>
+                <th>Estado</th>
+                <th>Acciones</th>
+              </tr>
+            </thead>
+            <tbody>
+              {orders.map(order => (
+                <tr key={order.id}>
+                  <td><code style={{ fontWeight: 600, color: 'var(--primary)' }}>{order.id}</code></td>
+                  <td>{new Date(order.fecha).toLocaleDateString('es-EC')}</td>
+                  <td>
+                    {order.fechaEntrega ? (
+                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', color: '#1e40af', fontWeight: 500 }}>
+                        <Calendar size={13} />
+                        {new Date(order.fechaEntrega).toLocaleDateString('es-EC')}
+                      </span>
+                    ) : (
+                      <span style={{ color: '#94a3b8' }}>—</span>
+                    )}
+                  </td>
+                  <td><strong>{order.proveedor}</strong></td>
+                  <td>{order.items.map(item => `${item.producto} × ${item.cantidad}`).join(', ')}</td>
+                  <td>{money(Number(order.subtotal))}</td>
+                  <td>{money(Number(order.iva))}</td>
+                  <td style={{ fontWeight: 600, color: 'var(--primary)' }}>{money(Number(order.total))}</td>
+                  <td><span className={`badge badge-${order.estado}`}>{order.estado}</span></td>
+                  <td>
+                    {order.estado === 'ABI' && (
+                      <div className="inline-actions">
+                        <button type="button" className="btn btn-secondary" disabled={saving} onClick={() => void changeStatus(order.id, 'APR')}>Aprobar</button>
+                        <button type="button" className="btn btn-outline" disabled={saving} onClick={() => void changeStatus(order.id, 'ANU')}>Anular</button>
+                      </div>
+                    )}
+                  </td>
+                </tr>
+              ))}
+              {!loading && !orders.length && (
+                <tr><td colSpan={10} className="empty-state">No hay órdenes registradas.</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
       </section>
     </div>
   );

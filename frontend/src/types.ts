@@ -21,9 +21,17 @@ export interface Product {
   sellUnit: string;
   sellUnitId?: string;
   purchaseFactor: number;
+  sellFactor?: number;
+  factorConversion?: number;
   shelf: string;
   shelfId?: string;
   status: RecordStatus;
+}
+
+export interface UnitOfMeasure {
+  id: string;
+  nombre: string;
+  factor: number;
 }
 
 export interface Customer {
