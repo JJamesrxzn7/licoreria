@@ -144,13 +144,7 @@ export const PayrollManagement: React.FC = () => {
     setSelectedDeductionId(dedId);
     const item = deductionCatalog.find(d => d.id === dedId);
     if (item) {
-      if (item.id === 'DES-000001' || item.nombre.includes('IESS')) {
-        // Cálculo automático aporte IESS 9.45%
-        const iessCalc = Number((baseSalary * 0.0945).toFixed(2));
-        setDeductionAmount(iessCalc);
-      } else {
-        setDeductionAmount(Number(item.valor || 0));
-      }
+      setDeductionAmount(Number(item.valor || 0));
     }
   };
 
