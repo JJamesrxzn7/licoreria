@@ -119,27 +119,25 @@ def get_user_id(cursor=None) -> str:
 
 
 def raise_database_error(error: mysql.connector.Error) -> None:
-    if error.errno == 1305:
-        raise HTTPException(
-            status_code=503,
-            detail=f"Falta instalar el procedimiento o vista requerido en MariaDB: {error.msg}",
-        ) from error
-    if error.errno == 1644:
-        raise HTTPException(status_code=409, detail=str(error.msg)) from error
+    logger.exception("Error de base de datos.")
     if error.errno in {1045, 2002, 2003, 2005}:
-        logger.error("No fue posible conectar con MariaDB: %s", error)
         raise HTTPException(
             status_code=503,
-            detail=f"No fue posible conectar con MariaDB en el puerto configurado. Detalle: {error.msg}",
+            detail="No se pudo conectar con el servidor de base de datos.",
         ) from error
-    if error.errno in {1062, 1452, 3819}:
+    if error.errno == 1062:
         raise HTTPException(
             status_code=409,
-            detail=f"Restricción de base de datos violada: {error.msg}",
+            detail="El registro ya existe.",
         ) from error
-    logger.exception("Error de base de datos no clasificado.")
+    if error.errno == 1452:
+        raise HTTPException(
+            status_code=409,
+            detail="No se puede completar la operación por dependencias relacionadas.",
+        ) from error
     raise HTTPException(
-        status_code=500, detail=f"Error en MariaDB: {error.msg}"
+        status_code=500,
+        detail="Ocurrió un error al procesar la solicitud.",
     ) from error
 
 

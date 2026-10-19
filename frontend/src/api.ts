@@ -66,15 +66,30 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       headers: { 'Content-Type': 'application/json', ...init?.headers },
     });
   } catch (error) {
-    throw new Error('No se pudo conectar con la API. Verifica que uvicorn esté corriendo en el puerto 8000.');
+    if (error instanceof Error && error.message.includes('fetch')) {
+      throw new Error('No se pudo conectar con el servidor.');
+    }
+    throw error;
   }
 
   const body: unknown = await response.json().catch(() => null);
   if (!response.ok) {
-    const detail = body && typeof body === 'object' && 'detail' in body
-      ? String(body.detail)
-      : `La API respondió con el estado ${response.status}.`;
-    throw new Error(detail);
+    const status = response.status;
+    let mensaje = 'Ocurrió un error inesperado.';
+    if (status === 401) {
+      mensaje = 'Credenciales inválidas.';
+    } else if (status === 403) {
+      mensaje = 'No tienes permiso para realizar esta acción.';
+    } else if (status === 404) {
+      mensaje = 'El recurso solicitado no existe.';
+    } else if (status === 409) {
+      mensaje = 'Conflicto al procesar la solicitud.';
+    } else if (status >= 500) {
+      mensaje = 'Error interno del servidor. Intenta nuevamente más tarde.';
+    } else if (status === 0) {
+      mensaje = 'No se pudo conectar con el servidor.';
+    }
+    throw new Error(mensaje);
   }
   return body as T;
 }

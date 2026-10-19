@@ -39,12 +39,11 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         localStorage.setItem('licoreria_token', response.token);
         localStorage.setItem('licoreria_user', JSON.stringify(response.user));
       } else {
-        throw new Error('Respuesta inválida del servidor');
+        throw new Error('No se pudo iniciar sesión.');
       }
-    } catch (err: any) {
-      const msg = err?.message || 'Error al iniciar sesión';
-      setError(msg);
-      throw err;
+    } catch {
+      setError('Credenciales inválidas o error de conexión.');
+      throw new Error('Credenciales inválidas o error de conexión.');
     } finally {
       setIsLoading(false);
     }

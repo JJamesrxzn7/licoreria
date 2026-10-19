@@ -21,8 +21,8 @@ export default function Login() {
     setLoginError(null);
     try {
       await login(username, password);
-    } catch (err: any) {
-      setLoginError(err?.message || 'Credenciales inválidas. Intenta nuevamente.');
+    } catch {
+      setLoginError('Credenciales inválidas o error de conexión.');
     }
   };
 
