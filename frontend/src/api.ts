@@ -81,9 +81,29 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const body: unknown = await response.json().catch(() => null);
   if (!response.ok) {
     const status = response.status;
-    let mensaje = body && typeof body === 'object' && 'detail' in body && typeof body.detail === 'string'
-      ? body.detail
-      : 'Ocurrió un error inesperado.';
+    let mensaje = 'Ocurrió un error inesperado.';
+    if (body && typeof body === 'object' && 'detail' in body) {
+      if (typeof body.detail === 'string') {
+        mensaje = body.detail;
+      } else if (Array.isArray(body.detail)) {
+        const validationMessages = body.detail.flatMap((issue: unknown) => {
+          if (!issue || typeof issue !== 'object') return [];
+          const validationIssue = issue as { loc?: unknown; msg?: unknown };
+          if (typeof validationIssue.msg !== 'string') return [];
+          const location = Array.isArray(validationIssue.loc)
+            ? validationIssue.loc
+              .filter((part): part is string | number => typeof part === 'string' || typeof part === 'number')
+              .filter(part => part !== 'body')
+              .map(String)
+              .join('.')
+            : '';
+          return [location ? `${location}: ${validationIssue.msg}` : validationIssue.msg];
+        });
+        if (validationMessages.length > 0) {
+          mensaje = validationMessages.join(' · ');
+        }
+      }
+    }
     if (status === 401) {
       mensaje = mensaje === 'Ocurrió un error inesperado.' ? 'Credenciales inválidas o sesión expirada.' : mensaje;
     } else if (status === 403) {
