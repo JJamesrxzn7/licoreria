@@ -3,6 +3,7 @@ import { AlertCircle, Edit3, Eye, EyeOff, RefreshCw, Shield, Trash2, UserPlus } 
 import { useAuth } from '../context/AuthContext';
 import { rolesApi, usuariosApi } from '../api';
 import type { Rol, Usuario, UsuarioRol } from '../api';
+import { PaginationControls, usePagination } from '../components/Pagination';
 
 type UsuariosProps = {
   onCreate: () => void;
@@ -24,6 +25,7 @@ export default function Usuarios({ onCreate }: UsuariosProps) {
   const [passwordEdit, setPasswordEdit] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
+  const pagination = usePagination(usuarios);
 
   const cargarUsuarios = useCallback(async () => {
     setLoading(true);
@@ -193,7 +195,7 @@ export default function Usuarios({ onCreate }: UsuariosProps) {
               <tr><td colSpan={6}>Cargando usuarios...</td></tr>
             ) : usuarios.length === 0 ? (
               <tr><td colSpan={6}>No hay usuarios registrados.</td></tr>
-            ) : usuarios.map(usuario => (
+            ) : pagination.pageItems.map(usuario => (
               <tr key={usuario.id_Usuario}>
                 <td>{usuario.username}</td>
                 <td>{[usuario.emp_Nombre1, usuario.emp_Apellido1].filter(Boolean).join(' ') || '-'}</td>
@@ -250,6 +252,14 @@ export default function Usuarios({ onCreate }: UsuariosProps) {
           </tbody>
         </table>
       </div>
+      <PaginationControls
+        page={pagination.page}
+        pageCount={pagination.pageCount}
+        firstItem={pagination.firstItem}
+        lastItem={pagination.lastItem}
+        totalItems={usuarios.length}
+        onPageChange={pagination.setPage}
+      />
 
       {viewingRoles && (
         <div className="modal-backdrop" onClick={cerrarRoles}>

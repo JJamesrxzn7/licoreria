@@ -2,11 +2,13 @@ import React, { useEffect, useState } from 'react';
 import { Scale, Plus, Edit3, Trash2, CheckCircle2, AlertCircle, X, HelpCircle } from 'lucide-react';
 import { unitApi } from '../api';
 import { UnitOfMeasure } from '../types';
+import { PaginationControls, usePagination } from '../components/Pagination';
 
 const RE_SQLI = /(--|\/\*|\*\/|;|'|"|<script|UNION\s+SELECT|INSERT\s+INTO|UPDATE\s+\w+\s+SET|DELETE\s+FROM|DROP\s+TABLE|ALTER\s+TABLE|TRUNCATE\s+TABLE|EXEC\s*\()/i;
 
 export const UnitsOfMeasure: React.FC = () => {
   const [units, setUnits] = useState<UnitOfMeasure[]>([]);
+  const pagination = usePagination(units);
   const [loading, setLoading] = useState(false);
   const [notice, setNotice] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
 
@@ -264,7 +266,7 @@ export const UnitsOfMeasure: React.FC = () => {
               </tr>
             </thead>
             <tbody>
-              {units.map(unit => (
+              {pagination.pageItems.map(unit => (
                 <tr key={unit.id}>
                   <td>
                     <code style={{ fontSize: '0.95rem', fontWeight: 700, color: '#4338ca', background: '#e0e7ff', padding: '3px 8px', borderRadius: '4px' }}>
@@ -318,6 +320,14 @@ export const UnitsOfMeasure: React.FC = () => {
             </tbody>
           </table>
         </div>
+        <PaginationControls
+          page={pagination.page}
+          pageCount={pagination.pageCount}
+          firstItem={pagination.firstItem}
+          lastItem={pagination.lastItem}
+          totalItems={units.length}
+          onPageChange={pagination.setPage}
+        />
       </section>
 
       {/* Modal Edición de Unidad */}
@@ -420,4 +430,3 @@ export const UnitsOfMeasure: React.FC = () => {
     </div>
   );
 };
-

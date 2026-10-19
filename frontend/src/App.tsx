@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import {
   Bell, BookOpen, Briefcase, Calculator, FileText, LayoutDashboard, Menu,
   PanelLeftClose, PanelLeftOpen, ShoppingCart, Truck, Users, Wine, X,
-  Building2, PieChart, Scale, LogOut, ChevronDown
+  Building2, PieChart, Scale, LogOut, ChevronDown, ClipboardList
 } from 'lucide-react';
 import { StoreProvider } from './context';
 import { AuthProvider, useAuth } from './context/AuthContext';
@@ -10,6 +10,7 @@ import Login from './pages/Login';
 import Registro from './pages/Registro';
 import InitialSetup from './pages/InitialSetup';
 import Usuarios from './pages/Usuarios';
+import AuditLogs from './pages/AuditLogs';
 import { POS } from './pages/POS';
 import { Customers, Dashboard, EmployeeFile, PayrollManagement, Suppliers } from './pages/CorePages';
 import { Adjustments, Catalog, Deliveries, PurchaseOrders, Receptions } from './pages/InventoryPages';
@@ -35,10 +36,15 @@ const navItems = [
   { id: 'cost_centers', label: 'Centros de costos', icon: PieChart, group: 'ADMINISTRACIÓN' },
   { id: 'reports', label: 'Reportes', icon: FileText, group: 'ADMINISTRACIÓN' },
   { id: 'usuarios', label: 'Usuarios', icon: Users, group: 'ADMINISTRACIÓN' },
+  { id: 'audit', label: 'Auditoría', icon: ClipboardList, group: 'ADMINISTRACIÓN' },
 ];
 
 const AppContent = () => {
   const { user, isAuthenticated, logout, isLoading } = useAuth();
+  const isAdministrator = Boolean(
+    user?.roleIds.includes('ROL-ADMIN')
+      || user?.roles.some(role => ['admin', 'administrador', 'superadministrador'].includes(role.trim().toLowerCase())),
+  );
   const [hashRoute, setHashRoute] = useState(() => window.location.hash.replace('#/', ''));
   const [currentRoute, setCurrentRoute] = useState(() => {
     const initialRoute = window.location.hash.replace('#/', '');
@@ -106,7 +112,9 @@ const AppContent = () => {
 
   const activePage = navItems.find(item => item.id === currentRoute);
 
-  const allowedNavItems = navItems.filter(item => user?.allowedRoutes.includes(item.id));
+  const allowedNavItems = navItems.filter(item =>
+    user?.allowedRoutes.includes(item.id) && (item.id !== 'audit' || isAdministrator),
+  );
   const allowedGroups = [...new Set(allowedNavItems.map(item => item.group))];
 
   const navigate = (route: string) => {
@@ -142,6 +150,7 @@ const AppContent = () => {
     reports: <Reports />,
     usuarios: <Usuarios onCreate={() => navigate('registro')} />,
     registro: <Registro onBack={() => navigate('usuarios')} />,
+    audit: <AuditLogs />,
   };
 
   return (

@@ -507,16 +507,18 @@ export const accountingApi = {
 };
 
 // 9. Auditoría
+export interface AuditLogEntry {
+  id: string;
+  usuario: string;
+  fechaHora: string;
+  tabla: string;
+  accion: string;
+  valorAnterior: string | null;
+  valorNuevo: string | null;
+}
+
 export const auditApi = {
-  listLogs: () => request<Array<{
-    id: string;
-    usuario: string;
-    fechaHora: string;
-    tabla: string;
-    accion: string;
-    valorAnterior: string | null;
-    valorNuevo: string | null;
-  }>>('/api/auditoria'),
+  listLogs: () => request<AuditLogEntry[]>('/api/auditoria'),
 };
 
 // 10. Autenticación

@@ -3,6 +3,7 @@ import { Calendar, Check, CheckCircle2, Edit3, Plus, Save, Scale, Search, Trash2
 import { useGlobalStore } from '../context';
 import { catalogApi, productApi, purchaseApi, warehouseApi, GeneralCatalogs, PurchaseCatalogs, PurchaseOrderRecord } from '../api';
 import { Adjustment, Delivery, Product, Reception } from '../types';
+import { PaginationControls, usePagination } from '../components/Pagination';
 
 const money = (value: number) => `$${value.toFixed(2)}`;
 const RE_SQLI = /(\b(UNION|SELECT|INSERT|UPDATE|DELETE|DROP|ALTER|TRUNCATE|EXEC|EXECUTE)\b|--|\/\*|\*\/|;|'|"|<script)/i;
@@ -89,6 +90,7 @@ export const Catalog = () => {
           .includes(search.toLowerCase())
       );
   }, [state.products, search, statusFilter]);
+  const productPagination = usePagination(filteredProducts, `${search}:${statusFilter}`);
 
   const nextProductId = useMemo(() => {
     let maxNum = 0;
@@ -537,7 +539,7 @@ export const Catalog = () => {
               </tr>
             </thead>
             <tbody>
-              {filteredProducts.map(product => {
+              {productPagination.pageItems.map(product => {
                 const isLow = product.stock <= (product.minStock || 0) && product.stock > 0;
                 const isZero = product.stock === 0;
                 return (
@@ -632,6 +634,7 @@ export const Catalog = () => {
             </tbody>
           </table>
         </div>
+        <PaginationControls page={productPagination.page} pageCount={productPagination.pageCount} firstItem={productPagination.firstItem} lastItem={productPagination.lastItem} totalItems={filteredProducts.length} onPageChange={productPagination.setPage} />
       </section>
 
       {/* Modal de Edición de Producto */}
@@ -871,6 +874,7 @@ export const PurchaseOrders = () => {
   const { state } = useGlobalStore();
   const [catalogs, setCatalogs] = useState<PurchaseCatalogs | null>(null);
   const [orders, setOrders] = useState<PurchaseOrderRecord[]>([]);
+  const ordersPagination = usePagination(orders);
   const [supplierId, setSupplierId] = useState('');
   const [deliveryDate, setDeliveryDate] = useState<string>(() => {
     const d = new Date();
@@ -1116,7 +1120,7 @@ export const PurchaseOrders = () => {
               </tr>
             </thead>
             <tbody>
-              {orders.map(order => (
+              {ordersPagination.pageItems.map(order => (
                 <tr key={order.id}>
                   <td><code style={{ fontWeight: 600, color: 'var(--primary)' }}>{order.id}</code></td>
                   <td>{new Date(order.fecha).toLocaleDateString('es-EC')}</td>
@@ -1179,6 +1183,7 @@ export const PurchaseOrders = () => {
             </tbody>
           </table>
         </div>
+        <PaginationControls page={ordersPagination.page} pageCount={ordersPagination.pageCount} firstItem={ordersPagination.firstItem} lastItem={ordersPagination.lastItem} totalItems={orders.length} onPageChange={ordersPagination.setPage} />
       </section>
 
       {/* Modal de confirmación para Aprobar / Anular Orden de Compra */}
@@ -1232,6 +1237,7 @@ export const PurchaseOrders = () => {
 
 export const Receptions = () => {
   const { state, updateState } = useGlobalStore();
+  const receptionsPagination = usePagination(state.receptions);
   const [quantities, setQuantities] = useState<Record<string, Record<string, string>>>({});
   const [reasons, setReasons] = useState<Record<string, Record<string, string>>>({});
   const [notice, setNotice] = useState('');
@@ -1341,9 +1347,9 @@ export const Receptions = () => {
         <button type="button" className="btn btn-primary" onClick={() => initiateReception(reception)}>Registrar cantidades recibidas</button>
       </section>)}
       <section className="card"><div className="section-heading"><div><h2>Historial de recepciones</h2><p>Recepciones procesadas y pendientes.</p></div></div><div className="table-scroll"><table><thead><tr><th>Recepción</th><th>Orden</th><th>Fecha</th><th>Estado</th><th>Detalle</th></tr></thead><tbody>
-        {state.receptions.map(reception => <tr key={reception.id}><td>{reception.id}</td><td>{reception.poId}</td><td>{new Date(reception.date).toLocaleDateString('es-EC')}</td><td><span className={`badge badge-${reception.status}`}>{reception.status}</span></td><td>{reception.items.map(item => `${item.productId}: ${item.receivedQty}/${item.expectedQty}`).join(' · ')}</td></tr>)}
+        {receptionsPagination.pageItems.map(reception => <tr key={reception.id}><td>{reception.id}</td><td>{reception.poId}</td><td>{new Date(reception.date).toLocaleDateString('es-EC')}</td><td><span className={`badge badge-${reception.status}`}>{reception.status}</span></td><td>{reception.items.map(item => `${item.productId}: ${item.receivedQty}/${item.expectedQty}`).join(' · ')}</td></tr>)}
         {!state.receptions.length && <tr><td colSpan={5} className="empty-state">Las órdenes aprobadas generarán recepciones aquí.</td></tr>}
-      </tbody></table></div></section>
+      </tbody></table></div><PaginationControls page={receptionsPagination.page} pageCount={receptionsPagination.pageCount} firstItem={receptionsPagination.firstItem} lastItem={receptionsPagination.lastItem} totalItems={state.receptions.length} onPageChange={receptionsPagination.setPage} /></section>
 
       {/* Modal de Confirmación de Recepción */}
       {confirmModal && (
@@ -1402,6 +1408,7 @@ export const Receptions = () => {
 
 export const Deliveries = () => {
   const { state, updateState } = useGlobalStore();
+  const deliveriesPagination = usePagination(state.deliveries);
   const [quantities, setQuantities] = useState<Record<string, Record<string, string>>>({});
   const [reasons, setReasons] = useState<Record<string, Record<string, string>>>({});
   const [notice, setNotice] = useState('');
@@ -1513,9 +1520,9 @@ export const Deliveries = () => {
         </section>;
       })}
       <section className="card"><div className="section-heading"><div><h2>Historial de entregas</h2><p>Despachos registrados desde el punto de venta.</p></div></div><div className="table-scroll"><table><thead><tr><th>Entrega</th><th>Factura</th><th>Cliente</th><th>Fecha</th><th>Estado</th><th>Detalle</th></tr></thead><tbody>
-        {state.deliveries.map(delivery => <tr key={delivery.id}><td>{delivery.id}</td><td>{delivery.invoiceId}</td><td>{delivery.invoiceId}</td><td>{new Date(delivery.date).toLocaleDateString('es-EC')}</td><td><span className={`badge badge-${delivery.status}`}>{delivery.status}</span></td><td>{delivery.items.map(item => `${item.productId}: ${item.deliveredQty}/${item.expectedQty}`).join(' · ')}</td></tr>)}
+        {deliveriesPagination.pageItems.map(delivery => <tr key={delivery.id}><td>{delivery.id}</td><td>{delivery.invoiceId}</td><td>{delivery.invoiceId}</td><td>{new Date(delivery.date).toLocaleDateString('es-EC')}</td><td><span className={`badge badge-${delivery.status}`}>{delivery.status}</span></td><td>{delivery.items.map(item => `${item.productId}: ${item.deliveredQty}/${item.expectedQty}`).join(' · ')}</td></tr>)}
         {!state.deliveries.length && <tr><td colSpan={6} className="empty-state">Las facturas aprobadas en el POS generarán órdenes de entrega aquí.</td></tr>}
-      </tbody></table></div></section>
+      </tbody></table></div><PaginationControls page={deliveriesPagination.page} pageCount={deliveriesPagination.pageCount} firstItem={deliveriesPagination.firstItem} lastItem={deliveriesPagination.lastItem} totalItems={state.deliveries.length} onPageChange={deliveriesPagination.setPage} /></section>
 
       {/* Modal de Confirmación de Despacho */}
       {confirmModal && (
@@ -1574,6 +1581,7 @@ export const Deliveries = () => {
 
 export const Adjustments = () => {
   const { state, updateState } = useGlobalStore();
+  const adjustmentsPagination = usePagination(state.adjustments);
   const [form, setForm] = useState({ type: 'OUT' as Adjustment['type'], productId: '', qty: 1, reason: '', responsible: 'EMP-000001' });
   const [notice, setNotice] = useState('');
   const [actionModal, setActionModal] = useState<{
@@ -1683,9 +1691,9 @@ export const Adjustments = () => {
       </div></section>
       {notice && <p className="form-notice" role="status">{notice}</p>}
       <section className="card"><h2 className="section-title">Historial de ajustes</h2><div className="table-scroll"><table><thead><tr><th>Fecha</th><th>Producto</th><th>Tipo</th><th>Cantidad</th><th>Responsable</th><th>Motivo</th><th>Estado</th><th>Acciones</th></tr></thead><tbody>
-        {state.adjustments.map(adjustment => <tr key={adjustment.id}><td>{new Date(adjustment.date).toLocaleDateString('es-EC')}</td><td>{state.products.find(product => product.id === adjustment.productId)?.name ?? adjustment.productId}</td><td>{adjustment.type === 'IN' ? 'Ingreso' : 'Egreso'}</td><td>{adjustment.qty}</td><td>{adjustment.responsible}</td><td>{adjustment.reason}</td><td><span className={`badge badge-${adjustment.status}`}>{adjustment.status}</span></td><td>{adjustment.status === 'ABI' && <div className="inline-actions"><button className="btn btn-secondary" type="button" onClick={() => askAction(adjustment, 'APR')}>Aprobar</button><button className="btn btn-outline" type="button" onClick={() => askAction(adjustment, 'ANU')}>Anular</button></div>}</td></tr>)}
+        {adjustmentsPagination.pageItems.map(adjustment => <tr key={adjustment.id}><td>{new Date(adjustment.date).toLocaleDateString('es-EC')}</td><td>{state.products.find(product => product.id === adjustment.productId)?.name ?? adjustment.productId}</td><td>{adjustment.type === 'IN' ? 'Ingreso' : 'Egreso'}</td><td>{adjustment.qty}</td><td>{adjustment.responsible}</td><td>{adjustment.reason}</td><td><span className={`badge badge-${adjustment.status}`}>{adjustment.status}</span></td><td>{adjustment.status === 'ABI' && <div className="inline-actions"><button className="btn btn-secondary" type="button" onClick={() => askAction(adjustment, 'APR')}>Aprobar</button><button className="btn btn-outline" type="button" onClick={() => askAction(adjustment, 'ANU')}>Anular</button></div>}</td></tr>)}
         {!state.adjustments.length && <tr><td colSpan={8} className="empty-state">No hay ajustes registrados.</td></tr>}
-      </tbody></table></div></section>
+      </tbody></table></div><PaginationControls page={adjustmentsPagination.page} pageCount={adjustmentsPagination.pageCount} firstItem={adjustmentsPagination.firstItem} lastItem={adjustmentsPagination.lastItem} totalItems={state.adjustments.length} onPageChange={adjustmentsPagination.setPage} /></section>
 
       {/* Modal de Confirmación de Acción para Ajuste */}
       {actionModal && (

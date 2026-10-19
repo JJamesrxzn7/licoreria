@@ -774,6 +774,24 @@ tbody tr:hover { background: #fbfaf7; }
   gap: 10px;
 }
 
+.audit-toolbar { align-items: center; }
+.audit-toolbar h2 { display: flex; align-items: center; gap: 8px; }
+.audit-search { width: min(360px, 100%); }
+.audit-table { min-width: 900px; }
+.audit-action { display: inline-flex; padding: 4px 7px; border-radius: 14px; background: #eef3ef; color: var(--verde-oscuro); font-size: 10px; font-weight: 700; }
+.audit-value { max-width: 260px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-family: 'DM Sans', 'Segoe UI', sans-serif; font-size: 11px !important; }
+.pagination-controls { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 2px 0; color: var(--text-muted); font-size: 11px; }
+.pagination-buttons { display: flex; align-items: center; gap: 10px; }
+.pagination-button { display: inline-flex; align-items: center; justify-content: center; gap: 4px; min-height: 32px; padding: 0 10px; border: 1px solid var(--border); border-radius: 7px; background: white; color: var(--text-dark); font-size: 11px; cursor: pointer; }
+.pagination-button:hover:not(:disabled) { border-color: #b8c9bf; background: #f6f8f5; }
+.pagination-button:disabled { opacity: .45; cursor: not-allowed; }
+.pagination-page { min-width: 85px; text-align: center; }
+
+@media (max-width: 560px) {
+  .pagination-controls { align-items: flex-start; flex-direction: column; }
+  .pagination-buttons { width: 100%; justify-content: space-between; }
+}
+
 .table-container {
   overflow-x: auto;
   border: 1px solid var(--border);

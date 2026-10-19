@@ -3,6 +3,7 @@ import { ArrowDownToLine, ArrowUpRight, CheckCircle2, Edit3, Plus, Power, Save, 
 import { useGlobalStore } from '../context';
 import { catalogApi, customerApi, purchaseApi, supplierApi } from '../api';
 import { Customer, Supplier } from '../types';
+import { PaginationControls, usePagination } from '../components/Pagination';
 
 const money = (value: number) => `$${value.toFixed(2)}`;
 
@@ -109,6 +110,7 @@ export const Customers = () => {
   }, []);
 
   const visibleCustomers = state.customers.filter(customer => `${customer.name} ${customer.ciRuc} ${customer.city}`.toLowerCase().includes(search.toLowerCase()));
+  const customerPagination = usePagination(visibleCustomers, search);
 
   const save = async () => {
     if (!form.name?.trim() || !form.ciRuc?.trim()) return setNotice('Ingresa nombre e identificación.');
@@ -175,8 +177,9 @@ export const Customers = () => {
       </section>
       <section className="card"><div className="section-heading"><div><h2>Directorio</h2><p>{visibleCustomers.length} registros</p></div><input className="input table-search" aria-label="Buscar clientes" placeholder="Buscar nombre, identificación o ciudad" value={search} onChange={event => setSearch(event.target.value)} /></div>
         <div className="table-scroll"><table><thead><tr><th>Identificación</th><th>Cliente</th><th>Tipo</th><th>Contacto</th><th>Ciudad</th><th>Crédito disponible</th><th>Descuento</th><th>Estado</th></tr></thead>
-          <tbody>{visibleCustomers.map(customer => <tr key={customer.id}><td>{customer.ciRuc}</td><td>{customer.name}</td><td>{customer.type}</td><td>{customer.contact || '—'}</td><td>{customer.city || '—'}</td><td>{money(Math.max(customer.creditLimit - customer.creditUsed, 0))}</td><td>{customer.discountRate}%</td><td><span className={`badge badge-${customer.status === 'ACTIVE' ? 'active' : 'inactive'}`}>{customer.status === 'ACTIVE' ? 'Activo' : 'Inactivo'}</span></td></tr>)}</tbody>
+          <tbody>{customerPagination.pageItems.map(customer => <tr key={customer.id}><td>{customer.ciRuc}</td><td>{customer.name}</td><td>{customer.type}</td><td>{customer.contact || '—'}</td><td>{customer.city || '—'}</td><td>{money(Math.max(customer.creditLimit - customer.creditUsed, 0))}</td><td>{customer.discountRate}%</td><td><span className={`badge badge-${customer.status === 'ACTIVE' ? 'active' : 'inactive'}`}>{customer.status === 'ACTIVE' ? 'Activo' : 'Inactivo'}</span></td></tr>)}</tbody>
         </table></div>
+        <PaginationControls page={customerPagination.page} pageCount={customerPagination.pageCount} firstItem={customerPagination.firstItem} lastItem={customerPagination.lastItem} totalItems={visibleCustomers.length} onPageChange={customerPagination.setPage} />
       </section>
     </div>
   );
@@ -622,6 +625,7 @@ export const Suppliers = ({ onNavigate }: { onNavigate?: (route: string) => void
       const numB = parseInt(b.id?.match(/(\d+)/)?.[1] || '0', 10);
       return numB - numA;
     });
+  const supplierPagination = usePagination(visibleSuppliers, `${search}:${statusFilter}`);
 
   const activeCount = state.suppliers.filter(s => (s.status ?? 'ACTIVE') === 'ACTIVE').length;
   const inactiveCount = state.suppliers.filter(s => s.status === 'INACTIVE').length;
@@ -825,7 +829,7 @@ export const Suppliers = ({ onNavigate }: { onNavigate?: (route: string) => void
               </tr>
             </thead>
             <tbody>
-              {visibleSuppliers.map(supplier => {
+              {supplierPagination.pageItems.map(supplier => {
                 const isActive = (supplier.status ?? 'ACTIVE') === 'ACTIVE';
                 return (
                   <tr key={supplier.id} style={{ opacity: isActive ? 1 : 0.65 }}>
@@ -896,6 +900,7 @@ export const Suppliers = ({ onNavigate }: { onNavigate?: (route: string) => void
             </tbody>
           </table>
         </div>
+        <PaginationControls page={supplierPagination.page} pageCount={supplierPagination.pageCount} firstItem={supplierPagination.firstItem} lastItem={supplierPagination.lastItem} totalItems={visibleSuppliers.length} onPageChange={supplierPagination.setPage} />
       </section>
 
       {/* Modal de Edición de Proveedor */}

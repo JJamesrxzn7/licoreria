@@ -4284,35 +4284,6 @@ def anular_asiento(asiento_id: str):
 # 10. AUDITORÍA Y BITÁCORA EN VIVO
 # ==========================================
 
-@app.get("/api/auditoria")
-def listar_auditoria():
-    conn, cur = None, None
-    try:
-        conn = mysql.connector.connect(**get_db_config())
-        cur = conn.cursor(dictionary=True)
-        cur.execute(
-            """
-            SELECT 
-                TRIM(id_Log) AS id,
-                TRIM(id_Usuario) AS usuario,
-                log_FechaHora AS fechaHora,
-                TRIM(log_TablaAfectada) AS tabla,
-                TRIM(log_Accion) AS accion,
-                log_ValorAnterior AS valorAnterior,
-                log_ValorNuevo AS valorNuevo
-            FROM LOG_AUDITORIA
-            ORDER BY log_FechaHora DESC
-            LIMIT 50
-            """
-        )
-        return cur.fetchall()
-    except mysql.connector.Error as error:
-        raise_database_error(error)
-    finally:
-        if cur: cur.close()
-        if conn and conn.is_connected(): conn.close()
-
-
 # ==========================================
 # 11. AUTENTICACIÓN, ROLES Y CONTROL DE ACCESO (RBAC)
 # ==========================================
@@ -4656,6 +4627,71 @@ def require_user_manager(user_id: str = Depends(get_authenticated_user)) -> str:
         if conn and conn.is_connected():
             conn.close()
 
+
+def require_administrator(user_id: str = Depends(get_authenticated_user)) -> str:
+    conn, cur = None, None
+    try:
+        conn = mysql.connector.connect(**get_db_config())
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT 1
+            FROM USUARIOSxROLES ur
+            JOIN ROLES r ON r.id_Rol = ur.id_Rol
+            WHERE ur.id_Usuario = %s
+              AND ur.ESTADO_UxR = 'ACT'
+              AND r.ESTADO_ROL = 'ACT'
+              AND (
+                  r.id_Rol = 'ROL-ADMIN'
+                  OR LOWER(TRIM(r.rol_Nombre)) IN ('admin', 'administrador', 'superadministrador')
+              )
+            LIMIT 1
+            """,
+            (user_id,),
+        )
+        if not cur.fetchone():
+            raise HTTPException(status_code=403, detail="No tienes permiso para consultar la auditoría.")
+        return user_id
+    except mysql.connector.Error as error:
+        raise_database_error(error)
+    finally:
+        if cur:
+            cur.close()
+        if conn and conn.is_connected():
+            conn.close()
+
+
+@app.get("/api/auditoria")
+def listar_auditoria(_: str = Depends(require_administrator)):
+    conn, cur = None, None
+    try:
+        conn = mysql.connector.connect(**get_db_config())
+        cur = conn.cursor(dictionary=True)
+        cur.execute(
+            """
+            SELECT
+                TRIM(id_Log) AS id,
+                TRIM(id_Usuario) AS usuario,
+                log_FechaHora AS fechaHora,
+                TRIM(log_TablaAfectada) AS tabla,
+                TRIM(log_Accion) AS accion,
+                log_ValorAnterior AS valorAnterior,
+                log_ValorNuevo AS valorNuevo
+            FROM LOG_AUDITORIA
+            ORDER BY log_FechaHora DESC
+            LIMIT 100
+            """
+        )
+        return cur.fetchall()
+    except mysql.connector.Error as error:
+        raise_database_error(error)
+    finally:
+        if cur:
+            cur.close()
+        if conn and conn.is_connected():
+            conn.close()
+
+
 PERMISSION_TO_ROUTES_MAP = {
     "PRM-DASH": ["dashboard"],
     "PRM-POS": ["pos"],
@@ -4679,7 +4715,7 @@ PERMISSION_TO_ROUTES_MAP = {
 ALL_FRONTEND_ROUTES = [
     "dashboard", "pos", "sales", "customers", "adjustments",
     "receptions", "deliveries", "pos_orders", "suppliers",
-    "products", "units", "employees", "payroll",
+    "products", "units", "employees", "payroll", "audit",
     "accounting", "bancos", "cost_centers", "reports", "usuarios"
 ]
 

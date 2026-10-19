@@ -6,6 +6,7 @@ import {
 import { useGlobalStore } from '../context';
 import { Employee, Dependent, CargoHistoryEntry } from '../types';
 import { hrApi } from '../api';
+import { PaginationControls, usePagination } from '../components/Pagination';
 
 const money = (val: number | string | undefined) =>
   `$${Number(val || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -52,6 +53,8 @@ export const EmployeeFile: React.FC = () => {
   // Sub-listas del empleado seleccionado
   const [cargosHistory, setCargosHistory] = useState<CargoHistoryEntry[]>([]);
   const [dependents, setDependents] = useState<Dependent[]>([]);
+  const cargoHistoryPagination = usePagination(cargosHistory, selectedEmpId);
+  const dependentsPagination = usePagination(dependents, selectedEmpId);
 
   // Notificaciones
   const [notice, setNotice] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
@@ -1043,7 +1046,7 @@ export const EmployeeFile: React.FC = () => {
                       </tr>
                     </thead>
                     <tbody>
-                      {cargosHistory.map((ch, idx) => (
+                      {cargoHistoryPagination.pageItems.map((ch, idx) => (
                         <tr key={idx}>
                           <td><strong>{ch.cargoNombre}</strong></td>
                           <td><code>{ch.cargoId}</code></td>
@@ -1061,6 +1064,7 @@ export const EmployeeFile: React.FC = () => {
                     </tbody>
                   </table>
                 </div>
+                <PaginationControls page={cargoHistoryPagination.page} pageCount={cargoHistoryPagination.pageCount} firstItem={cargoHistoryPagination.firstItem} lastItem={cargoHistoryPagination.lastItem} totalItems={cargosHistory.length} onPageChange={cargoHistoryPagination.setPage} />
               </div>
             )}
 
@@ -1236,7 +1240,7 @@ export const EmployeeFile: React.FC = () => {
                       </tr>
                     </thead>
                     <tbody>
-                      {dependents.map((dep, idx) => (
+                      {dependentsPagination.pageItems.map((dep, idx) => (
                         <tr key={dep.id || idx}>
                           <td><strong>{dep.ci}</strong></td>
                           <td>{dep.name || `${dep.nombre1} ${dep.apellido1}`}</td>
@@ -1281,6 +1285,7 @@ export const EmployeeFile: React.FC = () => {
                     </tbody>
                   </table>
                 </div>
+                <PaginationControls page={dependentsPagination.page} pageCount={dependentsPagination.pageCount} firstItem={dependentsPagination.firstItem} lastItem={dependentsPagination.lastItem} totalItems={dependents.length} onPageChange={dependentsPagination.setPage} />
               </div>
             )}
           </section>

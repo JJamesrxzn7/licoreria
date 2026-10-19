@@ -6,6 +6,7 @@ import {
 import { useGlobalStore } from '../context';
 import { Payroll, Employee, BonusCatalogItem, DeductionCatalogItem } from '../types';
 import { hrApi } from '../api';
+import { PaginationControls, usePagination } from '../components/Pagination';
 
 const money = (val: number | string | undefined) =>
   `$${Number(val || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -30,6 +31,7 @@ export const PayrollManagement: React.FC = () => {
   const [employees, setEmployees] = useState<Employee[]>(state.employees);
   const [bonusCatalog, setBonusCatalog] = useState<BonusCatalogItem[]>([]);
   const [deductionCatalog, setDeductionCatalog] = useState<DeductionCatalogItem[]>([]);
+  const payrollPagination = usePagination(payrolls);
 
   // Notificaciones
   const [notice, setNotice] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
@@ -715,7 +717,7 @@ export const PayrollManagement: React.FC = () => {
               </tr>
             </thead>
             <tbody>
-              {payrolls.map(p => {
+              {payrollPagination.pageItems.map(p => {
                 const emp = employees.find(e => e.id === p.employeeId);
                 const empName = p.employeeName || emp?.name || p.employeeId;
                 const deptName = p.department || emp?.department || 'Ventas';
@@ -789,6 +791,7 @@ export const PayrollManagement: React.FC = () => {
             </tbody>
           </table>
         </div>
+        <PaginationControls page={payrollPagination.page} pageCount={payrollPagination.pageCount} firstItem={payrollPagination.firstItem} lastItem={payrollPagination.lastItem} totalItems={payrolls.length} onPageChange={payrollPagination.setPage} />
       </section>
 
       {/* Modal de Desglose Línea por Línea */}

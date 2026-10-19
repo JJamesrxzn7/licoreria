@@ -3,6 +3,7 @@ import { BookOpen, Calculator, FileText, Plus, X, Building2, PieChart, Edit3, Li
 import { useGlobalStore } from '../context';
 import { accountingApi, hrApi, purchaseApi, salesApi } from '../api';
 import { Banco, CentroCosto, Invoice, JournalEntry, JournalEntryLine } from '../types';
+import { PaginationControls, usePagination } from '../components/Pagination';
 
 const money = (value: number) => `$${value.toFixed(2)}`;
 const paymentLabel: Record<Invoice['paymentMethod'], string> = { CASH: 'Efectivo', CARD: 'Tarjeta', TRANSFER: 'Transferencia', CREDIT: 'Crédito' };
@@ -59,6 +60,7 @@ export const Sales = () => {
       && `${invoice.id} ${customer?.name ?? ''} ${methodStr}`.toLowerCase().includes(search.toLowerCase());
   }), [state.invoices, state.customers, statusFilter, search]);
   const total = visibleInvoices.reduce((sum, invoice) => invoice.status === 'ANU' ? sum : sum + invoice.total, 0);
+  const salesPagination = usePagination(visibleInvoices, `${search}:${statusFilter}`);
 
   return (
     <div>
@@ -67,9 +69,10 @@ export const Sales = () => {
       <section className="card">
         <div className="section-heading"><div><h2>Registro de ventas</h2><p>Estados: ABI (Abierto), APR (Aprobado), ANU (Anulado).</p></div><div className="filter-group"><input className="input table-search" aria-label="Buscar facturas" placeholder="Buscar factura o cliente" value={search} onChange={event => setSearch(event.target.value)} /><select className="select filter-select" aria-label="Filtrar por estado" value={statusFilter} onChange={event => setStatusFilter(event.target.value)}><option value="">-- Filtrar por estado (Todos) --</option><option value="ABI">ABI</option><option value="APR">APR</option><option value="ANU">ANU</option></select></div></div>
         <div className="table-scroll"><table><thead><tr><th>Factura</th><th>Fecha</th><th>Cliente</th><th>Subtotal</th><th>Descuento</th><th>Impuesto</th><th>Total</th><th>Pago</th><th>Estado</th><th>Detalle</th></tr></thead><tbody>
-          {visibleInvoices.map(invoice => <tr key={invoice.id}><td>{invoice.id}</td><td>{new Date(invoice.date).toLocaleString('es-EC')}</td><td>{state.customers.find(customer => customer.id === invoice.customerId)?.name ?? invoice.customerId}</td><td>{money(invoice.subtotal)}</td><td>{money(invoice.discount)}</td><td>{money(invoice.tax)}</td><td><strong>{money(invoice.total)}</strong></td><td>{paymentLabel[invoice.paymentMethod] || invoice.paymentMethod}{invoice.paymentMethod === 'CREDIT' ? ` · ${invoice.installments} cuotas` : ''}</td><td><span className={`badge badge-${invoice.status}`}>{invoice.status}</span></td><td><button type="button" className="btn btn-outline" onClick={() => setSelected(invoice)}>Ver</button></td></tr>)}
+          {salesPagination.pageItems.map(invoice => <tr key={invoice.id}><td>{invoice.id}</td><td>{new Date(invoice.date).toLocaleString('es-EC')}</td><td>{state.customers.find(customer => customer.id === invoice.customerId)?.name ?? invoice.customerId}</td><td>{money(invoice.subtotal)}</td><td>{money(invoice.discount)}</td><td>{money(invoice.tax)}</td><td><strong>{money(invoice.total)}</strong></td><td>{paymentLabel[invoice.paymentMethod] || invoice.paymentMethod}{invoice.paymentMethod === 'CREDIT' ? ` · ${invoice.installments} cuotas` : ''}</td><td><span className={`badge badge-${invoice.status}`}>{invoice.status}</span></td><td><button type="button" className="btn btn-outline" onClick={() => setSelected(invoice)}>Ver</button></td></tr>)}
           {!visibleInvoices.length && <tr><td colSpan={10} className="empty-state">No hay facturas que coincidan con estos filtros.</td></tr>}
         </tbody></table></div>
+        <PaginationControls page={salesPagination.page} pageCount={salesPagination.pageCount} firstItem={salesPagination.firstItem} lastItem={salesPagination.lastItem} totalItems={visibleInvoices.length} onPageChange={salesPagination.setPage} />
       </section>
       {selected && <div className="modal-backdrop" role="presentation" onClick={event => { if (event.target === event.currentTarget) setSelected(null); }}><section className="modal-card" role="dialog" aria-modal="true" aria-labelledby="invoice-title">
         <div className="section-heading"><div><span className="eyebrow">DETALLE DE VENTA</span><h2 id="invoice-title">{selected.id}</h2></div><button type="button" className="icon-button" aria-label="Cerrar detalle" onClick={() => setSelected(null)}><X size={18} /></button></div>
@@ -559,6 +562,10 @@ export const Accounting = ({ initialTab = 'diario' }: { initialTab?: 'diario' | 
       (a.type && a.type.toLowerCase().includes(q))
     );
   }, [state.accounts, accSearch]);
+  const journalPagination = usePagination(state.journalEntries);
+  const accountPagination = usePagination(filteredAccounts, accSearch);
+  const bankPagination = usePagination(bancos);
+  const costCenterPagination = usePagination(centrosCostos);
 
   return (
     <div>
@@ -780,7 +787,7 @@ export const Accounting = ({ initialTab = 'diario' }: { initialTab?: 'diario' | 
                   </tr>
                 </thead>
                 <tbody>
-                  {state.journalEntries.map(entry => {
+                  {journalPagination.pageItems.map(entry => {
                     const debit = entry.lines.reduce((sum, line) => sum + line.debit, 0);
                     const credit = entry.lines.reduce((sum, line) => sum + line.credit, 0);
                     const formattedDate = entry.date ? new Date(entry.date).toLocaleDateString('es-EC') : 'Sin fecha';
@@ -819,6 +826,7 @@ export const Accounting = ({ initialTab = 'diario' }: { initialTab?: 'diario' | 
                 </tbody>
               </table>
             </div>
+            <PaginationControls page={journalPagination.page} pageCount={journalPagination.pageCount} firstItem={journalPagination.firstItem} lastItem={journalPagination.lastItem} totalItems={state.journalEntries.length} onPageChange={journalPagination.setPage} />
           </section>
         </>
       )}
@@ -910,7 +918,7 @@ export const Accounting = ({ initialTab = 'diario' }: { initialTab?: 'diario' | 
                   </tr>
                 </thead>
                 <tbody>
-                  {filteredAccounts.map(account => {
+                  {accountPagination.pageItems.map(account => {
                     const isMayor = account.type === 'MAY' || account.type === 'MAYOR';
                     return (
                       <tr key={account.id} style={isMayor ? { background: '#f8fafc', fontWeight: 600 } : {}}>
@@ -948,6 +956,7 @@ export const Accounting = ({ initialTab = 'diario' }: { initialTab?: 'diario' | 
                 </tbody>
               </table>
             </div>
+            <PaginationControls page={accountPagination.page} pageCount={accountPagination.pageCount} firstItem={accountPagination.firstItem} lastItem={accountPagination.lastItem} totalItems={filteredAccounts.length} onPageChange={accountPagination.setPage} />
           </section>
         </>
       )}
@@ -1030,7 +1039,7 @@ export const Accounting = ({ initialTab = 'diario' }: { initialTab?: 'diario' | 
                   </tr>
                 </thead>
                 <tbody>
-                  {bancos.map(b => (
+                  {bankPagination.pageItems.map(b => (
                     <tr key={b.id}>
                       <td><code>{b.id}</code></td>
                       <td><strong>{b.nombre}</strong></td>
@@ -1072,6 +1081,7 @@ export const Accounting = ({ initialTab = 'diario' }: { initialTab?: 'diario' | 
                 </tbody>
               </table>
             </div>
+            <PaginationControls page={bankPagination.page} pageCount={bankPagination.pageCount} firstItem={bankPagination.firstItem} lastItem={bankPagination.lastItem} totalItems={bancos.length} onPageChange={bankPagination.setPage} />
           </section>
 
           {/* Modal Edición de Banco */}
@@ -1229,7 +1239,7 @@ export const Accounting = ({ initialTab = 'diario' }: { initialTab?: 'diario' | 
                   </tr>
                 </thead>
                 <tbody>
-                  {centrosCostos.map(cco => (
+                  {costCenterPagination.pageItems.map(cco => (
                     <tr key={cco.id}>
                       <td><code>{cco.id}</code></td>
                       <td><strong>{cco.nombre}</strong></td>
@@ -1278,6 +1288,7 @@ export const Accounting = ({ initialTab = 'diario' }: { initialTab?: 'diario' | 
                 </tbody>
               </table>
             </div>
+            <PaginationControls page={costCenterPagination.page} pageCount={costCenterPagination.pageCount} firstItem={costCenterPagination.firstItem} lastItem={costCenterPagination.lastItem} totalItems={centrosCostos.length} onPageChange={costCenterPagination.setPage} />
           </section>
 
           {/* Modal Edición Centro de Costo */}
