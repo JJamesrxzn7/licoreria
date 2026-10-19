@@ -130,8 +130,8 @@ export default function Registro({ onBack }: RegistroProps) {
   const adminMode = isUserManager;
 
   return (
-    <div className="login-page">
-      <div className="login-container">
+    <div className={`login-page ${adminMode ? 'registro-admin-page' : ''}`}>
+      <div className={`login-container ${adminMode ? 'registro-admin-container' : ''}`}>
         <div className="login-brand">
           <div className="brand-mark">
             <svg width="32" height="32" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">

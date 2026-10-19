@@ -507,6 +507,32 @@ export interface LoginResponse {
   user: AuthUser;
 }
 
+export interface InitialAdminSetupRequest {
+  employee: {
+    ci: string;
+    nombre1: string;
+    nombre2?: string;
+    apellido1: string;
+    apellido2?: string;
+    sexo: string;
+    fechaNacimiento: string;
+    sueldo: number;
+    idDepartamento: string;
+    telefono?: string;
+    celular?: string;
+    direccion?: string;
+    email?: string;
+  };
+  username: string;
+  password: string;
+}
+
+export interface InitialAdminSetupResponse {
+  idEmpleado: string;
+  idUsuario: string;
+  mensaje: string;
+}
+
 export interface DemoAccount {
   role: string;
   roleId: string;
@@ -517,6 +543,13 @@ export interface DemoAccount {
 }
 
 export const authApi = {
+  setupStatus: () =>
+    request<{ initialized: boolean }>('/api/auth/setup-status'),
+  setupInitialAdmin: (data: InitialAdminSetupRequest) =>
+    request<InitialAdminSetupResponse>('/api/auth/setup', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
   login: (data: LoginRequest) =>
     request<LoginResponse>('/api/auth/login', {
       method: 'POST',

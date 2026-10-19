@@ -64,63 +64,35 @@ def get_db_config() -> dict[str, str | int | bool]:
 
 
 def get_user_id(cursor=None) -> str:
-    """
-    Obtiene un id_Usuario de la tabla USUARIOS de la aplicación si existe.
-    El usuario de conexión MariaDB (ej. 'root') no pertenece a las tablas de la app,
-    por lo que aquí solo consultamos la tabla USUARIOS de la base de datos si existe algún registro.
-    Si está vacía, asegura un usuario básico para evitar fallos de clave foránea en log_auditoria.
-    """
-    if cursor is not None:
-        try:
-            env_user = os.getenv("MARIADB_USER_ID", "").strip()
-            if env_user:
-                cursor.execute("SELECT id_Usuario FROM USUARIOS WHERE id_Usuario = %s LIMIT 1", (env_user,))
-                row = cursor.fetchone()
-                if row:
-                    return str(row[0] if isinstance(row, tuple) else row["id_Usuario"]).strip()
+    if cursor is None:
+        raise HTTPException(
+            status_code=500,
+            detail="No se pudo identificar al usuario que realiza la operación.",
+        )
 
-            cursor.execute("SELECT id_Usuario FROM USUARIOS ORDER BY id_Usuario ASC LIMIT 1")
-            row = cursor.fetchone()
-            if row:
-                return str(row[0] if isinstance(row, tuple) else row["id_Usuario"]).strip()
+    env_user = os.getenv("MARIADB_USER_ID", "").strip()
+    if env_user:
+        cursor.execute(
+            "SELECT id_Usuario FROM USUARIOS WHERE id_Usuario = %s AND ESTADO_USR = 'ACT' LIMIT 1",
+            (env_user,),
+        )
+        row = cursor.fetchone()
+        if row:
+            value = row[0] if isinstance(row, (tuple, list)) else row["id_Usuario"]
+            return str(value).strip()
 
-            # Asegurar empleado y usuario por defecto si la base está recién inicializada
-            cursor.execute("SELECT id_Empleado FROM EMPLEADOS ORDER BY id_Empleado ASC LIMIT 1")
-            emp_row = cursor.fetchone()
-            if emp_row:
-                emp_id = str(emp_row[0] if isinstance(emp_row, tuple) else emp_row["id_Empleado"]).strip()
-            else:
-                emp_id = "EMP-000001"
-                cursor.execute("SELECT id_Departamento FROM DEPARTAMENTOS ORDER BY id_Departamento ASC LIMIT 1")
-                dep_row = cursor.fetchone()
-                dep_id = str(dep_row[0] if isinstance(dep_row, tuple) else dep_row["id_Departamento"]).strip() if dep_row else "DEP-000001"
-                cursor.execute("INSERT IGNORE INTO DEPARTAMENTOS (id_Departamento, dep_Nombre, ESTADO_DEP) VALUES (%s, 'Administración', 'ACT')", (dep_id,))
-                cursor.execute(
-                    """
-                    INSERT IGNORE INTO EMPLEADOS (id_Empleado, emp_Cedula, emp_Nombre1, emp_Apellido1, emp_Sexo, emp_FechaNacimiento, emp_Sueldo, id_Departamento, ESTADO_EMP)
-                    VALUES (%s, '1700000001', 'Admin', 'Sistema', 'M', '1990-01-01', 1000.00, %s, 'ACT')
-                    """,
-                    (emp_id, dep_id)
-                )
+    cursor.execute(
+        "SELECT id_Usuario FROM USUARIOS WHERE ESTADO_USR = 'ACT' ORDER BY id_Usuario ASC LIMIT 1"
+    )
+    row = cursor.fetchone()
+    if row:
+        value = row[0] if isinstance(row, (tuple, list)) else row["id_Usuario"]
+        return str(value).strip()
 
-            usr_id = "USR-000001"
-            cursor.execute(
-                """
-                INSERT IGNORE INTO USUARIOS (id_Usuario, id_Empleado, usr_Username, usr_PasswordHash, ESTADO_USR)
-                VALUES (%s, %s, 'admin', 'system_hash', 'ACT')
-                """,
-                (usr_id, emp_id)
-            )
-            if hasattr(cursor, "_connection") and cursor._connection:
-                try:
-                    cursor._connection.commit()
-                except Exception:
-                    pass
-            return usr_id
-        except Exception as e:
-            logger.debug("No se pudo obtener usuario de USUARIOS: %s", e)
-
-    return os.getenv("MARIADB_USER_ID", "USR-000001").strip()[:16]
+    raise HTTPException(
+        status_code=409,
+        detail="Primero configura el usuario administrador inicial del sistema.",
+    )
 
 
 def raise_database_error(error: mysql.connector.Error) -> None:
@@ -3036,13 +3008,35 @@ def listar_departamentos():
     try:
         conn = mysql.connector.connect(**get_db_config())
         cur = conn.cursor(dictionary=True)
-        cur.execute("SELECT TRIM(id_Departamento) AS id, TRIM(dep_Nombre) AS nombre FROM DEPARTAMENTOS ORDER BY dep_Nombre")
+        cur.execute(
+            """
+            SELECT TRIM(id_Departamento) AS id, TRIM(dep_Nombre) AS nombre
+            FROM DEPARTAMENTOS
+            WHERE ESTADO_DEP = 'ACT' OR ESTADO_DEP IS NULL
+            ORDER BY dep_Nombre
+            """
+        )
         rows = cur.fetchall()
         if not rows:
-            cur.execute("INSERT IGNORE INTO DEPARTAMENTOS (id_Departamento, dep_Nombre, ESTADO_DEP) VALUES ('DEP-TEST', 'Ventas', 'ACT'), ('DEP-000001', 'Administración', 'ACT'), ('DEP-000002', 'Bodega', 'ACT')")
-            conn.commit()
-            cur.execute("SELECT TRIM(id_Departamento) AS id, TRIM(dep_Nombre) AS nombre FROM DEPARTAMENTOS ORDER BY dep_Nombre")
-            rows = cur.fetchall()
+            cur.execute("SELECT 1 FROM DEPARTAMENTOS LIMIT 1")
+            if not cur.fetchone():
+                cur.execute(
+                    """
+                    INSERT INTO DEPARTAMENTOS
+                        (id_Departamento, dep_Nombre, ESTADO_DEP)
+                    VALUES ('DEP-000001', 'Administración', 'ACT')
+                    """
+                )
+                conn.commit()
+                cur.execute(
+                    """
+                    SELECT TRIM(id_Departamento) AS id, TRIM(dep_Nombre) AS nombre
+                    FROM DEPARTAMENTOS
+                    WHERE ESTADO_DEP = 'ACT' OR ESTADO_DEP IS NULL
+                    ORDER BY dep_Nombre
+                    """
+                )
+                rows = cur.fetchall()
         return rows
     except mysql.connector.Error as error:
         raise_database_error(error)
@@ -4380,6 +4374,198 @@ def create_auth_token(user_id: str) -> str:
     return f"{payload}.{encoded_signature}"
 
 
+class InitialAdminSetupInput(BaseModel):
+    employee: EmployeeInput
+    username: str = Field(min_length=3, max_length=50)
+    password: str = Field(min_length=8, max_length=100)
+
+    @field_validator("username")
+    @classmethod
+    def validar_username(cls, value: str) -> str:
+        clean = str(value or "").strip()
+        if not re.fullmatch(r"[A-Za-z0-9_.@-]{3,50}", clean):
+            raise ValueError("El nombre de usuario contiene caracteres no permitidos.")
+        return clean
+
+
+@app.get("/api/auth/setup-status")
+def estado_configuracion_inicial():
+    conn, cur = None, None
+    try:
+        conn = mysql.connector.connect(**get_db_config())
+        cur = conn.cursor(dictionary=True)
+        cur.execute("SELECT EXISTS(SELECT 1 FROM USUARIOS LIMIT 1) AS initialized")
+        return {"initialized": bool(cur.fetchone()["initialized"])}
+    except mysql.connector.Error as error:
+        raise_database_error(error)
+    finally:
+        if cur:
+            cur.close()
+        if conn and conn.is_connected():
+            conn.close()
+
+
+@app.post("/api/auth/setup", status_code=201)
+def configurar_administrador_inicial(payload: InitialAdminSetupInput):
+    conn, cur = None, None
+    setup_lock_acquired = False
+    try:
+        conn = mysql.connector.connect(**get_db_config())
+        cur = conn.cursor(dictionary=True)
+        cur.execute("SELECT GET_LOCK('licoreria_initial_admin_setup', 10) AS acquired")
+        setup_lock_acquired = cur.fetchone()["acquired"] == 1
+        if not setup_lock_acquired:
+            raise HTTPException(
+                status_code=503,
+                detail="No se pudo iniciar la configuración. Intenta nuevamente.",
+            )
+
+        cur.execute("SELECT 1 FROM USUARIOS LIMIT 1")
+        if cur.fetchone():
+            raise HTTPException(
+                status_code=409,
+                detail="El sistema ya tiene usuarios. La configuración inicial está cerrada.",
+            )
+
+        employee = payload.employee
+        cur.execute(
+            """
+            SELECT id_Departamento
+            FROM DEPARTAMENTOS
+            WHERE id_Departamento = %s AND (ESTADO_DEP = 'ACT' OR ESTADO_DEP IS NULL)
+            LIMIT 1
+            """,
+            (employee.department_id,),
+        )
+        if not cur.fetchone():
+            raise HTTPException(status_code=400, detail="Selecciona un departamento activo.")
+
+        cur.execute("SELECT 1 FROM EMPLEADOS WHERE emp_Cedula = %s LIMIT 1", (employee.ci,))
+        if cur.fetchone():
+            raise HTTPException(status_code=409, detail="Ya existe un empleado con esa cédula.")
+        cur.execute(
+            "SELECT 1 FROM USUARIOS WHERE usr_Username = %s LIMIT 1",
+            (payload.username,),
+        )
+        if cur.fetchone():
+            raise HTTPException(status_code=409, detail="El nombre de usuario ya está en uso.")
+
+        cur.execute("SELECT id_Empleado FROM EMPLEADOS")
+        employee_ids = cur.fetchall()
+        highest_employee_number = 0
+        for row in employee_ids:
+            match = re.fullmatch(r"EMP-(\d+)", str(row["id_Empleado"]).strip(), re.IGNORECASE)
+            if match:
+                highest_employee_number = max(highest_employee_number, int(match.group(1)))
+        employee_id = f"EMP-{highest_employee_number + 1:06d}"
+        if len(employee_id) > 10:
+            raise HTTPException(status_code=409, detail="No hay espacio para generar otro código de empleado.")
+
+        user_id = f"USR-{uuid4().hex[:12].upper()}"
+        cur.execute(
+            """
+            SELECT id_Rol
+            FROM ROLES
+            WHERE LOWER(TRIM(rol_Nombre)) IN ('admin', 'administrador')
+              AND (ESTADO_ROL = 'ACT' OR ESTADO_ROL IS NULL)
+            ORDER BY id_Rol
+            LIMIT 1
+            """
+        )
+        admin_role = cur.fetchone()
+        if admin_role:
+            role_id = str(admin_role["id_Rol"]).strip()
+        else:
+            cur.execute("SELECT id_Rol FROM ROLES WHERE id_Rol = 'ROL-ADMIN' LIMIT 1")
+            role_conflict = cur.fetchone()
+            if role_conflict:
+                raise HTTPException(
+                    status_code=409,
+                    detail="El identificador reservado para el rol administrador ya está ocupado.",
+                )
+            role_id = "ROL-ADMIN"
+            cur.execute(
+                """
+                INSERT INTO ROLES (id_Rol, rol_Nombre, rol_Descripcion, ESTADO_ROL)
+                VALUES (%s, 'Administrador', 'Acceso administrativo inicial', 'ACT')
+                """,
+                (role_id,),
+            )
+
+        cur.execute(
+            """
+            INSERT INTO EMPLEADOS (
+                id_Empleado, id_Departamento, emp_Cedula, emp_Apellido1, emp_Apellido2,
+                emp_Nombre1, emp_Nombre2, emp_Sexo, emp_FechaNacimiento, emp_Sueldo,
+                emp_Direccion, emp_Telefono, emp_Celular, emp_Mail, USER_ID, ESTADO_EMP
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'ACT')
+            """,
+            (
+                employee_id,
+                employee.department_id,
+                employee.ci,
+                employee.last_name1,
+                employee.last_name2,
+                employee.first_name,
+                employee.second_name,
+                employee.gender,
+                employee.birth_date,
+                employee.salary,
+                employee.address,
+                employee.phone,
+                employee.mobile,
+                employee.email,
+                user_id,
+            ),
+        )
+        cur.execute(
+            """
+            INSERT INTO USUARIOS
+                (id_Usuario, id_Empleado, usr_Username, usr_PasswordHash, ESTADO_USR)
+            VALUES (%s, %s, %s, %s, 'ACT')
+            """,
+            (user_id, employee_id, payload.username, hash_password(payload.password)),
+        )
+        cur.execute(
+            "INSERT INTO USUARIOSxROLES (id_Usuario, id_Rol, ESTADO_UxR) VALUES (%s, %s, 'ACT')",
+            (user_id, role_id),
+        )
+        cur.execute(
+            """
+            INSERT INTO LOG_AUDITORIA
+                (id_Log, id_Usuario, log_FechaHora, log_TablaAfectada,
+                 log_Accion, log_ValorAnterior, log_ValorNuevo)
+            VALUES (%s, %s, NOW(), 'USUARIOS', 'INITIAL_SETUP', NULL, %s)
+            """,
+            (
+                f"LOG-{uuid4().hex[:10].upper()}",
+                user_id,
+                f"Administrador inicial creado: {payload.username}",
+            ),
+        )
+        conn.commit()
+        return {
+            "idEmpleado": employee_id,
+            "idUsuario": user_id,
+            "mensaje": "Empleado y administrador inicial creados. Ya puedes iniciar sesión.",
+        }
+    except HTTPException:
+        if conn and conn.is_connected():
+            conn.rollback()
+        raise
+    except mysql.connector.Error as error:
+        if conn and conn.is_connected():
+            conn.rollback()
+        raise_database_error(error)
+    finally:
+        if setup_lock_acquired and cur:
+            cur.execute("SELECT RELEASE_LOCK('licoreria_initial_admin_setup')")
+        if cur:
+            cur.close()
+        if conn and conn.is_connected():
+            conn.close()
+
+
 def get_authenticated_user(
     credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
 ) -> str:
@@ -5288,21 +5474,6 @@ def listar_empleados():
         conn = mysql.connector.connect(**get_db_config())
         cur = conn.cursor(dictionary=True)
         cur.execute("SELECT e.id_Empleado AS id, e.emp_Nombre1 AS nombre, e.emp_Apellido1 AS apellido, d.dep_Nombre AS departamento FROM EMPLEADOS e LEFT JOIN DEPARTAMENTOS d ON e.id_Departamento = d.id_Departamento ORDER BY e.emp_Nombre1 ASC, e.emp_Apellido1 ASC")
-        return cur.fetchall()
-    except mysql.connector.Error as error:
-        raise_database_error(error)
-    finally:
-        if cur: cur.close()
-        if conn and conn.is_connected(): conn.close()
-
-
-@app.get("/api/departamentos")
-def listar_departamentos():
-    conn, cur = None, None
-    try:
-        conn = mysql.connector.connect(**get_db_config())
-        cur = conn.cursor(dictionary=True)
-        cur.execute("SELECT id_Departamento AS id, dep_Nombre AS nombre FROM DEPARTAMENTOS ORDER BY dep_Nombre ASC")
         return cur.fetchall()
     except mysql.connector.Error as error:
         raise_database_error(error)

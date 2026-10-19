@@ -1,12 +1,32 @@
-import { useState } from 'react';
-import { Mail, Lock, AlertCircle, Eye, EyeOff, LogIn, UserPlus } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { Mail, Lock, AlertCircle, Eye, EyeOff, LogIn, UserPlus, ShieldCheck } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
+import { authApi } from '../api';
 
 export default function Login() {
   const { login, isLoading, error } = useAuth();
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
+  const [setupAvailable, setSetupAvailable] = useState(false);
+  const [setupStatusError, setSetupStatusError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    authApi.setupStatus()
+      .then(({ initialized }) => {
+        if (!cancelled) setSetupAvailable(!initialized);
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) {
+          setSetupStatusError(err instanceof Error ? err.message : 'No se pudo consultar el estado inicial del sistema.');
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const irARegistro = () => {
     window.location.hash = '#/registro';
   };
@@ -42,6 +62,12 @@ export default function Login() {
             <div className="alert alert-error">
               <AlertCircle size={16} />
               {error}
+            </div>
+          )}
+          {setupStatusError && (
+            <div className="alert alert-error" role="alert">
+              <AlertCircle size={16} />
+              No se pudo verificar si el sistema necesita configuración inicial: {setupStatusError}
             </div>
           )}
 
@@ -95,14 +121,25 @@ export default function Login() {
             >
               {isLoading ? 'Ingresando...' : <><LogIn size={18} /> Iniciar sesión</>}
             </button>
-            <button
-              type="button"
-              className="registro-btn"
-              onClick={irARegistro}
-              disabled={isLoading}
-            >
-              <UserPlus size={16} /> Crear cuenta nueva
-            </button>
+            {setupAvailable ? (
+              <button
+                type="button"
+                className="registro-btn"
+                onClick={() => { window.location.hash = '#/configuracion-inicial'; }}
+                disabled={isLoading}
+              >
+                <ShieldCheck size={16} /> Crear empleado y administrador inicial
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="registro-btn"
+                onClick={irARegistro}
+                disabled={isLoading}
+              >
+                <UserPlus size={16} /> Crear cuenta nueva
+              </button>
+            )}
           </form>
 
         </div>

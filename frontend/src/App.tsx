@@ -8,6 +8,7 @@ import { StoreProvider } from './context';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import Login from './pages/Login';
 import Registro from './pages/Registro';
+import InitialSetup from './pages/InitialSetup';
 import Usuarios from './pages/Usuarios';
 import { POS } from './pages/POS';
 import { Customers, Dashboard, EmployeeFile, PayrollManagement, Suppliers } from './pages/CorePages';
@@ -77,6 +78,9 @@ const AppContent = () => {
   }
 
   if (!isAuthenticated) {
+    if (hashRoute === 'configuracion-inicial') {
+      return <InitialSetup />;
+    }
     if (hashRoute === 'registro') {
       return <Registro onBack={() => { window.location.hash = '#/login'; }} />;
     }
