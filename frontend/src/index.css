@@ -664,12 +664,15 @@ tbody tr:hover { background: #fbfaf7; }
 }
 
 /* Topbar user profile */
+.profile-menu { position: relative; }
 .user-profile {
   display: flex;
   align-items: center;
   gap: 8px;
   padding: 6px 12px;
   border-radius: 8px;
+  border: 0;
+  background: transparent;
   cursor: pointer;
   transition: background .15s;
 }
@@ -678,6 +681,7 @@ tbody tr:hover { background: #fbfaf7; }
   background: rgba(24, 58, 49, 0.05);
 }
 
+.user-profile:focus-visible, .topbar-logout:focus-visible { outline: 2px solid var(--verde-oscuro); outline-offset: 2px; }
 .user-name {
   font-size: 12px;
   font-weight: 600;
@@ -685,13 +689,47 @@ tbody tr:hover { background: #fbfaf7; }
   white-space: nowrap;
 }
 
-.logout-icon {
-  color: #787970;
-  margin-left: 4px;
+.profile-chevron { color: #787970; transition: transform .15s; }
+.profile-chevron.open { transform: rotate(180deg); }
+.topbar-logout {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: white;
+  color: #62645d;
+  cursor: pointer;
 }
 
-.logout-icon:hover {
-  color: #a94442;
+.topbar-logout:hover { border-color: #e5c7c1; background: #fbf3f0; color: var(--borgona); }
+.profile-summary {
+  position: absolute;
+  z-index: 30;
+  top: calc(100% + 10px);
+  right: 0;
+  width: min(320px, calc(100vw - 28px));
+  padding: 17px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: white;
+  box-shadow: 0 14px 38px rgba(33, 38, 31, .16);
+}
+.profile-summary-heading { display: flex; align-items: center; gap: 11px; padding-bottom: 14px; border-bottom: 1px solid var(--border); }
+.profile-summary-avatar { width: 40px; height: 40px; font-size: 14px; }
+.profile-summary-heading strong, .profile-summary-heading span { display: block; }
+.profile-summary-heading strong { color: var(--text-dark); font-size: 13px; }
+.profile-summary-heading div span { margin-top: 3px; color: var(--text-muted); font-size: 11px; }
+.profile-summary-details { display: grid; gap: 11px; margin: 14px 0 0; }
+.profile-summary-details div { display: grid; grid-template-columns: 112px minmax(0, 1fr); gap: 8px; }
+.profile-summary-details dt { color: var(--text-muted); font-size: 10px; }
+.profile-summary-details dd { overflow-wrap: anywhere; margin: 0; color: var(--text-dark); font-size: 11px; font-weight: 600; }
+
+@media (max-width: 520px) {
+  .user-profile { padding: 5px; }
+  .user-name { display: none; }
+  .profile-summary { right: -44px; }
 }
 
 @media (max-width: 768px) {

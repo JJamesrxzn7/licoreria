@@ -1,8 +1,8 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   Bell, BookOpen, Briefcase, Calculator, FileText, LayoutDashboard, Menu,
   PanelLeftClose, PanelLeftOpen, ShoppingCart, Truck, Users, Wine, X,
-  Building2, PieChart, Scale, LogOut
+  Building2, PieChart, Scale, LogOut, ChevronDown
 } from 'lucide-react';
 import { StoreProvider } from './context';
 import { AuthProvider, useAuth } from './context/AuthContext';
@@ -46,6 +46,8 @@ const AppContent = () => {
   });
   const [collapsed, setCollapsed] = useState(false);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
+  const [profileOpen, setProfileOpen] = useState(false);
+  const profileRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const handleHashChange = () => {
@@ -61,6 +63,24 @@ const AppContent = () => {
     window.addEventListener('hashchange', handleHashChange);
     return () => window.removeEventListener('hashchange', handleHashChange);
   }, [isAuthenticated]);
+
+  useEffect(() => {
+    if (!profileOpen) return;
+    const handlePointerDown = (event: PointerEvent) => {
+      if (event.target instanceof Node && !profileRef.current?.contains(event.target)) {
+        setProfileOpen(false);
+      }
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setProfileOpen(false);
+    };
+    document.addEventListener('pointerdown', handlePointerDown);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('pointerdown', handlePointerDown);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [profileOpen]);
 
   if (isLoading && !isAuthenticated) {
     return (
@@ -170,11 +190,40 @@ const AppContent = () => {
           <span className="breadcrumb">La Cava <span>/</span> {activePage?.label ?? (currentRoute === 'registro' ? 'Nuevo usuario' : '')}</span>
           <div className="topbar-actions">
             <button type="button" className="notification-button" aria-label="Ver alertas de inventario" onClick={() => navigate('products')}><Bell size={18} /></button>
-            <div className="user-profile" onClick={handleLogout} title="Cerrar sesión">
-              <span className="avatar">{user?.username.charAt(0).toUpperCase()}</span>
-              <span className="user-name">{user?.fullName}</span>
-              <LogOut size={14} className="logout-icon" />
+            <div className="profile-menu" ref={profileRef}>
+              <button
+                type="button"
+                className="user-profile"
+                aria-expanded={profileOpen}
+                aria-haspopup="dialog"
+                aria-controls="profile-summary"
+                onClick={() => setProfileOpen(open => !open)}
+              >
+                <span className="avatar">{user?.username.charAt(0).toUpperCase()}</span>
+                <span className="user-name">{user?.fullName}</span>
+                <ChevronDown size={14} className={`profile-chevron ${profileOpen ? 'open' : ''}`} />
+              </button>
+              {profileOpen && (
+                <section id="profile-summary" className="profile-summary" role="dialog" aria-label="Resumen del perfil">
+                  <div className="profile-summary-heading">
+                    <span className="avatar profile-summary-avatar">{user?.username.charAt(0).toUpperCase()}</span>
+                    <div>
+                      <strong>{user?.fullName}</strong>
+                      <span>{user?.primaryRole}</span>
+                    </div>
+                  </div>
+                  <dl className="profile-summary-details">
+                    <div><dt>Usuario</dt><dd>{user?.username}</dd></div>
+                    <div><dt>Código de empleado</dt><dd>{user?.employeeId || 'No asignado'}</dd></div>
+                    <div><dt>Departamento</dt><dd>{user?.department || 'General'}</dd></div>
+                    <div><dt>Roles</dt><dd>{user?.roles.join(', ') || user?.primaryRole}</dd></div>
+                  </dl>
+                </section>
+              )}
             </div>
+            <button type="button" className="topbar-logout" onClick={() => void handleLogout()} title="Cerrar sesión" aria-label="Cerrar sesión">
+              <LogOut size={17} />
+            </button>
           </div>
         </header>
         <div className="page-content">{routeViews[currentRoute] ?? <Dashboard />}</div>
