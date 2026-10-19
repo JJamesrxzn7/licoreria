@@ -555,7 +555,7 @@ export const authApi = {
       method: 'POST',
       body: JSON.stringify(data),
     }),
-  register: (data: { id_Empleado: string; cedula: string; username: string; password: string }) =>
+  register: (data: { cedula: string; username: string; password: string }) =>
     request<{ id: string; mensaje: string }>('/api/auth/registro', {
       method: 'POST',
       body: JSON.stringify(data),

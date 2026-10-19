@@ -4966,7 +4966,6 @@ def listar_roles_catalogo(_: str = Depends(require_user_manager)):
 # ==========================================
 
 class RegistroPublicoInput(BaseModel):
-    id_Empleado: str = Field(min_length=1, max_length=10)
     cedula: str = Field(min_length=10, max_length=20)
     username: str = Field(min_length=3, max_length=50)
     password: str = Field(min_length=8, max_length=100)
@@ -4998,17 +4997,27 @@ def registrar_solicitud_usuario(payload: RegistroPublicoInput):
             """
             SELECT id_Empleado
             FROM EMPLEADOS
-            WHERE id_Empleado = %s AND emp_Cedula = %s AND ESTADO_EMP = 'ACT'
-            LIMIT 1
+            WHERE emp_Cedula = %s AND ESTADO_EMP = 'ACT'
+            LIMIT 2
             """,
-            (payload.id_Empleado, payload.cedula),
+            (payload.cedula,),
         )
-        if not cur.fetchone():
-            raise HTTPException(status_code=400, detail="Los datos no coinciden con un empleado activo.")
+        matching_employees = cur.fetchall()
+        if not matching_employees:
+            raise HTTPException(
+                status_code=400,
+                detail="No encontramos una ficha activa con esa cédula. Contacta al administrador para registrar tus datos laborales.",
+            )
+        if len(matching_employees) > 1:
+            raise HTTPException(
+                status_code=409,
+                detail="La cédula está asociada a más de una ficha. Contacta al administrador para corregir los datos.",
+            )
+        employee_id = str(matching_employees[0]["id_Empleado"]).strip()
 
         cur.execute(
             "SELECT 1 FROM USUARIOS WHERE usr_Username = %s OR id_Empleado = %s LIMIT 1",
-            (payload.username, payload.id_Empleado),
+            (payload.username, employee_id),
         )
         if cur.fetchone():
             raise HTTPException(
@@ -5023,7 +5032,7 @@ def registrar_solicitud_usuario(payload: RegistroPublicoInput):
                 (id_Usuario, id_Empleado, usr_Username, usr_PasswordHash, ESTADO_USR)
             VALUES (%s, %s, %s, %s, 'PEN')
             """,
-            (new_id, payload.id_Empleado, payload.username, hash_password(payload.password)),
+            (new_id, employee_id, payload.username, hash_password(payload.password)),
         )
         cur.execute(
             """

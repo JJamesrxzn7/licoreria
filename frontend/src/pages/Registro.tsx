@@ -95,7 +95,6 @@ export default function Registro({ onBack }: RegistroProps) {
         });
       } else {
         const response = await authApi.register({
-          id_Empleado: form.id_Empleado.trim(),
           cedula: form.cedula.trim(),
           username: form.username,
           password: form.password,
@@ -155,7 +154,7 @@ export default function Registro({ onBack }: RegistroProps) {
             <p>
               {adminMode
                 ? 'Registra una cuenta para un empleado y asigna sus roles.'
-                : 'La cuenta debe corresponder a un empleado registrado y será activada por un administrador.'}
+                : 'Ingresa tu cédula registrada como empleado. El sistema localizará tu ficha y un administrador activará la cuenta.'}
             </p>
           </div>
 
@@ -173,11 +172,11 @@ export default function Registro({ onBack }: RegistroProps) {
           )}
 
           <form onSubmit={handleSubmit} className="login-form">
-            <div className="form-group">
-              <label className="form-label" htmlFor="registro-empleado">Empleado</label>
-              <div className="input-wrapper">
-                <User size={18} className="input-icon" />
-                {adminMode ? (
+            {adminMode ? (
+              <div className="form-group">
+                <label className="form-label" htmlFor="registro-empleado">Empleado</label>
+                <div className="input-wrapper">
+                  <User size={18} className="input-icon" />
                   <select
                     id="registro-empleado"
                     className="form-input"
@@ -193,24 +192,9 @@ export default function Registro({ onBack }: RegistroProps) {
                       </option>
                     ))}
                   </select>
-                ) : (
-                  <input
-                    id="registro-empleado"
-                    type="text"
-                    className="form-input"
-                    placeholder="Código de empleado"
-                    value={form.id_Empleado}
-                    onChange={event => setForm({ ...form, id_Empleado: event.target.value.trim() })}
-                    disabled={loading}
-                    maxLength={10}
-                    autoComplete="off"
-                    required
-                  />
-                )}
+                </div>
               </div>
-            </div>
-
-            {!adminMode && (
+            ) : (
               <div className="form-group">
                 <label className="form-label" htmlFor="registro-cedula">Cédula del empleado</label>
                 <div className="input-wrapper">
@@ -219,7 +203,7 @@ export default function Registro({ onBack }: RegistroProps) {
                     id="registro-cedula"
                     type="text"
                     className="form-input"
-                    placeholder="Cédula registrada en el sistema"
+                    placeholder="Ingresa tu cédula"
                     value={form.cedula}
                     onChange={event => setForm({ ...form, cedula: event.target.value.replace(/\D/g, '') })}
                     disabled={loading}
@@ -327,7 +311,7 @@ export default function Registro({ onBack }: RegistroProps) {
                 loading
                 || loadingCatalogs
                 || (adminMode && (!form.id_Empleado || form.rol_ids.length === 0))
-                || (!adminMode && (!form.id_Empleado || !form.cedula))
+                || (!adminMode && !form.cedula)
               }
             >
               {loading
