@@ -4535,7 +4535,7 @@ def configurar_administrador_inicial(payload: InitialAdminSetupInput):
             INSERT INTO LOG_AUDITORIA
                 (id_Log, id_Usuario, log_FechaHora, log_TablaAfectada,
                  log_Accion, log_ValorAnterior, log_ValorNuevo)
-            VALUES (%s, %s, NOW(), 'USUARIOS', 'INITIAL_SETUP', NULL, %s)
+            VALUES (%s, %s, NOW(), 'USUARIOS', 'INSERT', NULL, %s)
             """,
             (
                 f"LOG-{uuid4().hex[:10].upper()}",
@@ -5030,7 +5030,7 @@ def registrar_solicitud_usuario(payload: RegistroPublicoInput):
             INSERT INTO LOG_AUDITORIA
                 (id_Log, id_Usuario, log_FechaHora, log_TablaAfectada,
                  log_Accion, log_ValorAnterior, log_ValorNuevo)
-            VALUES (%s, %s, NOW(), 'USUARIOS', 'REGISTER', NULL, %s)
+            VALUES (%s, %s, NOW(), 'USUARIOS', 'INSERT', NULL, %s)
             """,
             (
                 f"LOG-{uuid4().hex[:10].upper()}",
@@ -5224,7 +5224,7 @@ def crear_usuario(
         for rol_id in payload.rol_ids:
             cur.execute("INSERT INTO USUARIOSxROLES (id_Usuario, id_Rol, ESTADO_UxR) VALUES (%s, %s, 'ACT')", (new_id, rol_id))
         log_id = f"LOG-{uuid4().hex[:10].upper()}"
-        cur.execute("INSERT INTO LOG_AUDITORIA (id_Log, id_Usuario, log_FechaHora, log_TablaAfectada, log_Accion, log_ValorAnterior, log_ValorNuevo) VALUES (%s, %s, NOW(), 'USUARIOS', 'CREATE', NULL, %s)", (log_id, actor_id, f"Usuario creado: {payload.username}"))
+        cur.execute("INSERT INTO LOG_AUDITORIA (id_Log, id_Usuario, log_FechaHora, log_TablaAfectada, log_Accion, log_ValorAnterior, log_ValorNuevo) VALUES (%s, %s, NOW(), 'USUARIOS', 'INSERT', NULL, %s)", (log_id, actor_id, f"Usuario creado: {payload.username}"))
         conn.commit()
         return {"id": new_id, "mensaje": "Usuario creado exitosamente."}
     except HTTPException:
@@ -5393,7 +5393,7 @@ def asignar_rol_usuario(
             INSERT INTO LOG_AUDITORIA
                 (id_Log, id_Usuario, log_FechaHora, log_TablaAfectada,
                  log_Accion, log_ValorAnterior, log_ValorNuevo)
-            VALUES (%s, %s, NOW(), 'USUARIOS', 'ROLE_ADD', NULL, %s)
+            VALUES (%s, %s, NOW(), 'USUARIOS', 'INSERT', NULL, %s)
             """,
             (f"LOG-{uuid4().hex[:10].upper()}", actor_id, f"{rol_id} asignado a {usuario_id}"),
         )
@@ -5448,7 +5448,7 @@ def remover_rol_usuario(
             INSERT INTO LOG_AUDITORIA
                 (id_Log, id_Usuario, log_FechaHora, log_TablaAfectada,
                  log_Accion, log_ValorAnterior, log_ValorNuevo)
-            VALUES (%s, %s, NOW(), 'USUARIOS', 'ROLE_REMOVE', NULL, %s)
+            VALUES (%s, %s, NOW(), 'USUARIOS', 'DELETE', NULL, %s)
             """,
             (f"LOG-{uuid4().hex[:10].upper()}", actor_id, f"{rol_id} removido de {usuario_id}"),
         )
