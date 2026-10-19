@@ -23,9 +23,8 @@ export default function InitialSetup() {
     secondName: '',
     lastName1: '',
     lastName2: '',
-    gender: 'M',
+    gender: '',
     birthDate: '',
-    salary: '',
     departmentId: '',
     address: '',
     phone: '',
@@ -43,10 +42,6 @@ export default function InitialSetup() {
         if (cancelled) return;
         setInitialized(status.initialized);
         setDepartments(departmentList);
-        setForm(current => ({
-          ...current,
-          departmentId: current.departmentId || departmentList[0]?.id || '',
-        }));
       })
       .catch((err: unknown) => {
         if (!cancelled) {
@@ -98,7 +93,6 @@ export default function InitialSetup() {
           apellido2: form.lastName2.trim() || undefined,
           sexo: form.gender,
           fechaNacimiento: form.birthDate,
-          sueldo: Number(form.salary),
           idDepartamento: form.departmentId,
           direccion: form.address.trim() || undefined,
           telefono: form.phone.trim() || undefined,
@@ -137,8 +131,8 @@ export default function InitialSetup() {
             <ArrowLeft size={16} /> Volver al login
           </button>
           <div className="login-header">
-            <h3>Crear empleado y administrador</h3>
-            <p>Este proceso solo puede completarse una vez. La contraseña se almacenará protegida con hash.</p>
+            <h3>Configura tu acceso administrativo</h3>
+            <p>Registra tus datos y crea las credenciales para comenzar a usar el sistema. Este proceso solo puede completarse una vez.</p>
           </div>
 
           {error && (
@@ -188,6 +182,7 @@ export default function InitialSetup() {
               <label className="form-group">
                 <span className="form-label">Sexo *</span>
                 <select className="form-input setup-plain-input" value={form.gender} onChange={event => update('gender', event.target.value)} required>
+                  <option value="">Selecciona una opción</option>
                   <option value="M">Masculino</option>
                   <option value="F">Femenino</option>
                 </select>
@@ -195,10 +190,6 @@ export default function InitialSetup() {
               <label className="form-group">
                 <span className="form-label">Fecha de nacimiento *</span>
                 <input className="form-input setup-plain-input" type="date" value={form.birthDate} onChange={event => update('birthDate', event.target.value)} max={latestBirthDate} required />
-              </label>
-              <label className="form-group">
-                <span className="form-label">Sueldo mensual (USD) *</span>
-                <input className="form-input setup-plain-input" type="number" min="460" max="50000" step="0.01" value={form.salary} onChange={event => update('salary', event.target.value)} required />
               </label>
               <label className="form-group">
                 <span className="form-label">Departamento *</span>
@@ -257,7 +248,7 @@ export default function InitialSetup() {
                 </p>
               )}
               <button type="submit" className="login-button initial-setup-wide" disabled={loading || loadingCatalogs || departments.length === 0}>
-                <ShieldCheck size={18} /> {loading ? 'Creando administrador...' : 'Crear empleado y administrador'}
+                <ShieldCheck size={18} /> {loading ? 'Configurando acceso...' : 'Crear acceso de administrador'}
               </button>
             </form>
           )}

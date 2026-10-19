@@ -4374,8 +4374,12 @@ def create_auth_token(user_id: str) -> str:
     return f"{payload}.{encoded_signature}"
 
 
+class InitialAdminEmployeeInput(EmployeeInput):
+    salary: Decimal = Field(default=Decimal("480.00"), alias="sueldo")
+
+
 class InitialAdminSetupInput(BaseModel):
-    employee: EmployeeInput
+    employee: InitialAdminEmployeeInput
     username: str = Field(min_length=3, max_length=50)
     password: str = Field(min_length=8, max_length=100)
 

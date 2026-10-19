@@ -516,7 +516,6 @@ export interface InitialAdminSetupRequest {
     apellido2?: string;
     sexo: string;
     fechaNacimiento: string;
-    sueldo: number;
     idDepartamento: string;
     telefono?: string;
     celular?: string;
