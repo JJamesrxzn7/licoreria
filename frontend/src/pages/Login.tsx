@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Mail, Lock, AlertCircle, Eye, EyeOff, LogIn } from 'lucide-react';
+import { Mail, Lock, AlertCircle, Eye, EyeOff, LogIn, UserPlus } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 
 export default function Login() {
@@ -7,16 +7,13 @@ export default function Login() {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
-  const [loginError, setLoginError] = useState<string | null>(null);
+  const irARegistro = () => {
+    window.location.hash = '#/registro';
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    setLoginError(null);
-    try {
-      await login(username, password);
-    } catch {
-      setLoginError('Credenciales inválidas o error de conexión.');
-    }
+    await login(username, password).catch(() => undefined);
   };
 
   return (
@@ -48,13 +45,6 @@ export default function Login() {
             </div>
           )}
 
-          {loginError && (
-            <div className="alert alert-error">
-              <AlertCircle size={16} />
-              {loginError}
-            </div>
-          )}
-
           <form onSubmit={handleSubmit} className="login-form">
             <div className="form-group">
               <label className="form-label">Usuario</label>
@@ -68,6 +58,7 @@ export default function Login() {
                   onChange={(e) => setUsername(e.target.value)}
                   disabled={isLoading}
                   autoComplete="username"
+                  required
                 />
               </div>
             </div>
@@ -84,6 +75,7 @@ export default function Login() {
                   onChange={(e) => setPassword(e.target.value)}
                   disabled={isLoading}
                   autoComplete="current-password"
+                  required
                 />
                 <button
                   type="button"
@@ -102,6 +94,14 @@ export default function Login() {
               disabled={isLoading}
             >
               {isLoading ? 'Ingresando...' : <><LogIn size={18} /> Iniciar sesión</>}
+            </button>
+            <button
+              type="button"
+              className="registro-btn"
+              onClick={irARegistro}
+              disabled={isLoading}
+            >
+              <UserPlus size={16} /> Crear cuenta nueva
             </button>
           </form>
 

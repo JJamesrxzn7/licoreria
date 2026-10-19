@@ -1,15 +1,20 @@
+import base64
 import hashlib
+import hmac
 import logging
 import os
 import re
+import secrets
+import time
 from datetime import date, datetime, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 from uuid import uuid4
 
 import mysql.connector  # type: ignore
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 # Cargar variables de entorno desde .env (con fallback si python-dotenv no estuviera instalado)
@@ -4319,23 +4324,146 @@ def listar_auditoria():
 # ==========================================
 
 PASSWORD_SALT = "licoreria_salt_"
+PASSWORD_HASH_ITERATIONS = 310_000
+AUTH_TOKEN_TTL_SECONDS = 8 * 60 * 60
+configured_token_secret = os.getenv("AUTH_TOKEN_SECRET", "").strip()
+if configured_token_secret.startswith("replace-with-"):
+    configured_token_secret = ""
+AUTH_TOKEN_SECRET = configured_token_secret.encode("utf-8") or secrets.token_bytes(32)
+bearer_scheme = HTTPBearer(auto_error=False)
 
 def hash_password(raw_password: str) -> str:
-    return hashlib.sha256(f"{PASSWORD_SALT}{raw_password}".encode("utf-8")).hexdigest()
+    salt = secrets.token_bytes(16)
+    derived = hashlib.pbkdf2_hmac(
+        "sha256", raw_password.encode("utf-8"), salt, PASSWORD_HASH_ITERATIONS
+    )
+    return "pbkdf2_sha256${}${}${}".format(
+        PASSWORD_HASH_ITERATIONS,
+        base64.urlsafe_b64encode(salt).decode("ascii"),
+        base64.urlsafe_b64encode(derived).decode("ascii"),
+    )
 
 def verify_password(raw_password: str, stored_hash: str) -> bool:
     if not stored_hash or not raw_password:
         return False
-    # 1. Salted SHA-256
-    if hash_password(raw_password) == stored_hash:
+    if stored_hash.startswith("pbkdf2_sha256$"):
+        try:
+            _, iterations, salt_text, digest_text = stored_hash.split("$", 3)
+            salt = base64.urlsafe_b64decode(salt_text.encode("ascii"))
+            expected = base64.urlsafe_b64decode(digest_text.encode("ascii"))
+            actual = hashlib.pbkdf2_hmac(
+                "sha256", raw_password.encode("utf-8"), salt, int(iterations)
+            )
+            return hmac.compare_digest(actual, expected)
+        except (ValueError, TypeError):
+            return False
+    # Legacy SHA-256 hashes are accepted so existing accounts can continue to log in.
+    if hmac.compare_digest(
+        hashlib.sha256(f"{PASSWORD_SALT}{raw_password}".encode("utf-8")).hexdigest(),
+        stored_hash,
+    ):
         return True
-    # 2. Plain SHA-256 (compatibilidad)
-    if hashlib.sha256(raw_password.encode("utf-8")).hexdigest() == stored_hash:
-        return True
-    # 3. Fallback dev / contraseña directa
-    if raw_password == stored_hash or stored_hash == "system_hash":
-        return True
-    return False
+    return hmac.compare_digest(
+        hashlib.sha256(raw_password.encode("utf-8")).hexdigest(), stored_hash
+    )
+
+
+def create_auth_token(user_id: str) -> str:
+    expires_at = int(time.time()) + AUTH_TOKEN_TTL_SECONDS
+    payload = base64.urlsafe_b64encode(
+        f"{user_id}:{expires_at}".encode("utf-8")
+    ).decode("ascii").rstrip("=")
+    signature = hmac.new(
+        AUTH_TOKEN_SECRET, payload.encode("ascii"), hashlib.sha256
+    ).digest()
+    encoded_signature = base64.urlsafe_b64encode(signature).decode("ascii").rstrip("=")
+    return f"{payload}.{encoded_signature}"
+
+
+def get_authenticated_user(
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+) -> str:
+    if credentials is None or credentials.scheme.lower() != "bearer":
+        raise HTTPException(status_code=401, detail="Debes iniciar sesión para continuar.")
+    try:
+        payload, encoded_signature = credentials.credentials.split(".", 1)
+        expected_signature = hmac.new(
+            AUTH_TOKEN_SECRET, payload.encode("ascii"), hashlib.sha256
+        ).digest()
+        supplied_signature = base64.urlsafe_b64decode(
+            encoded_signature + "=" * (-len(encoded_signature) % 4)
+        )
+        if not hmac.compare_digest(expected_signature, supplied_signature):
+            raise ValueError("Firma inválida.")
+        decoded_payload = base64.urlsafe_b64decode(
+            payload + "=" * (-len(payload) % 4)
+        ).decode("utf-8")
+        user_id, expires_at = decoded_payload.rsplit(":", 1)
+        if int(expires_at) <= int(time.time()):
+            raise ValueError("Token expirado.")
+    except (ValueError, UnicodeDecodeError):
+        raise HTTPException(status_code=401, detail="La sesión no es válida o expiró.")
+
+    conn, cur = None, None
+    try:
+        conn = mysql.connector.connect(**get_db_config())
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT 1 FROM USUARIOS WHERE id_Usuario = %s AND ESTADO_USR = 'ACT' LIMIT 1",
+            (user_id,),
+        )
+        if not cur.fetchone():
+            raise HTTPException(status_code=401, detail="La sesión ya no está activa.")
+        return user_id
+    except mysql.connector.Error as error:
+        raise_database_error(error)
+    finally:
+        if cur:
+            cur.close()
+        if conn and conn.is_connected():
+            conn.close()
+
+
+def require_user_manager(user_id: str = Depends(get_authenticated_user)) -> str:
+    conn, cur = None, None
+    try:
+        conn = mysql.connector.connect(**get_db_config())
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT 1
+            FROM USUARIOSxROLES ur
+            JOIN ROLES r ON r.id_Rol = ur.id_Rol
+            WHERE ur.id_Usuario = %s
+              AND ur.ESTADO_UxR = 'ACT'
+              AND r.ESTADO_ROL = 'ACT'
+              AND (
+                  LOWER(r.rol_Nombre) IN ('admin', 'administrador')
+                  OR LOWER(r.rol_Nombre) = 'jefe_talento_humano'
+                  OR EXISTS (
+                      SELECT 1
+                      FROM ROLESxPERMISOS rp
+                      JOIN PERMISOS p ON p.id_Permiso = rp.id_Permiso
+                      WHERE rp.id_Rol = r.id_Rol
+                        AND rp.ESTADO_RxP = 'ACT'
+                        AND p.ESTADO_PRM = 'ACT'
+                        AND p.id_Permiso = 'PRM-USU'
+                  )
+              )
+            LIMIT 1
+            """,
+            (user_id,),
+        )
+        if not cur.fetchone():
+            raise HTTPException(status_code=403, detail="No tienes permiso para administrar usuarios.")
+        return user_id
+    except mysql.connector.Error as error:
+        raise_database_error(error)
+    finally:
+        if cur:
+            cur.close()
+        if conn and conn.is_connected():
+            conn.close()
 
 PERMISSION_TO_ROUTES_MAP = {
     "PRM-DASH": ["dashboard"],
@@ -4361,8 +4489,15 @@ ALL_FRONTEND_ROUTES = [
     "dashboard", "pos", "sales", "customers", "adjustments",
     "receptions", "deliveries", "pos_orders", "suppliers",
     "products", "units", "employees", "payroll",
-    "accounting", "bancos", "cost_centers", "reports"
+    "accounting", "bancos", "cost_centers", "reports", "usuarios"
 ]
+
+def puede_administrar_usuarios(role_names: list[str], permission_ids: list[str]) -> bool:
+    return "PRM-USU" in permission_ids or any(
+        role.strip().lower() in {"admin", "administrador", "jefe_talento_humano"}
+        for role in role_names
+    )
+
 
 class LoginInput(BaseModel):
     username: str = Field(min_length=3, max_length=50)
@@ -4415,6 +4550,8 @@ def login_usuario(payload: LoginInput, request: Request):
             raise HTTPException(status_code=401, detail="Usuario o contraseña incorrectos.")
 
         if user_row["ESTADO_USR"] != "ACT":
+            if user_row["ESTADO_USR"] == "PEN":
+                raise HTTPException(status_code=403, detail="Tu solicitud de usuario está pendiente de aprobación.")
             raise HTTPException(status_code=403, detail="El usuario se encuentra inactivo. Contacte al administrador.")
 
         if (user_row["usr_IntentosFallidos"] or 0) >= 5:
@@ -4450,7 +4587,7 @@ def login_usuario(payload: LoginInput, request: Request):
             (user_row["id_Usuario"],)
         )
         roles = cur.fetchall()
-        role_ids = [r["id_Rol"] for r in roles]
+        role_ids = [str(r["id_Rol"]).strip() for r in roles]
         role_names = [r["rol_Nombre"] for r in roles]
 
         # 3. Obtener permisos de todos los roles
@@ -4468,10 +4605,13 @@ def login_usuario(payload: LoginInput, request: Request):
             )
             permissions = cur.fetchall()
 
-        perm_ids = [p["id_Permiso"].strip() for p in permissions]
+        perm_ids = [str(p["id_Permiso"]).strip() for p in permissions]
 
         # 4. Calcular rutas permitidas
-        is_admin = ("ROL-ADMIN" in role_ids) or any("admin" in str(rn).lower() for rn in role_names)
+        can_manage_users = puede_administrar_usuarios(role_names, perm_ids)
+        is_admin = ("ROL-ADMIN" in role_ids) or any(
+            str(role).strip().lower() in {"admin", "administrador"} for role in role_names
+        )
         if is_admin:
             allowed_routes = list(ALL_FRONTEND_ROUTES)
         else:
@@ -4479,6 +4619,8 @@ def login_usuario(payload: LoginInput, request: Request):
             for pid in perm_ids:
                 if pid in PERMISSION_TO_ROUTES_MAP:
                     allowed_set.update(PERMISSION_TO_ROUTES_MAP[pid])
+            if can_manage_users:
+                allowed_set.add("usuarios")
             # Mantener orden coherente de navItems
             allowed_routes = [r for r in ALL_FRONTEND_ROUTES if r in allowed_set]
 
@@ -4498,7 +4640,7 @@ def login_usuario(payload: LoginInput, request: Request):
 
         return {
             "success": True,
-            "token": f"auth_{uuid4().hex}",
+            "token": create_auth_token(user_row["id_Usuario"].strip()),
             "user": {
                 "id": user_row["id_Usuario"].strip(),
                 "username": user_row["usr_Username"].strip(),
@@ -4606,7 +4748,7 @@ def listar_cuentas_demo():
     ]
 
 @app.get("/api/auth/roles")
-def listar_roles_catalogo():
+def listar_roles_catalogo(_: str = Depends(require_user_manager)):
     conn, cur = None, None
     try:
         conn = mysql.connector.connect(**get_db_config())
@@ -4633,17 +4775,549 @@ def listar_roles_catalogo():
         if conn and conn.is_connected(): conn.close()
 
 
+# ==========================================
+# 12. GESTIÓN DE USUARIOS (CRUD + ROLES)
+# ==========================================
+
+class RegistroPublicoInput(BaseModel):
+    id_Empleado: str = Field(min_length=1, max_length=10)
+    cedula: str = Field(min_length=10, max_length=20)
+    username: str = Field(min_length=3, max_length=50)
+    password: str = Field(min_length=8, max_length=100)
+
+    @field_validator("username")
+    @classmethod
+    def validar_username(cls, value: str) -> str:
+        clean = str(value or "").strip()
+        if not re.fullmatch(r"[A-Za-z0-9_.@-]{3,50}", clean):
+            raise ValueError("El nombre de usuario contiene caracteres no permitidos.")
+        return clean
+
+    @field_validator("cedula")
+    @classmethod
+    def validar_cedula(cls, value: str) -> str:
+        clean = str(value or "").strip()
+        if not clean.isdigit() or not 10 <= len(clean) <= 20:
+            raise ValueError("Ingresa la cédula registrada en la ficha del empleado.")
+        return clean
+
+
+@app.post("/api/auth/registro", status_code=201)
+def registrar_solicitud_usuario(payload: RegistroPublicoInput):
+    conn, cur = None, None
+    try:
+        conn = mysql.connector.connect(**get_db_config())
+        cur = conn.cursor(dictionary=True)
+        cur.execute(
+            """
+            SELECT id_Empleado
+            FROM EMPLEADOS
+            WHERE id_Empleado = %s AND emp_Cedula = %s AND ESTADO_EMP = 'ACT'
+            LIMIT 1
+            """,
+            (payload.id_Empleado, payload.cedula),
+        )
+        if not cur.fetchone():
+            raise HTTPException(status_code=400, detail="Los datos no coinciden con un empleado activo.")
+
+        cur.execute(
+            "SELECT 1 FROM USUARIOS WHERE usr_Username = %s OR id_Empleado = %s LIMIT 1",
+            (payload.username, payload.id_Empleado),
+        )
+        if cur.fetchone():
+            raise HTTPException(
+                status_code=409,
+                detail="El usuario ya existe o el empleado ya tiene una cuenta.",
+            )
+
+        new_id = f"USR-{uuid4().hex[:12].upper()}"
+        cur.execute(
+            """
+            INSERT INTO USUARIOS
+                (id_Usuario, id_Empleado, usr_Username, usr_PasswordHash, ESTADO_USR)
+            VALUES (%s, %s, %s, %s, 'PEN')
+            """,
+            (new_id, payload.id_Empleado, payload.username, hash_password(payload.password)),
+        )
+        cur.execute(
+            """
+            INSERT INTO LOG_AUDITORIA
+                (id_Log, id_Usuario, log_FechaHora, log_TablaAfectada,
+                 log_Accion, log_ValorAnterior, log_ValorNuevo)
+            VALUES (%s, %s, NOW(), 'USUARIOS', 'REGISTER', NULL, %s)
+            """,
+            (
+                f"LOG-{uuid4().hex[:10].upper()}",
+                new_id,
+                f"Solicitud de cuenta: {payload.username}",
+            ),
+        )
+        conn.commit()
+        return {
+            "id": new_id,
+            "mensaje": "Solicitud registrada. Un administrador debe asignar roles y activar la cuenta.",
+        }
+    except HTTPException:
+        if conn and conn.is_connected():
+            conn.rollback()
+        raise
+    except mysql.connector.Error as error:
+        if conn and conn.is_connected():
+            conn.rollback()
+        raise_database_error(error)
+    finally:
+        if cur:
+            cur.close()
+        if conn and conn.is_connected():
+            conn.close()
+
+
+class UsuarioCreate(BaseModel):
+    id_Empleado: str = Field(min_length=1, max_length=10)
+    username: str = Field(min_length=3, max_length=50)
+    password: str = Field(min_length=8, max_length=100)
+    rol_ids: list[str] = Field(min_length=1, max_length=20)
+
+    @field_validator("username")
+    @classmethod
+    def validar_username(cls, v: str) -> str:
+        clean = str(v or "").strip()
+        if not clean or RE_SQLI_DANGEROUS.search(clean) or not re.match(r"^[A-Za-z0-9_\-\.@]+$", clean):
+            raise ValueError("El nombre de usuario contiene caracteres no permitidos.")
+        return clean
+
+    @field_validator("password")
+    @classmethod
+    def validar_password(cls, v: str) -> str:
+        if len(str(v or "")) < 8:
+            raise ValueError("La contraseña debe tener al menos 8 caracteres.")
+        return str(v)
+
+    @field_validator("rol_ids")
+    @classmethod
+    def validar_roles(cls, roles: list[str]) -> list[str]:
+        if len(set(roles)) != len(roles):
+            raise ValueError("No se puede asignar el mismo rol más de una vez.")
+        if any(not re.fullmatch(r"[A-Za-z0-9-]{1,10}", role) for role in roles):
+            raise ValueError("Uno o más identificadores de rol no son válidos.")
+        return roles
+
+
+class UsuarioUpdate(BaseModel):
+    id_Empleado: str | None = Field(default=None, max_length=10)
+    username: str | None = None
+    password: str | None = Field(default=None, min_length=8, max_length=100)
+    ESTADO_USR: str | None = None
+
+    @field_validator("username")
+    @classmethod
+    def validar_username(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        clean = value.strip()
+        if not re.fullmatch(r"[A-Za-z0-9_.@-]{3,50}", clean):
+            raise ValueError("El nombre de usuario contiene caracteres no permitidos.")
+        return clean
+
+    @field_validator("ESTADO_USR")
+    @classmethod
+    def validar_estado(cls, value: str | None) -> str | None:
+        if value is not None and value not in {"ACT", "INA", "PEN"}:
+            raise ValueError("El estado de usuario no es válido.")
+        return value
+
+
+class UsuarioOut(BaseModel):
+    id_Usuario: str
+    id_Empleado: str
+    username: str
+    ESTADO_USR: str
+    emp_Nombre1: str | None
+    emp_Apellido1: str | None
+    dep_Nombre: str | None
+    roles: list[str]
+
+
+@app.get("/api/usuarios")
+def listar_usuarios(_: str = Depends(require_user_manager)):
+    conn, cur = None, None
+    try:
+        conn = mysql.connector.connect(**get_db_config())
+        cur = conn.cursor(dictionary=True)
+        cur.execute("SELECT u.id_Usuario, u.id_Empleado, u.usr_Username AS username, u.ESTADO_USR, e.emp_Nombre1, e.emp_Apellido1, d.dep_Nombre FROM USUARIOS u LEFT JOIN EMPLEADOS e ON u.id_Empleado = e.id_Empleado LEFT JOIN DEPARTAMENTOS d ON e.id_Departamento = d.id_Departamento ORDER BY u.usr_Username ASC")
+        usuarios = cur.fetchall()
+        resultado = []
+        for u in usuarios:
+            cur.execute("SELECT r.rol_Nombre FROM USUARIOSxROLES ur JOIN ROLES r ON ur.id_Rol = r.id_Rol WHERE ur.id_Usuario = %s AND ur.ESTADO_UxR = 'ACT' AND r.ESTADO_ROL = 'ACT' ORDER BY r.rol_Nombre ASC", (u["id_Usuario"],))
+            roles = [r["rol_Nombre"] for r in cur.fetchall()]
+            resultado.append({"id_Usuario": u["id_Usuario"].strip(), "id_Empleado": u["id_Empleado"].strip(), "username": u["username"].strip(), "ESTADO_USR": u["ESTADO_USR"].strip(), "emp_Nombre1": u["emp_Nombre1"], "emp_Apellido1": u["emp_Apellido1"], "dep_Nombre": u["dep_Nombre"], "roles": roles})
+        return resultado
+    except mysql.connector.Error as error:
+        raise_database_error(error)
+    finally:
+        if cur: cur.close()
+        if conn and conn.is_connected(): conn.close()
+
+
+@app.get("/api/usuarios/empleados-disponibles")
+def listar_empleados_disponibles(_: str = Depends(require_user_manager)):
+    conn, cur = None, None
+    try:
+        conn = mysql.connector.connect(**get_db_config())
+        cur = conn.cursor(dictionary=True)
+        cur.execute(
+            """
+            SELECT
+                e.id_Empleado AS id,
+                e.emp_Nombre1 AS nombre,
+                e.emp_Apellido1 AS apellido,
+                d.dep_Nombre AS departamento
+            FROM EMPLEADOS e
+            LEFT JOIN DEPARTAMENTOS d ON d.id_Departamento = e.id_Departamento
+            LEFT JOIN USUARIOS u ON u.id_Empleado = e.id_Empleado
+            WHERE e.ESTADO_EMP = 'ACT' AND u.id_Usuario IS NULL
+            ORDER BY e.emp_Nombre1, e.emp_Apellido1
+            """
+        )
+        return cur.fetchall()
+    except mysql.connector.Error as error:
+        raise_database_error(error)
+    finally:
+        if cur:
+            cur.close()
+        if conn and conn.is_connected():
+            conn.close()
+
+
+@app.get("/api/usuarios/{usuario_id}/roles")
+def obtener_roles_usuario(usuario_id: str, _: str = Depends(require_user_manager)):
+    conn, cur = None, None
+    try:
+        conn = mysql.connector.connect(**get_db_config())
+        cur = conn.cursor(dictionary=True)
+        cur.execute("SELECT r.id_Rol AS id, r.rol_Nombre AS nombre FROM USUARIOSxROLES ur JOIN ROLES r ON ur.id_Rol = r.id_Rol WHERE ur.id_Usuario = %s AND ur.ESTADO_UxR = 'ACT' AND r.ESTADO_ROL = 'ACT' ORDER BY r.rol_Nombre ASC", (usuario_id,))
+        return cur.fetchall()
+    except mysql.connector.Error as error:
+        raise_database_error(error)
+    finally:
+        if cur: cur.close()
+        if conn and conn.is_connected(): conn.close()
+
+
+@app.post("/api/usuarios")
+def crear_usuario(
+    payload: UsuarioCreate,
+    actor_id: str = Depends(require_user_manager),
+):
+    conn, cur = None, None
+    try:
+        conn = mysql.connector.connect(**get_db_config())
+        cur = conn.cursor(dictionary=True)
+        cur.execute(
+            "SELECT id_Usuario FROM USUARIOS WHERE usr_Username = %s OR id_Empleado = %s LIMIT 1",
+            (payload.username, payload.id_Empleado),
+        )
+        if cur.fetchone():
+            raise HTTPException(status_code=409, detail="El nombre de usuario ya existe o el empleado ya tiene una cuenta.")
+        cur.execute(
+            "SELECT id_Empleado FROM EMPLEADOS WHERE id_Empleado = %s AND ESTADO_EMP = 'ACT' LIMIT 1",
+            (payload.id_Empleado,),
+        )
+        if not cur.fetchone():
+            raise HTTPException(status_code=404, detail="El empleado no existe o está inactivo.")
+        for rol_id in payload.rol_ids:
+            cur.execute(
+                "SELECT id_Rol FROM ROLES WHERE id_Rol = %s AND ESTADO_ROL = 'ACT' LIMIT 1",
+                (rol_id,),
+            )
+            if not cur.fetchone():
+                raise HTTPException(status_code=400, detail=f"El rol {rol_id} no existe o está inactivo.")
+        new_id = f"USR-{uuid4().hex[:12].upper()}"
+        password_hash = hash_password(payload.password)
+        cur.execute("INSERT INTO USUARIOS (id_Usuario, id_Empleado, usr_Username, usr_PasswordHash, ESTADO_USR) VALUES (%s, %s, %s, %s, 'ACT')", (new_id, payload.id_Empleado, payload.username, password_hash))
+        for rol_id in payload.rol_ids:
+            cur.execute("INSERT INTO USUARIOSxROLES (id_Usuario, id_Rol, ESTADO_UxR) VALUES (%s, %s, 'ACT')", (new_id, rol_id))
+        log_id = f"LOG-{uuid4().hex[:10].upper()}"
+        cur.execute("INSERT INTO LOG_AUDITORIA (id_Log, id_Usuario, log_FechaHora, log_TablaAfectada, log_Accion, log_ValorAnterior, log_ValorNuevo) VALUES (%s, %s, NOW(), 'USUARIOS', 'CREATE', NULL, %s)", (log_id, actor_id, f"Usuario creado: {payload.username}"))
+        conn.commit()
+        return {"id": new_id, "mensaje": "Usuario creado exitosamente."}
+    except HTTPException:
+        if conn and conn.is_connected():
+            conn.rollback()
+        raise
+    except mysql.connector.Error as error:
+        if conn and conn.is_connected():
+            conn.rollback()
+        raise_database_error(error)
+    finally:
+        if cur: cur.close()
+        if conn and conn.is_connected(): conn.close()
+
+
+@app.put("/api/usuarios/{usuario_id}")
+def actualizar_usuario(
+    usuario_id: str,
+    payload: UsuarioUpdate,
+    actor_id: str = Depends(require_user_manager),
+):
+    conn, cur = None, None
+    try:
+        conn = mysql.connector.connect(**get_db_config())
+        cur = conn.cursor(dictionary=True)
+        cur.execute("SELECT id_Usuario, ESTADO_USR FROM USUARIOS WHERE id_Usuario = %s LIMIT 1", (usuario_id,))
+        existing_user = cur.fetchone()
+        if not existing_user:
+            raise HTTPException(status_code=404, detail="Usuario no encontrado.")
+        if usuario_id == actor_id and payload.ESTADO_USR in {"INA", "PEN"}:
+            raise HTTPException(status_code=400, detail="No puedes desactivar tu propia cuenta.")
+        if payload.ESTADO_USR == "ACT":
+            cur.execute(
+                """
+                SELECT 1
+                FROM USUARIOSxROLES ur
+                JOIN ROLES r ON r.id_Rol = ur.id_Rol
+                WHERE ur.id_Usuario = %s AND ur.ESTADO_UxR = 'ACT' AND r.ESTADO_ROL = 'ACT'
+                LIMIT 1
+                """,
+                (usuario_id,),
+            )
+            if not cur.fetchone():
+                raise HTTPException(status_code=400, detail="Asigna al menos un rol activo antes de activar la cuenta.")
+        if payload.id_Empleado is not None:
+            cur.execute(
+                "SELECT id_Empleado FROM EMPLEADOS WHERE id_Empleado = %s AND ESTADO_EMP = 'ACT' LIMIT 1",
+                (payload.id_Empleado,),
+            )
+            if not cur.fetchone():
+                raise HTTPException(status_code=404, detail="El empleado seleccionado no existe o está inactivo.")
+            cur.execute(
+                "SELECT 1 FROM USUARIOS WHERE id_Empleado = %s AND id_Usuario <> %s LIMIT 1",
+                (payload.id_Empleado, usuario_id),
+            )
+            if cur.fetchone():
+                raise HTTPException(status_code=409, detail="El empleado ya tiene otra cuenta de usuario.")
+        if payload.username is not None:
+            cur.execute(
+                "SELECT 1 FROM USUARIOS WHERE usr_Username = %s AND id_Usuario <> %s LIMIT 1",
+                (payload.username, usuario_id),
+            )
+            if cur.fetchone():
+                raise HTTPException(status_code=409, detail="El nombre de usuario ya existe.")
+        updates = []
+        values = []
+        if payload.id_Empleado is not None:
+            updates.append("id_Empleado = %s"); values.append(payload.id_Empleado)
+        if payload.username is not None:
+            updates.append("usr_Username = %s"); values.append(payload.username)
+        if payload.password is not None:
+            updates.append("usr_PasswordHash = %s"); values.append(hash_password(payload.password))
+            updates.append("usr_IntentosFallidos = 0")
+        if payload.ESTADO_USR is not None:
+            updates.append("ESTADO_USR = %s"); values.append(payload.ESTADO_USR)
+        if not updates:
+            raise HTTPException(status_code=400, detail="No hay campos para actualizar.")
+        values.append(usuario_id)
+        cur.execute(f"UPDATE USUARIOS SET {', '.join(updates)} WHERE id_Usuario = %s", tuple(values))
+        log_id = f"LOG-{uuid4().hex[:10].upper()}"
+        cur.execute("INSERT INTO LOG_AUDITORIA (id_Log, id_Usuario, log_FechaHora, log_TablaAfectada, log_Accion, log_ValorAnterior, log_ValorNuevo) VALUES (%s, %s, NOW(), 'USUARIOS', 'UPDATE', NULL, %s)", (log_id, actor_id, f"Usuario actualizado: {usuario_id}"))
+        conn.commit()
+        return {"mensaje": "Usuario actualizado exitosamente."}
+    except HTTPException:
+        if conn and conn.is_connected():
+            conn.rollback()
+        raise
+    except mysql.connector.Error as error:
+        if conn and conn.is_connected():
+            conn.rollback()
+        raise_database_error(error)
+    finally:
+        if cur: cur.close()
+        if conn and conn.is_connected(): conn.close()
+
+
+@app.delete("/api/usuarios/{usuario_id}")
+def desactivar_usuario(
+    usuario_id: str,
+    actor_id: str = Depends(require_user_manager),
+):
+    conn, cur = None, None
+    try:
+        conn = mysql.connector.connect(**get_db_config())
+        cur = conn.cursor(dictionary=True)
+        cur.execute("SELECT id_Usuario FROM USUARIOS WHERE id_Usuario = %s LIMIT 1", (usuario_id,))
+        if not cur.fetchone():
+            raise HTTPException(status_code=404, detail="Usuario no encontrado.")
+        if usuario_id == actor_id:
+            raise HTTPException(status_code=400, detail="No puedes desactivar tu propia cuenta.")
+        cur.execute("UPDATE USUARIOS SET ESTADO_USR = 'INA' WHERE id_Usuario = %s", (usuario_id,))
+        log_id = f"LOG-{uuid4().hex[:10].upper()}"
+        cur.execute("INSERT INTO LOG_AUDITORIA (id_Log, id_Usuario, log_FechaHora, log_TablaAfectada, log_Accion, log_ValorAnterior, log_ValorNuevo) VALUES (%s, %s, NOW(), 'USUARIOS', 'DELETE', NULL, %s)", (log_id, actor_id, f"Usuario desactivado: {usuario_id}"))
+        conn.commit()
+        return {"mensaje": "Usuario desactivado exitosamente."}
+    except HTTPException:
+        if conn and conn.is_connected():
+            conn.rollback()
+        raise
+    except mysql.connector.Error as error:
+        if conn and conn.is_connected():
+            conn.rollback()
+        raise_database_error(error)
+    finally:
+        if cur: cur.close()
+        if conn and conn.is_connected(): conn.close()
+
+
+class AsignarRolInput(BaseModel):
+    rol_id: str = Field(min_length=1, max_length=10)
+
+
+@app.post("/api/usuarios/{usuario_id}/roles")
+def asignar_rol_usuario(
+    usuario_id: str,
+    payload: AsignarRolInput,
+    actor_id: str = Depends(require_user_manager),
+):
+    conn, cur = None, None
+    try:
+        conn = mysql.connector.connect(**get_db_config())
+        cur = conn.cursor(dictionary=True)
+        rol_id = payload.rol_id
+        cur.execute("SELECT id_Usuario FROM USUARIOS WHERE id_Usuario = %s LIMIT 1", (usuario_id,))
+        if not cur.fetchone():
+            raise HTTPException(status_code=404, detail="Usuario no encontrado.")
+        cur.execute("SELECT id_Rol FROM ROLES WHERE id_Rol = %s AND ESTADO_ROL = 'ACT' LIMIT 1", (rol_id,))
+        if not cur.fetchone():
+            raise HTTPException(status_code=404, detail="El rol no existe o está inactivo.")
+        cur.execute(
+            "SELECT ESTADO_UxR FROM USUARIOSxROLES WHERE id_Usuario = %s AND id_Rol = %s LIMIT 1",
+            (usuario_id, rol_id),
+        )
+        assigned_role = cur.fetchone()
+        if assigned_role and assigned_role["ESTADO_UxR"] == "ACT":
+            raise HTTPException(status_code=409, detail="El rol ya está asignado a este usuario.")
+        if assigned_role:
+            cur.execute(
+                "UPDATE USUARIOSxROLES SET ESTADO_UxR = 'ACT' WHERE id_Usuario = %s AND id_Rol = %s",
+                (usuario_id, rol_id),
+            )
+        else:
+            cur.execute("INSERT INTO USUARIOSxROLES (id_Usuario, id_Rol, ESTADO_UxR) VALUES (%s, %s, 'ACT')", (usuario_id, rol_id))
+        cur.execute(
+            """
+            INSERT INTO LOG_AUDITORIA
+                (id_Log, id_Usuario, log_FechaHora, log_TablaAfectada,
+                 log_Accion, log_ValorAnterior, log_ValorNuevo)
+            VALUES (%s, %s, NOW(), 'USUARIOS', 'ROLE_ADD', NULL, %s)
+            """,
+            (f"LOG-{uuid4().hex[:10].upper()}", actor_id, f"{rol_id} asignado a {usuario_id}"),
+        )
+        conn.commit()
+        return {"mensaje": "Rol asignado exitosamente."}
+    except HTTPException:
+        if conn and conn.is_connected():
+            conn.rollback()
+        raise
+    except mysql.connector.Error as error:
+        if conn and conn.is_connected():
+            conn.rollback()
+        raise_database_error(error)
+    finally:
+        if cur: cur.close()
+        if conn and conn.is_connected(): conn.close()
+
+
+@app.delete("/api/usuarios/{usuario_id}/roles/{rol_id}")
+def remover_rol_usuario(
+    usuario_id: str,
+    rol_id: str,
+    actor_id: str = Depends(require_user_manager),
+):
+    conn, cur = None, None
+    try:
+        conn = mysql.connector.connect(**get_db_config())
+        cur = conn.cursor(dictionary=True)
+        cur.execute("SELECT ESTADO_USR FROM USUARIOS WHERE id_Usuario = %s LIMIT 1", (usuario_id,))
+        user_row = cur.fetchone()
+        if not user_row:
+            raise HTTPException(status_code=404, detail="Usuario no encontrado.")
+        if user_row["ESTADO_USR"] == "ACT":
+            cur.execute(
+                """
+                SELECT COUNT(*) AS total
+                FROM USUARIOSxROLES ur
+                JOIN ROLES r ON r.id_Rol = ur.id_Rol
+                WHERE ur.id_Usuario = %s
+                  AND ur.ESTADO_UxR = 'ACT'
+                  AND r.ESTADO_ROL = 'ACT'
+                """,
+                (usuario_id,),
+            )
+            if cur.fetchone()["total"] <= 1:
+                raise HTTPException(status_code=409, detail="No se puede remover el último rol de una cuenta activa.")
+        cur.execute("UPDATE USUARIOSxROLES SET ESTADO_UxR = 'INA' WHERE id_Usuario = %s AND id_Rol = %s AND ESTADO_UxR = 'ACT'", (usuario_id, rol_id))
+        if cur.rowcount == 0:
+            raise HTTPException(status_code=404, detail="El rol no está asignado a este usuario.")
+        cur.execute(
+            """
+            INSERT INTO LOG_AUDITORIA
+                (id_Log, id_Usuario, log_FechaHora, log_TablaAfectada,
+                 log_Accion, log_ValorAnterior, log_ValorNuevo)
+            VALUES (%s, %s, NOW(), 'USUARIOS', 'ROLE_REMOVE', NULL, %s)
+            """,
+            (f"LOG-{uuid4().hex[:10].upper()}", actor_id, f"{rol_id} removido de {usuario_id}"),
+        )
+        conn.commit()
+        return {"mensaje": "Rol removido exitosamente."}
+    except HTTPException:
+        if conn and conn.is_connected():
+            conn.rollback()
+        raise
+    except mysql.connector.Error as error:
+        if conn and conn.is_connected():
+            conn.rollback()
+        raise_database_error(error)
+    finally:
+        if cur: cur.close()
+        if conn and conn.is_connected(): conn.close()
+
+
+@app.get("/api/empleados")
+def listar_empleados():
+    conn, cur = None, None
+    try:
+        conn = mysql.connector.connect(**get_db_config())
+        cur = conn.cursor(dictionary=True)
+        cur.execute("SELECT e.id_Empleado AS id, e.emp_Nombre1 AS nombre, e.emp_Apellido1 AS apellido, d.dep_Nombre AS departamento FROM EMPLEADOS e LEFT JOIN DEPARTAMENTOS d ON e.id_Departamento = d.id_Departamento ORDER BY e.emp_Nombre1 ASC, e.emp_Apellido1 ASC")
+        return cur.fetchall()
+    except mysql.connector.Error as error:
+        raise_database_error(error)
+    finally:
+        if cur: cur.close()
+        if conn and conn.is_connected(): conn.close()
+
+
+@app.get("/api/departamentos")
+def listar_departamentos():
+    conn, cur = None, None
+    try:
+        conn = mysql.connector.connect(**get_db_config())
+        cur = conn.cursor(dictionary=True)
+        cur.execute("SELECT id_Departamento AS id, dep_Nombre AS nombre FROM DEPARTAMENTOS ORDER BY dep_Nombre ASC")
+        return cur.fetchall()
+    except mysql.connector.Error as error:
+        raise_database_error(error)
+    finally:
+        if cur: cur.close()
+        if conn and conn.is_connected(): conn.close()
+
+
 if __name__ == "__main__":
     import sys
     import uvicorn
-
     api_dir = Path(__file__).resolve().parent
     workspace_dir = api_dir.parent
-
     for path_str in [str(api_dir), str(workspace_dir)]:
         if path_str not in sys.path:
             sys.path.insert(0, path_str)
-
     print("Iniciando servidor API en http://127.0.0.1:8000 ...")
     uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True, app_dir=str(api_dir))
-

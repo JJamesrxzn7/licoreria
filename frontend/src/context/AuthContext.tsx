@@ -18,10 +18,19 @@ const AuthContext = createContext<AuthContextType | null>(null);
 
 export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   const [user, setUser] = useState<AuthUser | null>(() => {
+    const token = localStorage.getItem('licoreria_token');
+    if (!token || !token.includes('.')) {
+      localStorage.removeItem('licoreria_token');
+      localStorage.removeItem('licoreria_user');
+      return null;
+    }
     try {
       const saved = localStorage.getItem('licoreria_user');
       if (saved) return JSON.parse(saved);
-    } catch {}
+    } catch {
+      localStorage.removeItem('licoreria_token');
+      localStorage.removeItem('licoreria_user');
+    }
     return null;
   });
   const [isLoading, setIsLoading] = useState(false);
@@ -41,9 +50,10 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       } else {
         throw new Error('No se pudo iniciar sesión.');
       }
-    } catch {
-      setError('Credenciales inválidas o error de conexión.');
-      throw new Error('Credenciales inválidas o error de conexión.');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Credenciales inválidas o error de conexión.';
+      setError(message);
+      throw new Error(message);
     } finally {
       setIsLoading(false);
     }

@@ -61,9 +61,15 @@ type CreateOrderRequest = {
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   let response: Response;
   try {
+    const headers = new Headers(init?.headers);
+    headers.set('Content-Type', 'application/json');
+    const token = localStorage.getItem('licoreria_token');
+    if (token && !headers.has('Authorization')) {
+      headers.set('Authorization', `Bearer ${token}`);
+    }
     response = await fetch(`${API_BASE_URL}${path}`, {
       ...init,
-      headers: { 'Content-Type': 'application/json', ...init?.headers },
+      headers,
     });
   } catch (error) {
     if (error instanceof Error && error.message.includes('fetch')) {
@@ -75,17 +81,19 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const body: unknown = await response.json().catch(() => null);
   if (!response.ok) {
     const status = response.status;
-    let mensaje = 'Ocurrió un error inesperado.';
+    let mensaje = body && typeof body === 'object' && 'detail' in body && typeof body.detail === 'string'
+      ? body.detail
+      : 'Ocurrió un error inesperado.';
     if (status === 401) {
-      mensaje = 'Credenciales inválidas.';
+      mensaje = mensaje === 'Ocurrió un error inesperado.' ? 'Credenciales inválidas o sesión expirada.' : mensaje;
     } else if (status === 403) {
-      mensaje = 'No tienes permiso para realizar esta acción.';
+      mensaje = mensaje === 'Ocurrió un error inesperado.' ? 'No tienes permiso para realizar esta acción.' : mensaje;
     } else if (status === 404) {
-      mensaje = 'El recurso solicitado no existe.';
+      mensaje = mensaje === 'Ocurrió un error inesperado.' ? 'El recurso solicitado no existe.' : mensaje;
     } else if (status === 409) {
-      mensaje = 'Conflicto al procesar la solicitud.';
+      mensaje = mensaje === 'Ocurrió un error inesperado.' ? 'Conflicto al procesar la solicitud.' : mensaje;
     } else if (status >= 500) {
-      mensaje = 'Error interno del servidor. Intenta nuevamente más tarde.';
+      mensaje = mensaje === 'Ocurrió un error inesperado.' ? 'Error interno del servidor. Intenta nuevamente más tarde.' : mensaje;
     } else if (status === 0) {
       mensaje = 'No se pudo conectar con el servidor.';
     }
@@ -514,10 +522,108 @@ export const authApi = {
       method: 'POST',
       body: JSON.stringify(data),
     }),
+  register: (data: { id_Empleado: string; cedula: string; username: string; password: string }) =>
+    request<{ id: string; mensaje: string }>('/api/auth/registro', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
   logout: (data: { userId?: string; username?: string }) =>
     request<{ success: boolean; mensaje: string }>('/api/auth/logout', {
       method: 'POST',
       body: JSON.stringify(data),
     }),
   demoAccounts: () => request<DemoAccount[]>('/api/auth/demo-accounts'),
+};
+
+// 11. Gestión de Usuarios
+export interface Usuario {
+  id_Usuario: string;
+  id_Empleado: string;
+  username: string;
+  ESTADO_USR: string;
+  emp_Nombre1: string | null;
+  emp_Apellido1: string | null;
+  dep_Nombre: string | null;
+  roles: string[];
+}
+
+export interface UsuarioRol {
+  id: string;
+  nombre: string;
+}
+
+export interface UsuarioCreate {
+  id_Empleado: string;
+  username: string;
+  password: string;
+  rol_ids: string[];
+}
+
+export interface UsuarioUpdate {
+  id_Empleado?: string;
+  username?: string;
+  password?: string;
+  ESTADO_USR?: string;
+}
+
+export interface Empleado {
+  id: string;
+  nombre: string;
+  apellido: string;
+  departamento: string | null;
+}
+
+export interface Departamento {
+  id: string;
+  nombre: string;
+}
+
+export interface Rol {
+  id: string;
+  nombre: string;
+  descripcion: string;
+  estado: string;
+  usuariosAsignados: number;
+}
+
+export const usuariosApi = {
+  listar: () => request<Usuario[]>('/api/usuarios'),
+  empleadosDisponibles: () => request<Empleado[]>('/api/usuarios/empleados-disponibles'),
+  crear: (data: UsuarioCreate) =>
+    request<{ id: string; mensaje: string }>('/api/usuarios', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  actualizar: (id: string, data: UsuarioUpdate) =>
+    request<{ mensaje: string }>(`/api/usuarios/${encodeURIComponent(id)}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    }),
+  desactivar: (id: string) =>
+    request<{ mensaje: string }>(`/api/usuarios/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+    }),
+  obtenerRoles: (usuarioId: string) => request<UsuarioRol[]>(`/api/usuarios/${encodeURIComponent(usuarioId)}/roles`),
+  asignarRol: (usuarioId: string, rolId: string) =>
+    request<{ mensaje: string }>(`/api/usuarios/${encodeURIComponent(usuarioId)}/roles`, {
+      method: 'POST',
+      body: JSON.stringify({ rol_id: rolId }),
+    }),
+  removerRol: (usuarioId: string, rolId: string) =>
+    request<{ mensaje: string }>(
+      `/api/usuarios/${encodeURIComponent(usuarioId)}/roles/${encodeURIComponent(rolId)}`,
+      { method: 'DELETE' }
+    ),
+};
+
+export const empleadosApi = {
+  listar: () => request<Empleado[]>('/api/empleados'),
+};
+
+export const departamentosApi = {
+  listar: () => request<Departamento[]>('/api/departamentos'),
+};
+
+export const rolesApi = {
+  listar: () => request<Rol[]>('/api/auth/roles'),
 };

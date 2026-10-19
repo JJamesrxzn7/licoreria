@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   Bell, BookOpen, Briefcase, Calculator, FileText, LayoutDashboard, Menu,
   PanelLeftClose, PanelLeftOpen, ShoppingCart, Truck, Users, Wine, X,
@@ -7,6 +7,8 @@ import {
 import { StoreProvider } from './context';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import Login from './pages/Login';
+import Registro from './pages/Registro';
+import Usuarios from './pages/Usuarios';
 import { POS } from './pages/POS';
 import { Customers, Dashboard, EmployeeFile, PayrollManagement, Suppliers } from './pages/CorePages';
 import { Adjustments, Catalog, Deliveries, PurchaseOrders, Receptions } from './pages/InventoryPages';
@@ -31,13 +33,33 @@ const navItems = [
   { id: 'bancos', label: 'Bancos', icon: Building2, group: 'ADMINISTRACIÓN' },
   { id: 'cost_centers', label: 'Centros de costos', icon: PieChart, group: 'ADMINISTRACIÓN' },
   { id: 'reports', label: 'Reportes', icon: FileText, group: 'ADMINISTRACIÓN' },
+  { id: 'usuarios', label: 'Usuarios', icon: Users, group: 'ADMINISTRACIÓN' },
 ];
 
 const AppContent = () => {
   const { user, isAuthenticated, logout, isLoading } = useAuth();
-  const [currentRoute, setCurrentRoute] = useState('dashboard');
+  const [hashRoute, setHashRoute] = useState(() => window.location.hash.replace('#/', ''));
+  const [currentRoute, setCurrentRoute] = useState(() => {
+    const initialRoute = window.location.hash.replace('#/', '');
+    return initialRoute === 'usuarios' || initialRoute === 'registro' ? initialRoute : 'dashboard';
+  });
   const [collapsed, setCollapsed] = useState(false);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
+
+  useEffect(() => {
+    const handleHashChange = () => {
+      const route = window.location.hash.replace('#/', '');
+      setHashRoute(route);
+      if (route === 'usuarios' || (route === 'registro' && isAuthenticated)) {
+        setCurrentRoute(route);
+      }
+      if (route === 'login' && isAuthenticated) {
+        setCurrentRoute('dashboard');
+      }
+    };
+    window.addEventListener('hashchange', handleHashChange);
+    return () => window.removeEventListener('hashchange', handleHashChange);
+  }, [isAuthenticated]);
 
   if (isLoading && !isAuthenticated) {
     return (
@@ -55,6 +77,9 @@ const AppContent = () => {
   }
 
   if (!isAuthenticated) {
+    if (hashRoute === 'registro') {
+      return <Registro onBack={() => { window.location.hash = '#/login'; }} />;
+    }
     return <Login />;
   }
 
@@ -94,6 +119,8 @@ const AppContent = () => {
     bancos: <Accounting initialTab="bancos" />,
     cost_centers: <Accounting initialTab="centros_costos" />,
     reports: <Reports />,
+    usuarios: <Usuarios onCreate={() => navigate('registro')} />,
+    registro: <Registro onBack={() => navigate('usuarios')} />,
   };
 
   return (
@@ -139,7 +166,7 @@ const AppContent = () => {
       <main className="main-content">
         <header className="topbar">
           <button type="button" className="mobile-menu" aria-label="Abrir menú" onClick={() => setMobileNavOpen(true)}><Menu size={21} /></button>
-          <span className="breadcrumb">La Cava <span>/</span> {activePage?.label}</span>
+          <span className="breadcrumb">La Cava <span>/</span> {activePage?.label ?? (currentRoute === 'registro' ? 'Nuevo usuario' : '')}</span>
           <div className="topbar-actions">
             <button type="button" className="notification-button" aria-label="Ver alertas de inventario" onClick={() => navigate('products')}><Bell size={18} /></button>
             <div className="user-profile" onClick={handleLogout} title="Cerrar sesión">
