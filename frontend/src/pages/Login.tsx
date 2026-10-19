@@ -1,20 +1,13 @@
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { Mail, Lock, AlertCircle, Eye, EyeOff, LogIn } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
-import { authApi } from '../api';
-import { DemoAccount } from '../api';
 
 export default function Login() {
   const { login, isLoading, error } = useAuth();
-  const [demoAccounts, setDemoAccounts] = useState<DemoAccount[]>([]);
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [loginError, setLoginError] = useState<string | null>(null);
-
-  useEffect(() => {
-    authApi.demoAccounts().then(setDemoAccounts).catch(() => {});
-  }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -24,11 +17,6 @@ export default function Login() {
     } catch {
       setLoginError('Credenciales inválidas o error de conexión.');
     }
-  };
-
-  const handleDemoLogin = (account: DemoAccount) => {
-    setUsername(account.username);
-    setPassword(account.password);
   };
 
   return (
@@ -117,32 +105,6 @@ export default function Login() {
             </button>
           </form>
 
-          <div className="divider">
-            <span>o prueba con una cuenta de demostración</span>
-          </div>
-
-          <div className="demo-accounts">
-            {demoAccounts.length > 0 ? (
-              demoAccounts.map((account) => (
-                <button
-                  key={account.username}
-                  type="button"
-                  className="demo-btn"
-                  disabled={isLoading}
-                  onClick={() => handleDemoLogin(account)}
-                  title={account.description}
-                >
-                  <span className="demo-color" style={{ backgroundColor: account.color }}></span>
-                  <span className="demo-info">
-                    <strong>{account.username}</strong>
-                    <span className="demo-role">{account.role}</span>
-                  </span>
-                </button>
-              ))
-            ) : (
-              <button className="demo-btn" disabled>Cargando cuentas...</button>
-            )}
-          </div>
         </div>
 
         <div className="login-footer">
