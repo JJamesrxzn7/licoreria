@@ -156,7 +156,7 @@ export const Customers = () => {
               <option value="JUR">Persona jurídica</option>
             </select>
           </label>
-          <label className="form-group">Teléfono convencional<input className="input" maxLength={10} placeholder="Ej: 022345678" value={form.contact ?? ''} onChange={event => setForm({ ...form, contact: event.target.value.replace(/\D/g, '').slice(0, 10) })} /></label>
+          <label className="form-group">Teléfono convencional (opcional)<input className="input" maxLength={10} placeholder="Ej: 022345678" value={form.contact ?? ''} onChange={event => setForm({ ...form, contact: event.target.value.replace(/\D/g, '').slice(0, 10) })} /></label>
           <label className="form-group">Celular<input className="input" maxLength={10} placeholder="Ej: 0991234567" value={form.mobile ?? ''} onChange={event => setForm({ ...form, mobile: event.target.value.replace(/\D/g, '').slice(0, 10) })} /></label>
           <label className="form-group">Correo<input className="input" type="email" value={form.email ?? ''} onChange={event => setForm({ ...form, email: event.target.value })} /></label>
           <label className="form-group">Ciudad

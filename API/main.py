@@ -4564,6 +4564,7 @@ def configurar_administrador_inicial(payload: InitialAdminSetupInput):
     finally:
         if setup_lock_acquired and cur:
             cur.execute("SELECT RELEASE_LOCK('licoreria_initial_admin_setup')")
+            cur.fetchone()
         if cur:
             cur.close()
         if conn and conn.is_connected():

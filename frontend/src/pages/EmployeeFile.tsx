@@ -918,7 +918,7 @@ export const EmployeeFile: React.FC = () => {
                     </select>
                   </label>
                   
-                  {/* Campos Requeridos: Dirección y Teléfono Convencional */}
+                  {/* Dirección requerida; teléfono convencional opcional */}
                   <label className="form-group" style={{ gridColumn: 'span 2' }}>
                     Dirección Física Domiciliaria (emp_Direccion) *
                     <div style={{ position: 'relative' }}>
@@ -935,7 +935,7 @@ export const EmployeeFile: React.FC = () => {
                     </div>
                   </label>
                   <label className="form-group">
-                    Teléfono Convencional (emp_Telefono)
+                    Teléfono convencional (opcional)
                     <div style={{ position: 'relative' }}>
                       <Phone size={16} style={{ position: 'absolute', left: '10px', top: '10px', color: '#9ca3af' }} />
                       <input
@@ -1728,7 +1728,7 @@ export const EmployeeFile: React.FC = () => {
                   {newEmpSubmitted && newEmpFieldErrors.direccion && <span className="field-error">{newEmpFieldErrors.direccion}</span>}
                 </label>
                 <label className="form-group">
-                  Teléfono convencional
+                  Teléfono convencional (opcional)
                   <input
                     id="new-employee-telefono"
                     className="input"

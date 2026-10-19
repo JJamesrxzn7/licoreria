@@ -321,7 +321,7 @@ export default function InitialSetup() {
                 {renderFieldError('address')}
               </label>
               <label className="form-group">
-                <span className="form-label">Teléfono convencional</span>
+                <span className="form-label">Teléfono convencional (opcional)</span>
                 <input id="setup-phone" className="form-input setup-plain-input" value={form.phone} onChange={event => update('phone', event.target.value.replace(/\D/g, '').slice(0, 9))} onBlur={() => markTouched('phone')} maxLength={9} inputMode="tel" autoComplete="tel-national" aria-invalid={Boolean(fieldError('phone'))} />
                 {renderFieldError('phone')}
               </label>
