@@ -81,9 +81,6 @@ const AppContent = () => {
     if (hashRoute === 'configuracion-inicial') {
       return <InitialSetup />;
     }
-    if (hashRoute === 'registro') {
-      return <Registro onBack={() => { window.location.hash = '#/login'; }} />;
-    }
     return <Login />;
   }
 

@@ -4470,7 +4470,7 @@ def configurar_administrador_inicial(payload: InitialAdminSetupInput):
             """
             SELECT id_Rol
             FROM ROLES
-            WHERE LOWER(TRIM(rol_Nombre)) IN ('admin', 'administrador')
+            WHERE LOWER(TRIM(rol_Nombre)) IN ('admin', 'administrador', 'superadministrador')
               AND (ESTADO_ROL = 'ACT' OR ESTADO_ROL IS NULL)
             ORDER BY id_Rol
             LIMIT 1
@@ -4629,7 +4629,7 @@ def require_user_manager(user_id: str = Depends(get_authenticated_user)) -> str:
               AND ur.ESTADO_UxR = 'ACT'
               AND r.ESTADO_ROL = 'ACT'
               AND (
-                  LOWER(r.rol_Nombre) IN ('admin', 'administrador')
+                  LOWER(r.rol_Nombre) IN ('admin', 'administrador', 'superadministrador')
                   OR LOWER(r.rol_Nombre) = 'jefe_talento_humano'
                   OR EXISTS (
                       SELECT 1
@@ -4685,7 +4685,7 @@ ALL_FRONTEND_ROUTES = [
 
 def puede_administrar_usuarios(role_names: list[str], permission_ids: list[str]) -> bool:
     return "PRM-USU" in permission_ids or any(
-        role.strip().lower() in {"admin", "administrador", "jefe_talento_humano"}
+        role.strip().lower() in {"admin", "administrador", "superadministrador", "jefe_talento_humano"}
         for role in role_names
     )
 
@@ -4801,7 +4801,7 @@ def login_usuario(payload: LoginInput, request: Request):
         # 4. Calcular rutas permitidas
         can_manage_users = puede_administrar_usuarios(role_names, perm_ids)
         is_admin = ("ROL-ADMIN" in role_ids) or any(
-            str(role).strip().lower() in {"admin", "administrador"} for role in role_names
+            str(role).strip().lower() in {"admin", "administrador", "superadministrador"} for role in role_names
         )
         if is_admin:
             allowed_routes = list(ALL_FRONTEND_ROUTES)

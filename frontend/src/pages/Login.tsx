@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Mail, Lock, AlertCircle, Eye, EyeOff, LogIn, UserPlus, ShieldCheck } from 'lucide-react';
+import { Mail, Lock, AlertCircle, Eye, EyeOff, LogIn, ShieldCheck } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { authApi } from '../api';
 
@@ -26,10 +26,6 @@ export default function Login() {
       cancelled = true;
     };
   }, []);
-
-  const irARegistro = () => {
-    window.location.hash = '#/registro';
-  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -130,16 +126,7 @@ export default function Login() {
               >
                 <ShieldCheck size={16} /> Crear empleado y administrador inicial
               </button>
-            ) : (
-              <button
-                type="button"
-                className="registro-btn"
-                onClick={irARegistro}
-                disabled={isLoading}
-              >
-                <UserPlus size={16} /> Crear cuenta nueva
-              </button>
-            )}
+            ) : null}
           </form>
 
         </div>

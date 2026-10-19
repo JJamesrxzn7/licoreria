@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { AlertCircle, ArrowLeft, Lock, Mail, Shield, User } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
-import { authApi, usuariosApi, rolesApi } from '../api';
+import { usuariosApi, rolesApi } from '../api';
 import type { Empleado, Rol } from '../api';
 
 type RegistroProps = {
@@ -10,16 +10,14 @@ type RegistroProps = {
 
 export default function Registro({ onBack }: RegistroProps) {
   const { user, hasPermission } = useAuth();
-  const isAuthenticated = Boolean(user);
   const isUserManager = Boolean(
-    user?.roles.some(role => ['admin', 'administrador', 'jefe_talento_humano'].includes(role.trim().toLowerCase()))
+    user?.roles.some(role => ['admin', 'administrador', 'superadministrador', 'jefe_talento_humano'].includes(role.trim().toLowerCase()))
       || hasPermission('PRM-USU'),
   );
   const [empleados, setEmpleados] = useState<Empleado[]>([]);
   const [rolesDisponibles, setRolesDisponibles] = useState<Rol[]>([]);
   const [form, setForm] = useState({
     id_Empleado: '',
-    cedula: '',
     username: '',
     password: '',
     confirmPassword: '',
@@ -35,9 +33,6 @@ export default function Registro({ onBack }: RegistroProps) {
   const validateField = (field: string, value: string): string => {
     const clean = value.trim();
     if (field === 'id_Empleado') return clean ? '' : 'Selecciona un empleado.';
-    if (field === 'cedula') {
-      return /^\d{10,20}$/.test(clean) ? '' : 'Ingresa entre 10 y 20 dígitos, sin espacios ni símbolos.';
-    }
     if (field === 'username') {
       if (clean.length < 3 || clean.length > 50) return 'El usuario debe tener entre 3 y 50 caracteres.';
       return /^[A-Za-z0-9_.@-]+$/.test(clean) ? '' : 'Usa solo letras, números, punto, guion, guion bajo o @.';
@@ -102,13 +97,11 @@ export default function Registro({ onBack }: RegistroProps) {
     setError(null);
     setSuccess(null);
 
-    if (isAuthenticated && !isUserManager) {
+    if (!isUserManager) {
       setError('No tienes permiso para crear usuarios.');
       return;
     }
-    const fields = isUserManager
-      ? ['id_Empleado', 'username', 'password', 'confirmPassword']
-      : ['cedula', 'username', 'password', 'confirmPassword'];
+    const fields = ['id_Empleado', 'username', 'password', 'confirmPassword'];
     const nextErrors = Object.fromEntries(fields.map(field => [
       field,
       validateField(field, String(form[field as keyof typeof form] || '')),
@@ -123,49 +116,29 @@ export default function Registro({ onBack }: RegistroProps) {
       }
       return;
     }
-    if (isAuthenticated && form.rol_ids.length === 0) {
+    if (form.rol_ids.length === 0) {
       setError('Asigna al menos un rol para crear la cuenta.');
       return;
     }
 
     setLoading(true);
     try {
-      if (isUserManager) {
-        await usuariosApi.crear({
-          id_Empleado: form.id_Empleado,
-          username: form.username,
-          password: form.password,
-          rol_ids: form.rol_ids,
-        });
-        setSuccess('Usuario creado y activado. Ya puede iniciar sesión.');
-        setForm({
-          id_Empleado: '',
-          cedula: '',
-          username: '',
-          password: '',
-          confirmPassword: '',
-          rol_ids: [],
-        });
-        setFieldErrors({});
-        setTouched({});
-      } else {
-        const response = await authApi.register({
-          cedula: form.cedula.trim(),
-          username: form.username,
-          password: form.password,
-        });
-        setSuccess(response.mensaje);
-        setForm({
-          id_Empleado: '',
-          cedula: '',
-          username: '',
-          password: '',
-          confirmPassword: '',
-          rol_ids: [],
-        });
-        setFieldErrors({});
-        setTouched({});
-      }
+      await usuariosApi.crear({
+        id_Empleado: form.id_Empleado,
+        username: form.username,
+        password: form.password,
+        rol_ids: form.rol_ids,
+      });
+      setSuccess('Usuario creado y activado. Ya puede iniciar sesión.');
+      setForm({
+        id_Empleado: '',
+        username: '',
+        password: '',
+        confirmPassword: '',
+        rol_ids: [],
+      });
+      setFieldErrors({});
+      setTouched({});
     } catch (err) {
       const message = err instanceof Error ? err.message : '';
       setError(/database|sql|mysql|maria|traceback|constraint|table|column/i.test(message)
@@ -176,7 +149,7 @@ export default function Registro({ onBack }: RegistroProps) {
     }
   };
 
-  if (isAuthenticated && !isUserManager) {
+  if (!isUserManager) {
     return (
       <section className="card" role="alert">
         <h2>Acceso restringido</h2>
@@ -186,11 +159,9 @@ export default function Registro({ onBack }: RegistroProps) {
     );
   }
 
-  const adminMode = isUserManager;
-
   return (
-    <div className={`login-page ${adminMode ? 'registro-admin-page' : ''}`}>
-      <div className={`login-container ${adminMode ? 'registro-admin-container' : ''}`}>
+    <div className="login-page registro-admin-page">
+      <div className="login-container registro-admin-container">
         <div className="login-brand">
           <div className="brand-mark">
             <svg width="32" height="32" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -200,22 +171,18 @@ export default function Registro({ onBack }: RegistroProps) {
           </div>
           <div className="brand-info">
             <h2>La Cava</h2>
-            <p>{adminMode ? 'Administración de usuarios' : 'Registro de nuevo usuario'}</p>
+            <p>Administración de usuarios</p>
           </div>
         </div>
 
         <div className="login-card">
           <button type="button" className="back-btn" onClick={onBack}>
-            <ArrowLeft size={16} /> {adminMode ? 'Volver a usuarios' : 'Volver al login'}
+            <ArrowLeft size={16} /> Volver a usuarios
           </button>
 
           <div className="login-header">
-            <h3>{adminMode ? 'Crear usuario' : 'Solicitar una cuenta'}</h3>
-            <p>
-              {adminMode
-                ? 'Registra una cuenta para un empleado y asigna sus roles.'
-                : 'Ingresa tu cédula registrada como empleado. El sistema localizará tu ficha y un administrador activará la cuenta.'}
-            </p>
+            <h3>Crear usuario</h3>
+            <p>Registra una cuenta para un empleado y asigna sus roles.</p>
           </div>
 
           {error && (
@@ -232,8 +199,7 @@ export default function Registro({ onBack }: RegistroProps) {
           )}
 
           <form onSubmit={handleSubmit} className="login-form" noValidate>
-            {adminMode ? (
-              <div className="form-group">
+            <div className="form-group">
                 <label className="form-label" htmlFor="registro-empleado">Empleado</label>
                 <div className="input-wrapper">
                   <User size={18} className="input-icon" />
@@ -257,31 +223,6 @@ export default function Registro({ onBack }: RegistroProps) {
                 </div>
                 {touched.id_Empleado && fieldErrors.id_Empleado && <span className="field-error" role="alert">{fieldErrors.id_Empleado}</span>}
               </div>
-            ) : (
-              <div className="form-group">
-                <label className="form-label" htmlFor="registro-cedula">Cédula del empleado</label>
-                <div className="input-wrapper">
-                  <User size={18} className="input-icon" />
-                  <input
-                    id="registro-cedula"
-                    type="text"
-                    className="form-input"
-                    placeholder="Ingresa tu cédula"
-                    value={form.cedula}
-                    onChange={event => updateField('cedula', event.target.value.replace(/\D/g, '').slice(0, 20))}
-                    onBlur={() => markTouched('cedula')}
-                    disabled={loading}
-                    inputMode="numeric"
-                    minLength={10}
-                    maxLength={20}
-                    autoComplete="off"
-                    aria-invalid={Boolean(touched.cedula && fieldErrors.cedula)}
-                    required
-                  />
-                </div>
-                {touched.cedula && fieldErrors.cedula && <span className="field-error" role="alert">{fieldErrors.cedula}</span>}
-              </div>
-            )}
 
             <div className="form-group">
               <label className="form-label" htmlFor="registro-username">Nombre de usuario</label>
@@ -352,8 +293,7 @@ export default function Registro({ onBack }: RegistroProps) {
               {touched.confirmPassword && fieldErrors.confirmPassword && <span className="field-error" role="alert">{fieldErrors.confirmPassword}</span>}
             </div>
 
-            {adminMode && (
-              <div className="form-group">
+            <div className="form-group">
                 <label className="form-label">Roles asignados</label>
                 <div className="roles-list">
                   {rolesDisponibles.map(role => (
@@ -377,17 +317,14 @@ export default function Registro({ onBack }: RegistroProps) {
                 {rolesDisponibles.length === 0 && !loadingCatalogs && (
                   <small>No hay roles activos disponibles para asignar.</small>
                 )}
-              </div>
-            )}
+            </div>
 
             <button
               type="submit"
               className="login-button"
               disabled={loading || loadingCatalogs}
             >
-              {loading
-                ? 'Creando...'
-                : <><Shield size={18} /> {adminMode ? 'Crear usuario' : 'Solicitar cuenta'}</>}
+              {loading ? 'Creando...' : <><Shield size={18} /> Crear usuario</>}
             </button>
           </form>
         </div>

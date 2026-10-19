@@ -11,7 +11,7 @@ type UsuariosProps = {
 export default function Usuarios({ onCreate }: UsuariosProps) {
   const { user, hasPermission } = useAuth();
   const isUserManager = Boolean(
-    user?.roles.some(role => ['admin', 'administrador', 'jefe_talento_humano'].includes(role.trim().toLowerCase()))
+    user?.roles.some(role => ['admin', 'administrador', 'superadministrador', 'jefe_talento_humano'].includes(role.trim().toLowerCase()))
       || hasPermission('PRM-USU'),
   );
   const [usuarios, setUsuarios] = useState<Usuario[]>([]);
