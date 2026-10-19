@@ -74,6 +74,8 @@ export const EmployeeFile: React.FC = () => {
     celular: '',
     email: '',
   });
+  const [newEmpFieldErrors, setNewEmpFieldErrors] = useState<Partial<Record<keyof typeof newEmpForm, string>>>({});
+  const [newEmpSubmitted, setNewEmpSubmitted] = useState(false);
 
   // Formulario de Edición de Datos Personales
   const [editEmpForm, setEditEmpForm] = useState({
@@ -277,6 +279,66 @@ export const EmployeeFile: React.FC = () => {
     return null;
   };
 
+  const validateNewEmployeeFields = (form: typeof newEmpForm): Partial<Record<keyof typeof newEmpForm, string>> => {
+    const errors: Partial<Record<keyof typeof newEmpForm, string>> = {};
+    const setFieldError = (field: keyof typeof newEmpForm, message: string) => {
+      if (message) errors[field] = message;
+    };
+    const validateName = (value: string, required: boolean, label: string) => {
+      const clean = value.trim();
+      if (required && clean.length < 2) return `${label} debe tener al menos 2 caracteres.`;
+      if (clean.length > 30) return `${label} no puede superar 30 caracteres.`;
+      if (clean && (!RE_NAME.test(clean) || RE_SQLI.test(clean))) return `${label} solo puede contener letras, espacios, puntos o guiones.`;
+      return '';
+    };
+
+    setFieldError('ci', validateEcuadorianCedula(form.ci)
+      ? ''
+      : 'Ingresa una cédula ecuatoriana válida de 10 dígitos.');
+    setFieldError('nombre1', validateName(form.nombre1, true, 'El primer nombre'));
+    setFieldError('nombre2', validateName(form.nombre2, false, 'El segundo nombre'));
+    setFieldError('apellido1', validateName(form.apellido1, true, 'El primer apellido'));
+    setFieldError('apellido2', validateName(form.apellido2, false, 'El segundo apellido'));
+
+    const salary = Number(form.sueldo);
+    setFieldError('sueldo', !Number.isFinite(salary) || salary < 460
+      ? 'El sueldo debe ser al menos $460.'
+      : salary > 50000 ? 'El sueldo no puede superar $50.000.' : '');
+    setFieldError('sexo', ['M', 'F'].includes(form.sexo) ? '' : 'Selecciona una opción.');
+    setFieldError('fechaNacimiento', !form.fechaNacimiento
+      ? 'Ingresa la fecha de nacimiento.'
+      : form.fechaNacimiento > maxBirthDateEmp
+        ? 'El empleado debe tener al menos 18 años.'
+        : form.fechaNacimiento < minBirthDateEmp ? 'La edad no puede superar 90 años.' : '');
+    setFieldError('idDepartamento', departments.some(department => department.id === form.idDepartamento)
+      ? '' : 'Selecciona un departamento disponible.');
+    setFieldError('idCargo', cargos.some(cargo => cargo.id === form.idCargo)
+      ? '' : 'Selecciona un cargo inicial disponible.');
+    setFieldError('direccion', form.direccion.trim().length < 5
+      ? 'La dirección debe tener al menos 5 caracteres.'
+      : form.direccion.trim().length > 60
+        ? 'La dirección no puede superar 60 caracteres.'
+        : RE_SQLI.test(form.direccion.trim()) ? 'Revisa los caracteres ingresados en la dirección.' : '');
+    setFieldError('telefono', form.telefono && !RE_PHONE_CONV.test(form.telefono.replace(/\D/g, ''))
+      ? 'Usa 7 dígitos o 9 incluyendo el código de provincia.' : '');
+    setFieldError('celular', form.celular && !RE_MOBILE.test(form.celular.replace(/\D/g, ''))
+      ? 'Usa 10 dígitos y comienza con 09.' : '');
+    setFieldError('email', form.email && (!RE_EMAIL.test(form.email.trim().toLowerCase()) || form.email.length > 60 || RE_SQLI.test(form.email))
+      ? 'Ingresa un correo válido de hasta 60 caracteres.' : '');
+    return errors;
+  };
+
+  const updateNewEmployeeField = <K extends keyof typeof newEmpForm>(
+    field: K,
+    value: (typeof newEmpForm)[K],
+  ) => {
+    const nextForm = { ...newEmpForm, [field]: value };
+    setNewEmpForm(nextForm);
+    if (newEmpSubmitted) {
+      setNewEmpFieldErrors(validateNewEmployeeFields(nextForm));
+    }
+  };
+
   const validateDependentData = (form: {
     ci: string;
     nombre1: string;
@@ -313,9 +375,13 @@ export const EmployeeFile: React.FC = () => {
   // Crear nuevo empleado
   const handleCreateEmployee = async (e: React.FormEvent) => {
     e.preventDefault();
-    const errorMsg = validateEmployeeData(newEmpForm);
-    if (errorMsg) {
-      setNotice({ type: 'error', message: errorMsg });
+    setNewEmpSubmitted(true);
+    const errors = validateNewEmployeeFields(newEmpForm);
+    setNewEmpFieldErrors(errors);
+    if (Object.keys(errors).length > 0) {
+      const firstInvalid = Object.keys(errors)[0];
+      document.getElementById(`new-employee-${firstInvalid}`)?.focus();
+      setNotice({ type: 'error', message: 'Corrige los campos marcados en el formulario para continuar.' });
       return;
     }
     const ciClean = newEmpForm.ci.replace(/\D/g, '').slice(0, 10);
@@ -343,7 +409,13 @@ export const EmployeeFile: React.FC = () => {
       void loadInitialData();
       if (res.id) setSelectedEmpId(res.id);
     } catch (err: any) {
-      setNotice({ type: 'error', message: err?.message || 'Error al registrar el empleado en la base de datos.' });
+      const message = typeof err?.message === 'string' ? err.message : '';
+      setNotice({
+        type: 'error',
+        message: /database|sql|mysql|maria|traceback|constraint|table|column/i.test(message)
+          ? 'No se pudo registrar al colaborador. Revisa los datos e inténtalo nuevamente.'
+          : message || 'No se pudo registrar al colaborador. Revisa los datos e inténtalo nuevamente.',
+      });
     }
   };
 
@@ -541,7 +613,12 @@ export const EmployeeFile: React.FC = () => {
         <button
           type="button"
           className="btn btn-primary"
-          onClick={() => setIsNewEmpModalOpen(true)}
+          onClick={() => {
+            setNewEmpFieldErrors({});
+            setNewEmpSubmitted(false);
+            setNotice(null);
+            setIsNewEmpModalOpen(true);
+          }}
         >
           <Plus size={16} /> + Nuevo Colaborador
         </button>
@@ -789,6 +866,7 @@ export const EmployeeFile: React.FC = () => {
                   <label className="form-group">
                     Sexo *
                     <select
+                      id="new-employee-idDepartamento"
                       className="select"
                       value={editEmpForm.sexo}
                       onChange={e => setEditEmpForm({ ...editEmpForm, sexo: e.target.value })}
@@ -828,6 +906,7 @@ export const EmployeeFile: React.FC = () => {
                   <label className="form-group">
                     Departamento *
                     <select
+                      id="new-employee-idCargo"
                       className="select"
                       value={editEmpForm.idDepartamento}
                       onChange={e => setEditEmpForm({ ...editEmpForm, idDepartamento: e.target.value })}
@@ -1434,7 +1513,7 @@ export const EmployeeFile: React.FC = () => {
             boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.1)',
           }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid #e5e7eb', paddingBottom: '12px', marginBottom: '16px' }}>
-              <h2 style={{ margin: 0, fontSize: '1.25rem', color: '#111827' }}>Registrar Nuevo Colaborador (EMPLEADOS)</h2>
+              <h2 style={{ margin: 0, fontSize: '1.25rem', color: '#111827' }}>Registrar nuevo colaborador</h2>
               <button
                 type="button"
                 onClick={() => setIsNewEmpModalOpen(false)}
@@ -1444,7 +1523,36 @@ export const EmployeeFile: React.FC = () => {
               </button>
             </div>
 
-            <form onSubmit={handleCreateEmployee}>
+            <form onSubmit={handleCreateEmployee} noValidate>
+              {Object.keys(newEmpFieldErrors).length > 0 && (
+                <div className="alert alert-error" role="alert">
+                  <AlertCircle size={18} />
+                  <div>
+                    <strong>Corrige estos campos:</strong>
+                    <ul className="validation-error-list">
+                      {Object.entries(newEmpFieldErrors).map(([field, message]) => (
+                        <li key={field}><strong>{({
+                          ci: 'Cédula',
+                          nombre1: 'Primer nombre',
+                          nombre2: 'Segundo nombre',
+                          apellido1: 'Primer apellido',
+                          apellido2: 'Segundo apellido',
+                          sueldo: 'Sueldo',
+                          sexo: 'Sexo',
+                          fechaNacimiento: 'Fecha de nacimiento',
+                          idDepartamento: 'Departamento',
+                          idCargo: 'Cargo inicial',
+                          direccion: 'Dirección',
+                          telefono: 'Teléfono',
+                          celular: 'Celular',
+                          email: 'Correo electrónico',
+                        } as Record<string, string>)[field] ?? 'Campo'}</strong>: {message}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                </div>
+              )}
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '14px' }}>
                 <label className="form-group">
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -1458,19 +1566,23 @@ export const EmployeeFile: React.FC = () => {
                     )}
                   </div>
                   <input
+                    id="new-employee-ci"
                     className="input"
                     maxLength={10}
                     pattern="\d{10}"
                     title="Debe ingresar exactamente 10 dígitos numéricos correspondientes a una cédula ecuatoriana válida"
                     placeholder="1712345678"
                     value={newEmpForm.ci}
-                    onChange={e => setNewEmpForm({ ...newEmpForm, ci: e.target.value.replace(/\D/g, '').slice(0, 10) })}
+                    onChange={e => updateNewEmployeeField('ci', e.target.value.replace(/\D/g, '').slice(0, 10))}
+                    aria-invalid={Boolean(newEmpFieldErrors.ci)}
                     required
                   />
+                  {newEmpSubmitted && newEmpFieldErrors.ci && <span className="field-error">{newEmpFieldErrors.ci}</span>}
                 </label>
                 <label className="form-group">
                   Sueldo Base ($ - Mín. SBU $460) *
                   <input
+                    id="new-employee-sueldo"
                     className="input"
                     type="number"
                     min="460"
@@ -1478,160 +1590,186 @@ export const EmployeeFile: React.FC = () => {
                     step="0.01"
                     placeholder="460.00"
                     value={newEmpForm.sueldo || ''}
-                    onChange={e => setNewEmpForm({ ...newEmpForm, sueldo: Number(e.target.value) })}
+                    onChange={e => updateNewEmployeeField('sueldo', Number(e.target.value))}
+                    aria-invalid={Boolean(newEmpFieldErrors.sueldo)}
                     required
                   />
+                  {newEmpSubmitted && newEmpFieldErrors.sueldo && <span className="field-error">{newEmpFieldErrors.sueldo}</span>}
                 </label>
                 <label className="form-group">
-                  Primer Nombre (emp_Nombre1) *
+                  Primer nombre *
                   <input
+                    id="new-employee-nombre1"
                     className="input"
-                    maxLength={20}
-                    pattern="[A-Za-zÁÉÍÓÚáéíóúÑñÜü\s]+"
-                    title="Solo letras y espacios (máximo 20 caracteres)"
+                    maxLength={30}
                     placeholder="Ej: Carlos"
                     value={newEmpForm.nombre1}
-                    onChange={e => setNewEmpForm({ ...newEmpForm, nombre1: e.target.value })}
+                    onChange={e => updateNewEmployeeField('nombre1', e.target.value)}
+                    aria-invalid={Boolean(newEmpFieldErrors.nombre1)}
                     required
                   />
+                  {newEmpSubmitted && newEmpFieldErrors.nombre1 && <span className="field-error">{newEmpFieldErrors.nombre1}</span>}
                 </label>
                 <label className="form-group">
-                  Segundo Nombre (emp_Nombre2)
+                  Segundo nombre
                   <input
+                    id="new-employee-nombre2"
                     className="input"
-                    maxLength={20}
-                    pattern="[A-Za-zÁÉÍÓÚáéíóúÑñÜü\s]*"
-                    title="Solo letras y espacios (máximo 20 caracteres)"
+                    maxLength={30}
                     placeholder="Ej: Andrés"
                     value={newEmpForm.nombre2}
-                    onChange={e => setNewEmpForm({ ...newEmpForm, nombre2: e.target.value })}
+                    onChange={e => updateNewEmployeeField('nombre2', e.target.value)}
+                    aria-invalid={Boolean(newEmpFieldErrors.nombre2)}
                   />
+                  {newEmpSubmitted && newEmpFieldErrors.nombre2 && <span className="field-error">{newEmpFieldErrors.nombre2}</span>}
                 </label>
                 <label className="form-group">
-                  Primer Apellido (emp_Apellido1) *
+                  Primer apellido *
                   <input
+                    id="new-employee-apellido1"
                     className="input"
-                    maxLength={20}
-                    pattern="[A-Za-zÁÉÍÓÚáéíóúÑñÜü\s]+"
-                    title="Solo letras y espacios (máximo 20 caracteres)"
+                    maxLength={30}
                     placeholder="Ej: Mendoza"
                     value={newEmpForm.apellido1}
-                    onChange={e => setNewEmpForm({ ...newEmpForm, apellido1: e.target.value })}
+                    onChange={e => updateNewEmployeeField('apellido1', e.target.value)}
+                    aria-invalid={Boolean(newEmpFieldErrors.apellido1)}
                     required
                   />
+                  {newEmpSubmitted && newEmpFieldErrors.apellido1 && <span className="field-error">{newEmpFieldErrors.apellido1}</span>}
                 </label>
                 <label className="form-group">
-                  Segundo Apellido (emp_Apellido2)
+                  Segundo apellido
                   <input
+                    id="new-employee-apellido2"
                     className="input"
-                    maxLength={20}
-                    pattern="[A-Za-zÁÉÍÓÚáéíóúÑñÜü\s]*"
-                    title="Solo letras y espacios (máximo 20 caracteres)"
+                    maxLength={30}
                     placeholder="Ej: Castro"
                     value={newEmpForm.apellido2}
-                    onChange={e => setNewEmpForm({ ...newEmpForm, apellido2: e.target.value })}
+                    onChange={e => updateNewEmployeeField('apellido2', e.target.value)}
+                    aria-invalid={Boolean(newEmpFieldErrors.apellido2)}
                   />
+                  {newEmpSubmitted && newEmpFieldErrors.apellido2 && <span className="field-error">{newEmpFieldErrors.apellido2}</span>}
                 </label>
                 <label className="form-group">
                   Sexo *
                   <select
                     className="select"
                     value={newEmpForm.sexo}
-                    onChange={e => setNewEmpForm({ ...newEmpForm, sexo: e.target.value })}
+                    onChange={e => updateNewEmployeeField('sexo', e.target.value)}
+                    aria-invalid={Boolean(newEmpFieldErrors.sexo)}
                     required
                   >
                     <option value="">-- Seleccione sexo --</option>
                     <option value="M">Masculino (M)</option>
                     <option value="F">Femenino (F)</option>
                   </select>
+                  {newEmpSubmitted && newEmpFieldErrors.sexo && <span className="field-error">{newEmpFieldErrors.sexo}</span>}
                 </label>
                 <label className="form-group">
-                  Fecha de Nacimiento (Mayor de 18 años) *
+                  Fecha de nacimiento *
                   <input
+                    id="new-employee-fechaNacimiento"
                     className="input"
                     type="date"
                     min={minBirthDateEmp}
                     max={maxBirthDateEmp}
                     value={newEmpForm.fechaNacimiento}
-                    onChange={e => setNewEmpForm({ ...newEmpForm, fechaNacimiento: e.target.value })}
+                    onChange={e => updateNewEmployeeField('fechaNacimiento', e.target.value)}
+                    aria-invalid={Boolean(newEmpFieldErrors.fechaNacimiento)}
                     required
                   />
+                  {newEmpSubmitted && newEmpFieldErrors.fechaNacimiento && <span className="field-error">{newEmpFieldErrors.fechaNacimiento}</span>}
                 </label>
                 <label className="form-group">
                   Departamento *
                   <select
                     className="select"
                     value={newEmpForm.idDepartamento}
-                    onChange={e => setNewEmpForm({ ...newEmpForm, idDepartamento: e.target.value })}
+                    onChange={e => updateNewEmployeeField('idDepartamento', e.target.value)}
+                    aria-invalid={Boolean(newEmpFieldErrors.idDepartamento)}
                     required
                   >
                     <option value="">-- Seleccione un departamento --</option>
                     {departments.map(d => (
-                      <option key={d.id} value={d.id}>{d.nombre} ({d.id})</option>
+                      <option key={d.id} value={d.id}>{d.nombre}</option>
                     ))}
                   </select>
+                  {newEmpSubmitted && newEmpFieldErrors.idDepartamento && <span className="field-error">{newEmpFieldErrors.idDepartamento}</span>}
                 </label>
                 <label className="form-group">
                   Cargo Inicial *
                   <select
                     className="select"
                     value={newEmpForm.idCargo}
-                    onChange={e => setNewEmpForm({ ...newEmpForm, idCargo: e.target.value })}
+                    onChange={e => updateNewEmployeeField('idCargo', e.target.value)}
+                    aria-invalid={Boolean(newEmpFieldErrors.idCargo)}
                     required
                   >
                     <option value="">-- Seleccione un cargo inicial --</option>
                     {cargos.map(c => (
-                      <option key={c.id} value={c.id}>{c.nombre} ({c.id})</option>
+                      <option key={c.id} value={c.id}>{c.nombre}</option>
                     ))}
                   </select>
+                  {newEmpSubmitted && newEmpFieldErrors.idCargo && <span className="field-error">{newEmpFieldErrors.idCargo}</span>}
                 </label>
 
-                {/* Campos Obligatorios Solicitados por el usuario */}
                 <label className="form-group" style={{ gridColumn: 'span 2' }}>
-                  Dirección Física Domiciliaria (emp_Direccion) *
+                  Dirección *
                   <input
+                    id="new-employee-direccion"
                     className="input"
                     maxLength={60}
                     placeholder="Ej: Calle Los Cedros 123 y Av. 10 de Agosto, Quito"
                     value={newEmpForm.direccion}
-                    onChange={e => setNewEmpForm({ ...newEmpForm, direccion: e.target.value })}
+                    onChange={e => updateNewEmployeeField('direccion', e.target.value)}
+                    aria-invalid={Boolean(newEmpFieldErrors.direccion)}
                     required
                   />
+                  {newEmpSubmitted && newEmpFieldErrors.direccion && <span className="field-error">{newEmpFieldErrors.direccion}</span>}
                 </label>
                 <label className="form-group">
-                  Teléfono Convencional Fijo (emp_Telefono)
+                  Teléfono convencional
                   <input
+                    id="new-employee-telefono"
                     className="input"
                     maxLength={9}
                     pattern="[0-9]{7,9}"
                     title="7 a 9 dígitos numéricos (ej. 022123456)"
                     placeholder="022123456"
                     value={newEmpForm.telefono}
-                    onChange={e => setNewEmpForm({ ...newEmpForm, telefono: e.target.value.replace(/\D/g, '').slice(0, 9) })}
+                    onChange={e => updateNewEmployeeField('telefono', e.target.value.replace(/\D/g, '').slice(0, 9))}
+                    aria-invalid={Boolean(newEmpFieldErrors.telefono)}
                   />
+                  {newEmpSubmitted && newEmpFieldErrors.telefono && <span className="field-error">{newEmpFieldErrors.telefono}</span>}
                 </label>
                 <label className="form-group">
-                  Teléfono Celular (emp_Celular)
+                  Celular
                   <input
+                    id="new-employee-celular"
                     className="input"
                     maxLength={10}
                     pattern="09[0-9]{8}"
                     title="10 dígitos numéricos iniciando con 09 (ej. 0991234567)"
                     placeholder="0991234567"
                     value={newEmpForm.celular}
-                    onChange={e => setNewEmpForm({ ...newEmpForm, celular: e.target.value.replace(/\D/g, '').slice(0, 10) })}
+                    onChange={e => updateNewEmployeeField('celular', e.target.value.replace(/\D/g, '').slice(0, 10))}
+                    aria-invalid={Boolean(newEmpFieldErrors.celular)}
                   />
+                  {newEmpSubmitted && newEmpFieldErrors.celular && <span className="field-error">{newEmpFieldErrors.celular}</span>}
                 </label>
                 <label className="form-group" style={{ gridColumn: 'span 2' }}>
-                  Correo Electrónico (emp_Mail)
+                  Correo electrónico
                   <input
+                    id="new-employee-email"
                     className="input"
                     type="email"
                     maxLength={60}
                     placeholder="colaborador@lacava.com"
                     value={newEmpForm.email}
-                    onChange={e => setNewEmpForm({ ...newEmpForm, email: e.target.value })}
+                    onChange={e => updateNewEmployeeField('email', e.target.value)}
+                    aria-invalid={Boolean(newEmpFieldErrors.email)}
                   />
+                  {newEmpSubmitted && newEmpFieldErrors.email && <span className="field-error">{newEmpFieldErrors.email}</span>}
                 </label>
               </div>
 

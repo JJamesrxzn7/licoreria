@@ -29,6 +29,50 @@ export default function Registro({ onBack }: RegistroProps) {
   const [success, setSuccess] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [loadingCatalogs, setLoadingCatalogs] = useState(false);
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+  const [touched, setTouched] = useState<Record<string, boolean>>({});
+
+  const validateField = (field: string, value: string): string => {
+    const clean = value.trim();
+    if (field === 'id_Empleado') return clean ? '' : 'Selecciona un empleado.';
+    if (field === 'cedula') {
+      return /^\d{10,20}$/.test(clean) ? '' : 'Ingresa entre 10 y 20 dígitos, sin espacios ni símbolos.';
+    }
+    if (field === 'username') {
+      if (clean.length < 3 || clean.length > 50) return 'El usuario debe tener entre 3 y 50 caracteres.';
+      return /^[A-Za-z0-9_.@-]+$/.test(clean) ? '' : 'Usa solo letras, números, punto, guion, guion bajo o @.';
+    }
+    if (field === 'password') {
+      return value.length >= 8 && value.length <= 100 ? '' : 'La contraseña debe tener entre 8 y 100 caracteres.';
+    }
+    if (field === 'confirmPassword') {
+      return value === form.password ? '' : 'Las contraseñas no coinciden.';
+    }
+    return '';
+  };
+
+  const updateField = (field: string, value: string) => {
+    const nextForm = { ...form, [field]: value };
+    setForm(nextForm);
+    setError(null);
+    if (touched[field]) {
+      setFieldErrors(current => ({ ...current, [field]: validateField(field, value) }));
+    }
+    if (field === 'password' && touched.confirmPassword) {
+      setFieldErrors(current => ({
+        ...current,
+        confirmPassword: nextForm.confirmPassword === value ? '' : 'Las contraseñas no coinciden.',
+      }));
+    }
+  };
+
+  const markTouched = (field: string) => {
+    setTouched(current => ({ ...current, [field]: true }));
+    setFieldErrors(current => ({
+      ...current,
+      [field]: validateField(field, form[field as keyof typeof form] as string || ''),
+    }));
+  };
 
   useEffect(() => {
     if (!isUserManager) return;
@@ -58,16 +102,25 @@ export default function Registro({ onBack }: RegistroProps) {
     setError(null);
     setSuccess(null);
 
-    if (form.password.length < 8) {
-      setError('La contraseña debe tener al menos 8 caracteres.');
-      return;
-    }
-    if (form.password !== form.confirmPassword) {
-      setError('Las contraseñas no coinciden.');
-      return;
-    }
     if (isAuthenticated && !isUserManager) {
       setError('No tienes permiso para crear usuarios.');
+      return;
+    }
+    const fields = isUserManager
+      ? ['id_Empleado', 'username', 'password', 'confirmPassword']
+      : ['cedula', 'username', 'password', 'confirmPassword'];
+    const nextErrors = Object.fromEntries(fields.map(field => [
+      field,
+      validateField(field, String(form[field as keyof typeof form] || '')),
+    ]));
+    setTouched(current => ({ ...current, ...Object.fromEntries(fields.map(field => [field, true])) }));
+    setFieldErrors(current => ({ ...current, ...nextErrors }));
+    if (Object.values(nextErrors).some(Boolean)) {
+      const firstInvalid = fields.find(field => nextErrors[field]);
+      if (firstInvalid) {
+        const inputId = firstInvalid === 'id_Empleado' ? 'registro-empleado' : `registro-${firstInvalid}`;
+        document.getElementById(inputId)?.focus();
+      }
       return;
     }
     if (isAuthenticated && form.rol_ids.length === 0) {
@@ -93,6 +146,8 @@ export default function Registro({ onBack }: RegistroProps) {
           confirmPassword: '',
           rol_ids: [],
         });
+        setFieldErrors({});
+        setTouched({});
       } else {
         const response = await authApi.register({
           cedula: form.cedula.trim(),
@@ -108,9 +163,14 @@ export default function Registro({ onBack }: RegistroProps) {
           confirmPassword: '',
           rol_ids: [],
         });
+        setFieldErrors({});
+        setTouched({});
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'No se pudo crear la solicitud de usuario.');
+      const message = err instanceof Error ? err.message : '';
+      setError(/database|sql|mysql|maria|traceback|constraint|table|column/i.test(message)
+        ? 'No se pudo completar el registro. Revisa los datos o inténtalo más tarde.'
+        : message || 'No se pudo completar el registro. Revisa los datos o inténtalo más tarde.');
     } finally {
       setLoading(false);
     }
@@ -171,7 +231,7 @@ export default function Registro({ onBack }: RegistroProps) {
             </div>
           )}
 
-          <form onSubmit={handleSubmit} className="login-form">
+          <form onSubmit={handleSubmit} className="login-form" noValidate>
             {adminMode ? (
               <div className="form-group">
                 <label className="form-label" htmlFor="registro-empleado">Empleado</label>
@@ -181,8 +241,10 @@ export default function Registro({ onBack }: RegistroProps) {
                     id="registro-empleado"
                     className="form-input"
                     value={form.id_Empleado}
-                    onChange={event => setForm({ ...form, id_Empleado: event.target.value })}
+                    onChange={event => updateField('id_Empleado', event.target.value)}
+                    onBlur={() => markTouched('id_Empleado')}
                     disabled={loading || loadingCatalogs}
+                    aria-invalid={Boolean(touched.id_Empleado && fieldErrors.id_Empleado)}
                     required
                   >
                     <option value="">Seleccionar empleado sin cuenta</option>
@@ -193,6 +255,7 @@ export default function Registro({ onBack }: RegistroProps) {
                     ))}
                   </select>
                 </div>
+                {touched.id_Empleado && fieldErrors.id_Empleado && <span className="field-error" role="alert">{fieldErrors.id_Empleado}</span>}
               </div>
             ) : (
               <div className="form-group">
@@ -205,15 +268,18 @@ export default function Registro({ onBack }: RegistroProps) {
                     className="form-input"
                     placeholder="Ingresa tu cédula"
                     value={form.cedula}
-                    onChange={event => setForm({ ...form, cedula: event.target.value.replace(/\D/g, '') })}
+                    onChange={event => updateField('cedula', event.target.value.replace(/\D/g, '').slice(0, 20))}
+                    onBlur={() => markTouched('cedula')}
                     disabled={loading}
                     inputMode="numeric"
                     minLength={10}
                     maxLength={20}
                     autoComplete="off"
+                    aria-invalid={Boolean(touched.cedula && fieldErrors.cedula)}
                     required
                   />
                 </div>
+                {touched.cedula && fieldErrors.cedula && <span className="field-error" role="alert">{fieldErrors.cedula}</span>}
               </div>
             )}
 
@@ -227,14 +293,17 @@ export default function Registro({ onBack }: RegistroProps) {
                   className="form-input"
                   placeholder="ej. nuevo_usuario"
                   value={form.username}
-                  onChange={event => setForm({ ...form, username: event.target.value })}
+                  onChange={event => updateField('username', event.target.value)}
+                  onBlur={() => markTouched('username')}
                   disabled={loading}
                   autoComplete="username"
                   minLength={3}
                   maxLength={50}
+                  aria-invalid={Boolean(touched.username && fieldErrors.username)}
                   required
                 />
               </div>
+              {touched.username && fieldErrors.username && <span className="field-error" role="alert">{fieldErrors.username}</span>}
             </div>
 
             <div className="form-group">
@@ -247,14 +316,17 @@ export default function Registro({ onBack }: RegistroProps) {
                   className="form-input"
                   placeholder="Mínimo 8 caracteres"
                   value={form.password}
-                  onChange={event => setForm({ ...form, password: event.target.value })}
+                  onChange={event => updateField('password', event.target.value)}
+                  onBlur={() => markTouched('password')}
                   disabled={loading}
                   autoComplete="new-password"
                   minLength={8}
                   maxLength={100}
+                  aria-invalid={Boolean(touched.password && fieldErrors.password)}
                   required
                 />
               </div>
+              {touched.password && fieldErrors.password && <span className="field-error" role="alert">{fieldErrors.password}</span>}
             </div>
 
             <div className="form-group">
@@ -267,14 +339,17 @@ export default function Registro({ onBack }: RegistroProps) {
                   className="form-input"
                   placeholder="Repite la contraseña"
                   value={form.confirmPassword}
-                  onChange={event => setForm({ ...form, confirmPassword: event.target.value })}
+                  onChange={event => updateField('confirmPassword', event.target.value)}
+                  onBlur={() => markTouched('confirmPassword')}
                   disabled={loading}
                   autoComplete="new-password"
                   minLength={8}
                   maxLength={100}
+                  aria-invalid={Boolean(touched.confirmPassword && fieldErrors.confirmPassword)}
                   required
                 />
               </div>
+              {touched.confirmPassword && fieldErrors.confirmPassword && <span className="field-error" role="alert">{fieldErrors.confirmPassword}</span>}
             </div>
 
             {adminMode && (
@@ -291,6 +366,7 @@ export default function Registro({ onBack }: RegistroProps) {
                             ? [...form.rol_ids, role.id]
                             : form.rol_ids.filter(id => id !== role.id);
                           setForm({ ...form, rol_ids });
+                          setError(null);
                         }}
                         disabled={loading}
                       />
@@ -307,12 +383,7 @@ export default function Registro({ onBack }: RegistroProps) {
             <button
               type="submit"
               className="login-button"
-              disabled={
-                loading
-                || loadingCatalogs
-                || (adminMode && (!form.id_Empleado || form.rol_ids.length === 0))
-                || (!adminMode && !form.cedula)
-              }
+              disabled={loading || loadingCatalogs}
             >
               {loading
                 ? 'Creando...'

@@ -112,8 +112,12 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       mensaje = mensaje === 'Ocurrió un error inesperado.' ? 'El recurso solicitado no existe.' : mensaje;
     } else if (status === 409) {
       mensaje = mensaje === 'Ocurrió un error inesperado.' ? 'Conflicto al procesar la solicitud.' : mensaje;
+    } else if (status === 422) {
+      mensaje = mensaje === 'Ocurrió un error inesperado.'
+        ? 'Hay datos que no cumplen los requisitos. Revisa la cédula, la fecha de nacimiento y los campos obligatorios.'
+        : mensaje;
     } else if (status >= 500) {
-      mensaje = mensaje === 'Ocurrió un error inesperado.' ? 'Error interno del servidor. Intenta nuevamente más tarde.' : mensaje;
+      mensaje = 'No se pudo completar la solicitud. Intenta nuevamente más tarde.';
     } else if (status === 0) {
       mensaje = 'No se pudo conectar con el servidor.';
     }
