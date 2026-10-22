@@ -72,6 +72,9 @@ export const PayrollManagement: React.FC = () => {
 
   // Inspección modal de detalle
   const [inspectingPayroll, setInspectingPayroll] = useState<Payroll | null>(null);
+  const [editingPayrollId, setEditingPayrollId] = useState<string | null>(null);
+  const [savingPayroll, setSavingPayroll] = useState(false);
+  const [processingPayrollId, setProcessingPayrollId] = useState<string | null>(null);
 
   const refreshCatalogs = async () => {
     const [bonuses, deductions] = await Promise.all([
@@ -261,8 +264,19 @@ export const PayrollManagement: React.FC = () => {
   const netoPagar = Number((baseSalary + totalBonos - totalDescuentos).toFixed(2));
 
   // Guardar rol de pago transaccional
-  const handleCreatePayroll = async (e: React.FormEvent) => {
+  const resetPayrollForm = () => {
+    setEditingPayrollId(null);
+    setBonusLines([]);
+    setDeductionLines([]);
+    setDescription(`Rol de pagos ${currentMonth}/${currentYear}`);
+    setStartDate(defaultStartDate);
+    setEndDate(defaultEndDate);
+    setBaseSalary(Number(selectedEmployeeObj?.salary || 500));
+  };
+
+  const handleSavePayroll = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (savingPayroll) return;
     if (!selectedEmpId) {
       setNotice({ type: 'error', message: 'Selecciona un colaborador para preparar el rol de pagos.' });
       return;
@@ -293,8 +307,9 @@ export const PayrollManagement: React.FC = () => {
       return;
     }
 
+    setSavingPayroll(true);
     try {
-      const res = await hrApi.createPayroll({
+      const payload = {
         descripcion: description.trim() || `Rol de pago ${startDate} a ${endDate}`,
         fechaInicio: startDate,
         fechaFin: endDate,
@@ -312,46 +327,104 @@ export const PayrollManagement: React.FC = () => {
           fecha: endDate,
           valor: d.amount,
         })),
-      });
+      };
+      const res = editingPayrollId
+        ? await hrApi.updatePayroll(editingPayrollId, payload)
+        : await hrApi.createPayroll(payload);
 
       setNotice({
         type: 'success',
-        message: `${res.mensaje || 'Rol de pago generado exitosamente.'} Código: ${res.id}. Neto: $${res.neto || netoPagar}.`,
+        message: `${res.mensaje} Código: ${res.id}. Neto: $${res.neto || netoPagar}.`,
       });
 
-      // Limpiar líneas tras guardar
-      setBonusLines([]);
-      setDeductionLines([]);
-      void loadPayrollData();
-    } catch (err: any) {
-      setNotice({ type: 'error', message: err?.message || 'Error al generar el rol de pago en la base de datos.' });
+      resetPayrollForm();
+      await loadPayrollData();
+    } catch (error) {
+      setNotice({ type: 'error', message: error instanceof Error ? error.message : 'Error al guardar el rol de pago.' });
+    } finally {
+      setSavingPayroll(false);
     }
+  };
+
+  const handleEditPayroll = (payroll: Payroll) => {
+    if (payroll.status !== 'ABI') return;
+    const bonusDetailTotal = (payroll.bonusLines || []).reduce((sum, line) => sum + Number(line.amount || 0), 0);
+    const deductionDetailTotal = (payroll.deductionLines || []).reduce((sum, line) => sum + Number(line.amount || 0), 0);
+    if (
+      Math.abs(bonusDetailTotal - Number(payroll.bonus || 0)) > 0.01
+      || Math.abs(deductionDetailTotal - Number(payroll.deductions || 0)) > 0.01
+    ) {
+      setNotice({ type: 'error', message: 'Este rol no tiene el desglose completo de bonos y descuentos; no se puede editar sin alterar sus totales.' });
+      return;
+    }
+
+    setEditingPayrollId(payroll.id);
+    setSelectedEmpId(payroll.employeeId);
+    setDescription(payroll.description || '');
+    setStartDate(String(payroll.startDate || '').slice(0, 10));
+    setEndDate(String(payroll.endDate || payroll.date || '').slice(0, 10));
+    setBaseSalary(Number(payroll.baseSalary || 0));
+    setBonusLines((payroll.bonusLines || []).map(line => ({
+      bonusId: line.bonusId,
+      bonusName: line.bonusName || line.bonusId,
+      amount: Number(line.amount || 0),
+    })));
+    setDeductionLines((payroll.deductionLines || []).map(line => ({
+      deductionId: line.deductionId,
+      deductionName: line.deductionName || line.deductionId,
+      amount: Number(line.amount || 0),
+    })));
+    setNotice(null);
+    document.getElementById('payroll-form')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
   };
 
   // Aprobar rol de pago
   const handleApprovePayroll = async (payrollId: string) => {
+    if (processingPayrollId) return;
+    setProcessingPayrollId(payrollId);
     try {
       const res = await hrApi.approvePayroll(payrollId);
       setNotice({
         type: 'success',
         message: `${res.mensaje || 'Rol de pago aprobado exitosamente.'} Asiento contable generado automáticamente vía trigger.`,
       });
-      void loadPayrollData();
-    } catch (err: any) {
-      setNotice({ type: 'error', message: err?.message || 'Error al aprobar el rol de pago.' });
+      await loadPayrollData();
+    } catch (error) {
+      setNotice({ type: 'error', message: error instanceof Error ? error.message : 'Error al aprobar el rol de pago.' });
+    } finally {
+      setProcessingPayrollId(null);
     }
   };
 
   // Anular rol de pago
   const handleAnnulPayroll = async (payrollId: string) => {
     if (!window.confirm(`¿Confirmas que deseas anular el rol de pago ${payrollId}?`)) return;
-
+    if (processingPayrollId) return;
+    setProcessingPayrollId(payrollId);
     try {
       const res = await hrApi.annulPayroll(payrollId);
-      setNotice({ type: 'success', message: res.mensaje || 'Rol de pago anulado exitosamente.' });
-      void loadPayrollData();
-    } catch (err: any) {
-      setNotice({ type: 'error', message: err?.message || 'Error al anular el rol de pago.' });
+      setNotice({ type: 'success', message: res.mensaje });
+      await loadPayrollData();
+    } catch (error) {
+      setNotice({ type: 'error', message: error instanceof Error ? error.message : 'Error al anular el rol de pago.' });
+    } finally {
+      setProcessingPayrollId(null);
+    }
+  };
+
+  const handleDeletePayroll = async (payrollId: string) => {
+    if (!window.confirm(`¿Eliminar definitivamente el rol abierto ${payrollId} y su desglose? Esta acción no se puede deshacer.`)) return;
+    if (processingPayrollId) return;
+    setProcessingPayrollId(payrollId);
+    try {
+      const result = await hrApi.deletePayroll(payrollId);
+      setNotice({ type: 'success', message: result.mensaje });
+      if (editingPayrollId === payrollId) resetPayrollForm();
+      await loadPayrollData();
+    } catch (error) {
+      setNotice({ type: 'error', message: error instanceof Error ? error.message : 'No se pudo eliminar el rol de pago.' });
+    } finally {
+      setProcessingPayrollId(null);
     }
   };
 
@@ -604,7 +677,7 @@ export const PayrollManagement: React.FC = () => {
           </div>
         </div>
 
-        <form onSubmit={handleCreatePayroll}>
+        <form id="payroll-form" onSubmit={handleSavePayroll}>
           {/* Cabecera del Rol: Colaborador y Periodo */}
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '14px', marginBottom: '20px' }}>
             <label className="form-group" style={{ gridColumn: 'span 2' }}>
@@ -909,13 +982,21 @@ export const PayrollManagement: React.FC = () => {
               </div>
             </div>
 
-            <button
-              type="submit"
-              className="btn btn-primary"
-              style={{ padding: '12px 24px', fontSize: '0.95rem' }}
-            >
-              <Calculator size={18} /> Generar Rol de Pago (PAGOS)
-            </button>
+            <div style={{ display: 'flex', gap: '8px' }}>
+              <button
+                type="submit"
+                className="btn btn-primary"
+                disabled={savingPayroll}
+                style={{ padding: '12px 24px', fontSize: '0.95rem' }}
+              >
+                <Calculator size={18} /> {savingPayroll ? 'Guardando...' : editingPayrollId ? 'Guardar cambios' : 'Generar Rol de Pago (PAGOS)'}
+              </button>
+              {editingPayrollId && (
+                <button type="button" className="btn btn-outline" disabled={savingPayroll} onClick={resetPayrollForm}>
+                  Cancelar edición
+                </button>
+              )}
+            </div>
           </div>
         </form>
       </section>
@@ -985,14 +1066,35 @@ export const PayrollManagement: React.FC = () => {
                           <Eye size={13} /> Desglose
                         </button>
 
-                        {(p.status === 'ABI' || p.status === 'PEN') && (
+                        {p.status === 'ABI' && (
                           <>
                             <button
                               type="button"
                               className="btn btn-outline"
+                              style={{ padding: '4px 8px', fontSize: '0.75rem' }}
+                              onClick={() => handleEditPayroll(p)}
+                              title="Editar rol abierto"
+                              disabled={processingPayrollId !== null || savingPayroll}
+                            >
+                              <Pencil size={13} /> Editar
+                            </button>
+                            <button
+                              type="button"
+                              className="btn btn-outline"
+                              style={{ padding: '4px 8px', fontSize: '0.75rem', color: '#dc2626', borderColor: '#fca5a5' }}
+                              onClick={() => void handleDeletePayroll(p.id)}
+                              title="Eliminar rol abierto"
+                              disabled={processingPayrollId !== null || savingPayroll}
+                            >
+                              <Trash2 size={13} /> Eliminar
+                            </button>
+                            <button
+                              type="button"
+                              className="btn btn-outline"
                               style={{ padding: '4px 8px', fontSize: '0.75rem', color: '#059669', borderColor: '#6ee7b7' }}
-                              onClick={() => handleApprovePayroll(p.id)}
+                              onClick={() => void handleApprovePayroll(p.id)}
                               title="Aprobar rol e impactar en Contabilidad"
+                              disabled={processingPayrollId !== null || savingPayroll}
                             >
                               Aprobar
                             </button>
@@ -1000,8 +1102,9 @@ export const PayrollManagement: React.FC = () => {
                               type="button"
                               className="btn btn-outline"
                               style={{ padding: '4px 8px', fontSize: '0.75rem', color: '#dc2626', borderColor: '#fca5a5' }}
-                              onClick={() => handleAnnulPayroll(p.id)}
+                              onClick={() => void handleAnnulPayroll(p.id)}
                               title="Anular rol de pago"
+                              disabled={processingPayrollId !== null || savingPayroll}
                             >
                               Anular
                             </button>

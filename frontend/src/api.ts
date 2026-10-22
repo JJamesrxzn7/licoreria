@@ -336,6 +336,18 @@ export const warehouseApi = {
 };
 
 // 7. Módulo Talento Humano y Nómina
+type PayrollInputPayload = {
+  descripcion: string;
+  fechaInicio: string;
+  fechaFin: string;
+  idEmpleado: string;
+  sueldoBase: number;
+  bonificaciones?: number;
+  descuentos?: number;
+  lineasBonos?: Array<{ idBonificacion: string; fecha?: string; valor: number }>;
+  lineasDescuentos?: Array<{ idDescuento: string; fecha?: string; valor: number }>;
+};
+
 export const hrApi = {
   listEmployees: () => request<Employee[]>('/api/empleados'),
   listDepartments: () => request<Array<{ id: string; nombre: string }>>('/api/departamentos'),
@@ -452,20 +464,19 @@ export const hrApi = {
       method: 'DELETE',
     }),
   listPayrolls: () => request<Payroll[]>('/api/nomina'),
-  createPayroll: (payroll: {
-    descripcion: string;
-    fechaInicio: string;
-    fechaFin: string;
-    idEmpleado: string;
-    sueldoBase: number;
-    bonificaciones?: number;
-    descuentos?: number;
-    lineasBonos?: Array<{ idBonificacion: string; fecha?: string; valor: number }>;
-    lineasDescuentos?: Array<{ idDescuento: string; fecha?: string; valor: number }>;
-  }) => request<{ id: string; estado: string; neto: string; mensaje: string }>('/api/nomina', {
+  createPayroll: (payroll: PayrollInputPayload) => request<{ id: string; estado: string; neto: string; mensaje: string }>('/api/nomina', {
     method: 'POST',
     body: JSON.stringify(payroll),
   }),
+  updatePayroll: (id: string, payroll: PayrollInputPayload) =>
+    request<{ id: string; estado: string; neto: string; mensaje: string }>(`/api/nomina/${encodeURIComponent(id)}`, {
+      method: 'PUT',
+      body: JSON.stringify(payroll),
+    }),
+  deletePayroll: (id: string) =>
+    request<{ id: string; mensaje: string }>(`/api/nomina/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+    }),
   approvePayroll: (id: string) => request<{ id: string; estado: string; mensaje: string }>(`/api/nomina/${encodeURIComponent(id)}/aprobar`, {
     method: 'POST',
   }),

@@ -62,6 +62,12 @@ También se observaron relaciones de Recursos Humanos por debajo de 20: cargos a
 - **Corrección:** Se incorporaron las acciones de creación, edición, baja lógica y reactivación en [PayrollManagement.tsx](./frontend/src/pages/PayrollManagement.tsx). La baja lógica conserva el historial.
 - **Verificación:** Hay 20 filas en cada catálogo.
 
+### Gestión de roles de pago
+
+- **Aprobación:** Los procedimientos registraban acciones de auditoría no aceptadas por la restricción de la tabla, y el trigger contable intentaba usar códigos de cuenta inexistentes. La migración [20261022_fix_payroll_workflow.sql](./API/migrations/20261022_fix_payroll_workflow.sql) corrige las acciones, resuelve cuentas activas de gasto de nómina y obligaciones laborales y crea asientos balanceados con códigos propios del módulo.
+- **Edición y eliminación:** La pantalla no ofrecía editar ni eliminar roles; solo permitía aprobar o anular. Se agregaron edición transaccional y eliminación física limitada a roles abiertos (`ABI`), con auditoría. Los roles aprobados/anulados no se pueden editar ni eliminar.
+- **Verificación:** Se probó la aprobación con un rol ficticio dentro de una transacción y se revirtió: el cambio de estado, asiento, líneas contables y auditoría se generaron correctamente y no dejaron cambios persistentes. También se probó crear, editar y eliminar un rol; el conteo volvió a 20.
+
 ### Usuarios, Reportes y Auditoría
 
 - **Bloqueo pendiente:** Tras reiniciar la API, la interfaz indicó que la sesión no era válida o había expirado; las llamadas protegidas devolvieron HTTP 401. No se inventaron credenciales ni se crearon usuarios sin una sesión administrativa válida.

@@ -3930,6 +3930,97 @@ def crear_rol_pago(payroll: PayrollInput):
         if conn and conn.is_connected(): conn.close()
 
 
+@app.put("/api/nomina/{pago_id}")
+def actualizar_rol_pago(pago_id: str, payroll: PayrollInput):
+    conn, cur = None, None
+    try:
+        conn = mysql.connector.connect(**get_db_config())
+        cur = conn.cursor()
+        user_id = get_user_id(cur)
+        cur.execute(
+            "SELECT ESTADO_PAG FROM PAGOS WHERE id_Pago = %s FOR UPDATE",
+            (pago_id,),
+        )
+        current = cur.fetchone()
+        if not current:
+            raise HTTPException(status_code=404, detail=f"No existe el rol de pago {pago_id}.")
+        if current[0] != "ABI":
+            raise HTTPException(status_code=409, detail="Solo se pueden editar roles de pago abiertos (ABI).")
+        if payroll.base_salary > Decimal("50000.00"):
+            raise HTTPException(status_code=422, detail="El sueldo base no puede exceder $50,000.00.")
+
+        total_bonos = (
+            sum((line.amount for line in payroll.bonus_lines), Decimal("0"))
+            if payroll.bonus_lines else payroll.bonus
+        )
+        total_descuentos = (
+            sum((line.amount for line in payroll.deduction_lines), Decimal("0"))
+            if payroll.deduction_lines else payroll.deductions
+        )
+        neto = (payroll.base_salary + total_bonos - total_descuentos).quantize(
+            CENT, rounding=ROUND_HALF_UP
+        )
+        if neto < Decimal("0.00"):
+            raise HTTPException(status_code=422, detail="Los descuentos superan el ingreso total del colaborador.")
+
+        cur.execute(
+            "SELECT id_Empleado FROM EMPLEADOS WHERE id_Empleado = %s",
+            (payroll.employee_id,),
+        )
+        if not cur.fetchone():
+            raise HTTPException(status_code=404, detail=f"No se encontró el colaborador {payroll.employee_id}.")
+
+        cur.execute(
+            """
+            UPDATE PAGOS
+            SET pag_Descripcion = %s, pag_Fecha_Inicio = %s, pag_Fecha_Fin = %s
+            WHERE id_Pago = %s
+            """,
+            (payroll.description, payroll.start_date, payroll.end_date, pago_id),
+        )
+        cur.execute("DELETE FROM BONxEMPxPAG WHERE id_Pago = %s", (pago_id,))
+        cur.execute("DELETE FROM DESxEMPxPAG WHERE id_Pago = %s", (pago_id,))
+        cur.execute(
+            """
+            UPDATE PAGxEMP
+            SET id_Empleado = %s, pxe_Sueldo = %s, pxe_Bonificaciones = %s,
+                pxe_Descuentos = %s, pxe_Valor_Neto = %s
+            WHERE id_Pago = %s
+            """,
+            (payroll.employee_id, payroll.base_salary, total_bonos, total_descuentos, neto, pago_id),
+        )
+        for line in payroll.bonus_lines:
+            cur.execute(
+                """
+                INSERT INTO BONxEMPxPAG
+                    (id_Pago, id_Empleado, id_Bonificacion, bxe_Fecha, bxe_Valor, ESTADO_BXE)
+                VALUES (%s, %s, %s, %s, %s, 'ACT')
+                """,
+                (pago_id, payroll.employee_id, line.bonus_id, line.line_date or payroll.end_date, line.amount),
+            )
+        for line in payroll.deduction_lines:
+            cur.execute(
+                """
+                INSERT INTO DESxEMPxPAG
+                    (id_Pago, id_Empleado, id_Descuento, dxe_Fecha, dxe_Valor, ESTADO_DXE)
+                VALUES (%s, %s, %s, %s, %s, 'ACT')
+                """,
+                (pago_id, payroll.employee_id, line.deduction_id, line.line_date or payroll.end_date, line.amount),
+            )
+        cur.callproc(
+            "SP_REGISTRAR_LOG",
+            (user_id, "PAGOS", "UPDATE", '{"estado":"ABI"}', '{"estado":"ABI","edicion":true}'),
+        )
+        conn.commit()
+        return {"id": pago_id, "estado": "ABI", "neto": str(neto), "mensaje": "Rol de pago actualizado correctamente."}
+    except mysql.connector.Error as error:
+        if conn: conn.rollback()
+        raise_database_error(error)
+    finally:
+        if cur: cur.close()
+        if conn and conn.is_connected(): conn.close()
+
+
 @app.post("/api/nomina/{pago_id}/aprobar")
 def aprobar_nomina(pago_id: str):
     conn, cur = None, None
@@ -3937,14 +4028,7 @@ def aprobar_nomina(pago_id: str):
         conn = mysql.connector.connect(**get_db_config())
         cur = conn.cursor()
         user_id = get_user_id(cur)
-        try:
-            cur.callproc("SP_PAGO_APROBAR", (pago_id, user_id))
-        except mysql.connector.Error as proc_err:
-            if proc_err.errno in {1305, 1452}:
-                cur.execute("UPDATE PAGOS SET ESTADO_PAG = 'APR' WHERE id_Pago = %s", (pago_id,))
-                cur.execute("UPDATE PAGxEMP SET ESTADO_PxE = 'APR' WHERE id_Pago = %s", (pago_id,))
-            else:
-                raise
+        cur.callproc("SP_PAGO_APROBAR", (pago_id, user_id))
         conn.commit()
         return {"id": pago_id, "estado": "APR", "mensaje": "Rol de pago aprobado exitosamente."}
     except mysql.connector.Error as error:
@@ -3962,16 +4046,44 @@ def anular_nomina(pago_id: str):
         conn = mysql.connector.connect(**get_db_config())
         cur = conn.cursor()
         user_id = get_user_id(cur)
-        try:
-            cur.callproc("SP_PAGO_ANULAR", (pago_id, user_id))
-        except mysql.connector.Error as proc_err:
-            if proc_err.errno in {1305, 1452}:
-                cur.execute("UPDATE PAGOS SET ESTADO_PAG = 'ANU' WHERE id_Pago = %s", (pago_id,))
-                cur.execute("UPDATE PAGxEMP SET ESTADO_PxE = 'ANU' WHERE id_Pago = %s", (pago_id,))
-            else:
-                raise
+        cur.callproc("SP_PAGO_ANULAR", (pago_id, user_id))
         conn.commit()
         return {"id": pago_id, "estado": "ANU", "mensaje": "Rol de pago anulado."}
+    except mysql.connector.Error as error:
+        if conn: conn.rollback()
+        raise_database_error(error)
+    finally:
+        if cur: cur.close()
+        if conn and conn.is_connected(): conn.close()
+
+
+@app.delete("/api/nomina/{pago_id}")
+def eliminar_rol_pago(pago_id: str):
+    conn, cur = None, None
+    try:
+        conn = mysql.connector.connect(**get_db_config())
+        cur = conn.cursor()
+        user_id = get_user_id(cur)
+        cur.execute(
+            "SELECT ESTADO_PAG FROM PAGOS WHERE id_Pago = %s FOR UPDATE",
+            (pago_id,),
+        )
+        current = cur.fetchone()
+        if not current:
+            raise HTTPException(status_code=404, detail=f"No existe el rol de pago {pago_id}.")
+        if current[0] != "ABI":
+            raise HTTPException(status_code=409, detail="Solo se pueden eliminar roles abiertos (ABI). Anule los roles que ya no deban procesarse.")
+
+        cur.callproc(
+            "SP_REGISTRAR_LOG",
+            (user_id, "PAGOS", "DELETE", '{"estado":"ABI"}', '{"eliminado":true}'),
+        )
+        cur.execute("DELETE FROM BONxEMPxPAG WHERE id_Pago = %s", (pago_id,))
+        cur.execute("DELETE FROM DESxEMPxPAG WHERE id_Pago = %s", (pago_id,))
+        cur.execute("DELETE FROM PAGxEMP WHERE id_Pago = %s", (pago_id,))
+        cur.execute("DELETE FROM PAGOS WHERE id_Pago = %s", (pago_id,))
+        conn.commit()
+        return {"id": pago_id, "mensaje": f"Rol de pago {pago_id} eliminado correctamente."}
     except mysql.connector.Error as error:
         if conn: conn.rollback()
         raise_database_error(error)
