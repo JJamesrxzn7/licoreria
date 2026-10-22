@@ -1428,14 +1428,12 @@ export const Deliveries = () => {
   const loadDeliveries = async () => {
     try {
       const remoteDeliveries = await warehouseApi.listDeliveries();
-      if (remoteDeliveries && remoteDeliveries.length) {
-        updateState(draft => {
-          draft.deliveries = remoteDeliveries;
-          return draft;
-        });
-      }
-    } catch {
-      // Conserva estado local
+      updateState(draft => {
+        draft.deliveries = remoteDeliveries;
+        return draft;
+      });
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : 'No fue posible cargar las entregas.');
     }
   };
 

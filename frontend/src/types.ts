@@ -132,7 +132,7 @@ export interface Delivery {
   id: string;
   invoiceId: string;
   date: string;
-  status: 'PENDING' | 'COMPLETED' | 'CANCELLED' | 'PEN' | 'APR' | 'ANU';
+  status: 'PENDING' | 'COMPLETED' | 'CANCELLED' | 'PEN' | 'APR' | 'ENT' | 'ANU';
   items: DeliveryItem[];
 }
 
@@ -317,4 +317,3 @@ export interface DemoAccount {
   description: string;
   color: string;
 }
-

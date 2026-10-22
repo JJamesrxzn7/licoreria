@@ -286,6 +286,7 @@ export const salesApi = {
     idEmpleado?: string;
     descripcion?: string;
     tasaIVA?: number;
+    descuento?: number;
     metodoPago?: string;
     cuotas?: number;
     items: Array<{ idProducto: string; cantidad: number; precioUnitario: number }>;
@@ -422,6 +423,34 @@ export const hrApi = {
   }),
   listBonuses: () => request<BonusCatalogItem[]>('/api/nomina/bonificaciones'),
   listDeductions: () => request<DeductionCatalogItem[]>('/api/nomina/descuentos'),
+  createBonus: (item: { nombre: string; valor: number }) =>
+    request<{ id: string; mensaje: string }>('/api/nomina/bonificaciones', {
+      method: 'POST',
+      body: JSON.stringify(item),
+    }),
+  updateBonus: (id: string, item: { nombre: string; valor: number; estado: string }) =>
+    request<{ id: string; mensaje: string }>(`/api/nomina/bonificaciones/${encodeURIComponent(id)}`, {
+      method: 'PUT',
+      body: JSON.stringify(item),
+    }),
+  deleteBonus: (id: string) =>
+    request<{ id: string; mensaje: string }>(`/api/nomina/bonificaciones/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+    }),
+  createDeduction: (item: { nombre: string; valor: number }) =>
+    request<{ id: string; mensaje: string }>('/api/nomina/descuentos', {
+      method: 'POST',
+      body: JSON.stringify(item),
+    }),
+  updateDeduction: (id: string, item: { nombre: string; valor: number; estado: string }) =>
+    request<{ id: string; mensaje: string }>(`/api/nomina/descuentos/${encodeURIComponent(id)}`, {
+      method: 'PUT',
+      body: JSON.stringify(item),
+    }),
+  deleteDeduction: (id: string) =>
+    request<{ id: string; mensaje: string }>(`/api/nomina/descuentos/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+    }),
   listPayrolls: () => request<Payroll[]>('/api/nomina'),
   createPayroll: (payroll: {
     descripcion: string;

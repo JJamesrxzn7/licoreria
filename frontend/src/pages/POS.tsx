@@ -2,14 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Search, ShoppingCart, Trash2, ShieldAlert } from 'lucide-react';
 import { useGlobalStore } from '../context';
 import { CartItem, Product } from '../types';
-import { customerApi, productApi, salesApi } from '../api';
-
-const accountForMethod: Record<'CASH' | 'CARD' | 'TRANSFER' | 'CREDIT', string> = {
-  CASH: 'a1',
-  CARD: 'a2',
-  TRANSFER: 'a2',
-  CREDIT: 'a3',
-};
+import { customerApi, productApi, salesApi, warehouseApi } from '../api';
 
 export const POS = () => {
   const { state, updateState } = useGlobalStore();
@@ -26,23 +19,23 @@ export const POS = () => {
 
   // Sincronizar catálogo y clientes desde el servicio
   const syncFromApi = async () => {
-    try {
-      const [remoteProducts, remoteCustomers] = await Promise.all([
-        productApi.listProducts().catch(() => null),
-        customerApi.listCustomers().catch(() => null),
-      ]);
-      if (remoteProducts !== null || remoteCustomers !== null) {
-        updateState(draft => {
-          if (Array.isArray(remoteProducts)) draft.products = remoteProducts;
-          if (Array.isArray(remoteCustomers)) {
-            draft.customers = remoteCustomers;
-            if (!customerId && remoteCustomers[0]) setCustomerId(remoteCustomers[0].id);
-          }
-          return draft;
-        });
-      }
-    } catch {
-      // Si la API no está iniciada, mantiene el estado local
+    const [remoteProducts, remoteCustomers, remoteInvoices, remoteDeliveries] = await Promise.all([
+      productApi.listProducts().catch(() => null),
+      customerApi.listCustomers().catch(() => null),
+      salesApi.listInvoices().catch(() => null),
+      warehouseApi.listDeliveries().catch(() => null),
+    ]);
+    if (remoteProducts !== null || remoteCustomers !== null || remoteInvoices !== null || remoteDeliveries !== null) {
+      updateState(draft => {
+        if (Array.isArray(remoteProducts)) draft.products = remoteProducts;
+        if (Array.isArray(remoteCustomers)) {
+          draft.customers = remoteCustomers;
+          if (!customerId && remoteCustomers[0]) setCustomerId(remoteCustomers[0].id);
+        }
+        if (Array.isArray(remoteInvoices)) draft.invoices = remoteInvoices;
+        if (Array.isArray(remoteDeliveries)) draft.deliveries = remoteDeliveries;
+        return draft;
+      });
     }
   };
 
@@ -129,15 +122,12 @@ export const POS = () => {
     }
 
     setSaving(true);
-    let invoiceId = `FAC-${Date.now()}`;
-    let deliveryId = `EGR-${Date.now()}`;
-
-    // Intentar registrar mediante la API
     try {
       const apiResponse = await salesApi.createInvoice({
         idCliente: customerId,
-        descripcion: `Venta POS ${paymentMethod}`,
+        descripcion: `PRUEBA Venta POS ${paymentMethod}`,
         tasaIVA: taxRate,
+        descuento: discount,
         metodoPago: paymentMethod,
         cuotas: paymentMethod === 'CREDIT' ? installments : 1,
         items: cart.map(item => ({
@@ -146,56 +136,14 @@ export const POS = () => {
           precioUnitario: item.product.price,
         })),
       });
-      invoiceId = apiResponse.id;
-      deliveryId = apiResponse.deliveryId || deliveryId;
-      setNotice(`Venta ${invoiceId} registrada exitosamente.`);
+      setNotice(apiResponse.mensaje);
+      await syncFromApi();
     } catch (apiError) {
-      setNotice(`Venta registrada exitosamente.`);
+      setNotice(apiError instanceof Error ? apiError.message : 'No fue posible registrar la venta en la base de datos.');
+      return;
     } finally {
       setSaving(false);
     }
-
-    const lines = [
-      { accountId: accountForMethod[paymentMethod as keyof typeof accountForMethod], debit: total, credit: 0 },
-      { accountId: 'a8', debit: 0, credit: taxableSubtotal },
-      ...(tax > 0 ? [{ accountId: 'a6', debit: 0, credit: tax }] : []),
-    ];
-
-    updateState(draft => {
-      draft.invoices.push({
-        id: invoiceId,
-        date: new Date().toISOString(),
-        customerId,
-        items: cart.map(item => ({ ...item, product: { ...item.product } })),
-        subtotal,
-        discount,
-        taxRate,
-        tax,
-        total,
-        paymentMethod,
-        installments: paymentMethod === 'CREDIT' ? installments : 1,
-        status: 'APR',
-      });
-      draft.deliveries.push({
-        id: deliveryId,
-        invoiceId,
-        date: new Date().toISOString(),
-        status: 'PENDING',
-        items: cart.map(item => ({ productId: item.product.id, expectedQty: item.qty, deliveredQty: 0, diff: 0, reason: '' })),
-      });
-      if (paymentMethod === 'CREDIT') {
-        const customer = draft.customers.find(candidate => candidate.id === customerId);
-        if (customer) customer.creditUsed += total;
-      }
-      draft.journalEntries.push({
-        id: `ASI-${Date.now()}`,
-        date: new Date().toISOString(),
-        description: `Venta POS ${invoiceId}`,
-        status: 'PEN',
-        lines,
-      });
-      return draft;
-    });
 
     setCart([]);
     setDiscountRate(0);

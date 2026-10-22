@@ -22,14 +22,12 @@ export const Sales = () => {
   const loadSales = async () => {
     try {
       const remoteInvoices = await salesApi.listInvoices();
-      if (remoteInvoices && remoteInvoices.length) {
-        updateState(draft => {
-          draft.invoices = remoteInvoices;
-          return draft;
-        });
-      }
-    } catch {
-      // Mantiene datos locales si la API aún no está disponible
+      updateState(draft => {
+        draft.invoices = remoteInvoices;
+        return draft;
+      });
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : 'No fue posible cargar las facturas.');
     }
   };
 

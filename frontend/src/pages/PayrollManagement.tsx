@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import {
   Calculator, Plus, Trash2, CheckCircle, AlertCircle,
-  Eye, ArrowUpRight, ArrowDownRight
+  Eye, ArrowUpRight, ArrowDownRight, Pencil, RotateCcw
 } from 'lucide-react';
 import { useGlobalStore } from '../context';
 import { Payroll, Employee, BonusCatalogItem, DeductionCatalogItem } from '../types';
@@ -25,12 +25,21 @@ interface DeductionLineEntry {
   amount: number;
 }
 
+type CatalogKind = 'bonus' | 'deduction';
+type PayrollCatalogEntry = BonusCatalogItem | DeductionCatalogItem;
+
 export const PayrollManagement: React.FC = () => {
   const { state, updateState } = useGlobalStore();
   const [payrolls, setPayrolls] = useState<Payroll[]>(state.payrolls);
   const [employees, setEmployees] = useState<Employee[]>(state.employees);
   const [bonusCatalog, setBonusCatalog] = useState<BonusCatalogItem[]>([]);
   const [deductionCatalog, setDeductionCatalog] = useState<DeductionCatalogItem[]>([]);
+  const [catalogForms, setCatalogForms] = useState<Record<CatalogKind, { nombre: string; valor: string }>>({
+    bonus: { nombre: '', valor: '' },
+    deduction: { nombre: '', valor: '' },
+  });
+  const [editingCatalog, setEditingCatalog] = useState<{ kind: CatalogKind; id: string } | null>(null);
+  const [savingCatalog, setSavingCatalog] = useState<CatalogKind | null>(null);
   const payrollPagination = usePagination(payrolls);
 
   // Notificaciones
@@ -64,28 +73,55 @@ export const PayrollManagement: React.FC = () => {
   // Inspección modal de detalle
   const [inspectingPayroll, setInspectingPayroll] = useState<Payroll | null>(null);
 
+  const refreshCatalogs = async () => {
+    const [bonuses, deductions] = await Promise.all([
+      hrApi.listBonuses(),
+      hrApi.listDeductions(),
+    ]);
+    setBonusCatalog(bonuses);
+    setDeductionCatalog(deductions);
+    setSelectedBonusId(current => {
+      const selected = bonuses.find(item => item.id === current && item.estado === 'ACT');
+      const firstActive = bonuses.find(item => item.estado === 'ACT');
+      return selected?.id ?? firstActive?.id ?? '';
+    });
+    setSelectedDeductionId(current => {
+      const selected = deductions.find(item => item.id === current && item.estado === 'ACT');
+      const firstActive = deductions.find(item => item.estado === 'ACT');
+      return selected?.id ?? firstActive?.id ?? '';
+    });
+  };
+
   // Cargar datos
   const loadPayrollData = async () => {
     try {
       const [remotePayrolls, remoteEmps, remoteBonuses, remoteDeductions] = await Promise.all([
         hrApi.listPayrolls().catch(() => null),
         hrApi.listEmployees().catch(() => null),
-        hrApi.listBonuses().catch(() => []),
-        hrApi.listDeductions().catch(() => []),
+        hrApi.listBonuses().catch((error: unknown) => {
+          setNotice({ type: 'error', message: error instanceof Error ? `No se pudo cargar el catálogo de bonificaciones: ${error.message}` : 'No se pudo cargar el catálogo de bonificaciones.' });
+          return null;
+        }),
+        hrApi.listDeductions().catch((error: unknown) => {
+          setNotice({ type: 'error', message: error instanceof Error ? `No se pudo cargar el catálogo de descuentos: ${error.message}` : 'No se pudo cargar el catálogo de descuentos.' });
+          return null;
+        }),
       ]);
 
-      if (Array.isArray(remoteBonuses) && remoteBonuses.length) {
+      if (Array.isArray(remoteBonuses)) {
         setBonusCatalog(remoteBonuses);
-        if (!selectedBonusId) {
-          setSelectedBonusId(remoteBonuses[0].id);
-          setBonusAmount(Number(remoteBonuses[0].valor || 0));
+        const firstActive = remoteBonuses.find(item => item.estado === 'ACT');
+        if (!selectedBonusId && firstActive) {
+          setSelectedBonusId(firstActive.id);
+          setBonusAmount(Number(firstActive.valor || 0));
         }
       }
-      if (Array.isArray(remoteDeductions) && remoteDeductions.length) {
+      if (Array.isArray(remoteDeductions)) {
         setDeductionCatalog(remoteDeductions);
-        if (!selectedDeductionId) {
-          setSelectedDeductionId(remoteDeductions[0].id);
-          setDeductionAmount(Number(remoteDeductions[0].valor || 0));
+        const firstActive = remoteDeductions.find(item => item.estado === 'ACT');
+        if (!selectedDeductionId && firstActive) {
+          setSelectedDeductionId(firstActive.id);
+          setDeductionAmount(Number(firstActive.valor || 0));
         }
       }
       if (Array.isArray(remoteEmps) && remoteEmps.length) {
@@ -112,8 +148,8 @@ export const PayrollManagement: React.FC = () => {
           return draft;
         });
       }
-    } catch {
-      // Usar estado local
+    } catch (error) {
+      setNotice({ type: 'error', message: error instanceof Error ? error.message : 'No se pudieron cargar los datos de nómina.' });
     }
   };
 
@@ -319,6 +355,202 @@ export const PayrollManagement: React.FC = () => {
     }
   };
 
+  const handleSaveCatalog = async (kind: CatalogKind, event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const form = catalogForms[kind];
+    const name = form.nombre.trim();
+    const amount = Number(form.valor);
+    if (name.length < 3 || name.length > 60 || !Number.isFinite(amount) || amount < 0 || amount > 50000) {
+      setNotice({ type: 'error', message: 'Ingresa un nombre de 3 a 60 caracteres y un valor entre $0 y $50,000.' });
+      return;
+    }
+
+    setSavingCatalog(kind);
+    try {
+      const editingId = editingCatalog?.kind === kind ? editingCatalog.id : null;
+      const currentItem = kind === 'bonus'
+        ? bonusCatalog.find(item => item.id === editingId)
+        : deductionCatalog.find(item => item.id === editingId);
+      const input = { nombre: name, valor: amount, estado: currentItem?.estado ?? 'ACT' };
+      const result = editingId
+        ? await (kind === 'bonus'
+          ? hrApi.updateBonus(editingId, input)
+          : hrApi.updateDeduction(editingId, input))
+        : await (kind === 'bonus'
+          ? hrApi.createBonus({ nombre: name, valor: amount })
+          : hrApi.createDeduction({ nombre: name, valor: amount }));
+      await refreshCatalogs();
+      setEditingCatalog(current => current?.kind === kind ? null : current);
+      setCatalogForms(current => ({ ...current, [kind]: { nombre: '', valor: '' } }));
+      setNotice({ type: 'success', message: result.mensaje });
+    } catch (error) {
+      setNotice({ type: 'error', message: error instanceof Error ? error.message : 'No se pudo guardar el concepto.' });
+    } finally {
+      setSavingCatalog(null);
+    }
+  };
+
+  const handleEditCatalog = (kind: CatalogKind, item: PayrollCatalogEntry) => {
+    setEditingCatalog({ kind, id: item.id });
+    setCatalogForms(current => ({
+      ...current,
+      [kind]: { nombre: item.nombre, valor: String(item.valor) },
+    }));
+  };
+
+  const handleDeactivateCatalog = async (kind: CatalogKind, item: PayrollCatalogEntry) => {
+    if (!window.confirm(`¿Desactivar el concepto "${item.nombre}"?`)) return;
+    setSavingCatalog(kind);
+    try {
+      const result = kind === 'bonus'
+        ? await hrApi.deleteBonus(item.id)
+        : await hrApi.deleteDeduction(item.id);
+      await refreshCatalogs();
+      setNotice({ type: 'success', message: result.mensaje });
+    } catch (error) {
+      setNotice({ type: 'error', message: error instanceof Error ? error.message : 'No se pudo desactivar el concepto.' });
+    } finally {
+      setSavingCatalog(null);
+    }
+  };
+
+  const handleActivateCatalog = async (kind: CatalogKind, item: PayrollCatalogEntry) => {
+    setSavingCatalog(kind);
+    try {
+      const input = { nombre: item.nombre, valor: Number(item.valor), estado: 'ACT' };
+      const result = kind === 'bonus'
+        ? await hrApi.updateBonus(item.id, input)
+        : await hrApi.updateDeduction(item.id, input);
+      await refreshCatalogs();
+      setNotice({ type: 'success', message: result.mensaje });
+    } catch (error) {
+      setNotice({ type: 'error', message: error instanceof Error ? error.message : 'No se pudo activar el concepto.' });
+    } finally {
+      setSavingCatalog(null);
+    }
+  };
+
+  const renderCatalogManager = (
+    kind: CatalogKind,
+    title: string,
+    items: PayrollCatalogEntry[],
+  ) => {
+    const editing = editingCatalog?.kind === kind;
+    const activeCount = items.filter(item => item.estado === 'ACT').length;
+    return (
+      <section className="card" key={kind}>
+        <div className="section-heading">
+          <div>
+            <h2>{title}</h2>
+            <p>{activeCount} activos · {items.length} en total</p>
+          </div>
+        </div>
+        <form onSubmit={event => void handleSaveCatalog(kind, event)}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 130px auto', gap: '9px', alignItems: 'end' }}>
+            <label className="form-group">
+              Nombre del concepto
+              <input
+                className="input"
+                value={catalogForms[kind].nombre}
+                maxLength={60}
+                onChange={event => setCatalogForms(current => ({
+                  ...current,
+                  [kind]: { ...current[kind], nombre: event.target.value },
+                }))}
+                required
+              />
+            </label>
+            <label className="form-group">
+              Valor ($)
+              <input
+                className="input"
+                type="number"
+                min="0"
+                max="50000"
+                step="0.01"
+                value={catalogForms[kind].valor}
+                onChange={event => setCatalogForms(current => ({
+                  ...current,
+                  [kind]: { ...current[kind], valor: event.target.value },
+                }))}
+                required
+              />
+            </label>
+            <div style={{ display: 'flex', gap: '7px', marginBottom: '13px' }}>
+              <button type="submit" className="btn btn-primary" disabled={savingCatalog !== null}>
+                <Plus size={15} /> {editing ? 'Guardar' : 'Crear'}
+              </button>
+              {editing && (
+                <button
+                  type="button"
+                  className="btn btn-outline"
+                  onClick={() => {
+                    setEditingCatalog(null);
+                    setCatalogForms(current => ({ ...current, [kind]: { nombre: '', valor: '' } }));
+                  }}
+                >
+                  Cancelar
+                </button>
+              )}
+            </div>
+          </div>
+        </form>
+        <div className="table-scroll">
+          <table>
+            <thead><tr><th>Código</th><th>Concepto</th><th>Valor</th><th>Estado</th><th>Acciones</th></tr></thead>
+            <tbody>
+              {items.map(item => (
+                <tr key={item.id}>
+                  <td>{item.id}</td>
+                  <td>{item.nombre}</td>
+                  <td>{money(item.valor)}</td>
+                  <td><span className={`status-badge ${item.estado === 'ACT' ? 'status-activo' : 'status-inactivo'}`}>{item.estado === 'ACT' ? 'Activo' : 'Inactivo'}</span></td>
+                  <td>
+                    <div style={{ display: 'flex', gap: '6px' }}>
+                      <button
+                        type="button"
+                        className="btn btn-outline"
+                        title="Editar"
+                        aria-label={`Editar ${item.nombre}`}
+                        onClick={() => handleEditCatalog(kind, item)}
+                      >
+                        <Pencil size={14} />
+                      </button>
+                      {item.estado === 'ACT' ? (
+                        <button
+                          type="button"
+                          className="btn btn-outline"
+                          title="Desactivar"
+                          aria-label={`Desactivar ${item.nombre}`}
+                          disabled={savingCatalog !== null}
+                          onClick={() => void handleDeactivateCatalog(kind, item)}
+                        >
+                          <Trash2 size={14} />
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          className="btn btn-outline"
+                          title="Activar"
+                          aria-label={`Activar ${item.nombre}`}
+                          disabled={savingCatalog !== null}
+                          onClick={() => void handleActivateCatalog(kind, item)}
+                        >
+                          <RotateCcw size={14} />
+                        </button>
+                      )}
+                    </div>
+                  </td>
+                </tr>
+              ))}
+              {!items.length && <tr><td colSpan={5} style={{ textAlign: 'center', color: '#787970' }}>Aún no hay conceptos registrados.</td></tr>}
+            </tbody>
+          </table>
+        </div>
+      </section>
+    );
+  };
+
   const selectedEmployeeObj = employees.find(e => e.id === selectedEmpId);
 
   return (
@@ -355,6 +587,11 @@ export const PayrollManagement: React.FC = () => {
           </button>
         </div>
       )}
+
+      <div className="grid-2">
+        {renderCatalogManager('bonus', 'Catálogo de bonificaciones', bonusCatalog)}
+        {renderCatalogManager('deduction', 'Catálogo de descuentos', deductionCatalog)}
+      </div>
 
       {/* Formulario Transaccional de Preparación */}
       <section className="card" style={{ padding: '20px', marginBottom: '24px' }}>
@@ -469,7 +706,7 @@ export const PayrollManagement: React.FC = () => {
                     onChange={e => handleBonusSelectChange(e.target.value)}
                   >
                     <option value="">-- Seleccione una bonificación --</option>
-                    {bonusCatalog.map(b => (
+                    {bonusCatalog.filter(b => b.estado === 'ACT').map(b => (
                       <option key={b.id} value={b.id}>{b.nombre} ({money(b.valor)})</option>
                     ))}
                   </select>
@@ -559,7 +796,7 @@ export const PayrollManagement: React.FC = () => {
                     onChange={e => handleDeductionSelectChange(e.target.value)}
                   >
                     <option value="">-- Seleccione un descuento --</option>
-                    {deductionCatalog.map(d => (
+                    {deductionCatalog.filter(d => d.estado === 'ACT').map(d => (
                       <option key={d.id} value={d.id}>{d.nombre} ({money(d.valor)})</option>
                     ))}
                   </select>

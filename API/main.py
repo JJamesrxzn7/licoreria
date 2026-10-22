@@ -285,6 +285,7 @@ class SaleOrderInput(BaseModel):
     employee_id: str = Field(default="EMP-000001", alias="idEmpleado")
     description: str = Field(default="Venta en Punto de Venta", alias="descripcion")
     tax_rate: Decimal = Field(default=Decimal("15"), alias="tasaIVA")
+    discount_amount: Decimal = Field(default=Decimal("0"), alias="descuento", ge=0)
     payment_method: str = Field(default="CASH", alias="metodoPago")
     installments: int = Field(default=1, alias="cuotas")
     items: list[SaleItemInput] = Field(min_length=1)
@@ -975,6 +976,36 @@ class PayrollInput(BaseModel):
         if self.end_date < self.start_date:
             raise ValueError("La fecha de fin del rol de pago no puede ser anterior a la fecha de inicio.")
         return self
+
+
+class PayrollCatalogInput(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+    name: str = Field(alias="nombre", min_length=3, max_length=60)
+    amount: Decimal = Field(alias="valor", ge=0, le=50000)
+    status: str = Field(default="ACT", alias="estado")
+
+    @field_validator("name")
+    @classmethod
+    def validar_nombre_catalogo_nomina(cls, value: str) -> str:
+        clean_value = str(value or "").strip()
+        if len(clean_value) < 3 or len(clean_value) > 60:
+            raise ValueError("El nombre debe tener entre 3 y 60 caracteres.")
+        if RE_SQLI_DANGEROUS.search(clean_value):
+            raise ValueError("El nombre contiene caracteres no permitidos.")
+        return clean_value
+
+    @field_validator("amount")
+    @classmethod
+    def validar_valor_catalogo_nomina(cls, value: Decimal) -> Decimal:
+        return value.quantize(CENT, rounding=ROUND_HALF_UP)
+
+    @field_validator("status")
+    @classmethod
+    def validar_estado_catalogo_nomina(cls, value: str) -> str:
+        clean_value = str(value or "ACT").strip().upper()
+        if clean_value not in {"ACT", "INA"}:
+            raise ValueError("El estado debe ser 'ACT' (Activo) o 'INA' (Inactivo).")
+        return clean_value
 
 
 class AccountInput(BaseModel):
@@ -1807,7 +1838,7 @@ def crear_producto(prod: ProductInput):
                 ),
             )
         except mysql.connector.Error as proc_err:
-            if proc_err.errno in {1305, 1318, 1452}:
+            if proc_err.errno in {1305, 1318, 1364, 1452}:
                 if has_shelf and prod.shelf_id:
                     cur.execute(
                         """
@@ -2351,11 +2382,11 @@ def listar_ventas():
                 TRIM(F.id_Cliente) AS customerId,
                 TRIM(C.cli_Nombre) AS customerName,
                 F.fac_Subtotal AS subtotal,
-                0.00 AS discount,
+                F.fac_Descuento AS discount,
                 15.00 AS taxRate,
                 F.fac_IVA AS tax,
                 F.fac_Total AS total,
-                'CASH' AS paymentMethod,
+                F.fac_FormaPago AS paymentMethod,
                 1 AS installments,
                 F.ESTADO_FAC AS status
             FROM FACTURAS F
@@ -2417,8 +2448,12 @@ def registrar_venta(sale: SaleOrderInput):
             subtotal += line_subtotal
             sale_items.append((item.product_id, item.quantity, item.unit_price, line_subtotal))
 
-        tax = (subtotal * Decimal("0.15")).quantize(CENT, rounding=ROUND_HALF_UP)
-        total = subtotal + tax
+        discount = sale.discount_amount.quantize(CENT, rounding=ROUND_HALF_UP)
+        if discount > subtotal:
+            raise HTTPException(status_code=422, detail="El descuento no puede superar el subtotal de la venta.")
+        taxable_subtotal = subtotal - discount
+        tax = (taxable_subtotal * sale.tax_rate / Decimal("100")).quantize(CENT, rounding=ROUND_HALF_UP)
+        total = taxable_subtotal + tax
 
         # 3. Invocar SP_FACTURA_CREAR
         cur.callproc(
@@ -2428,9 +2463,11 @@ def registrar_venta(sale: SaleOrderInput):
                 sale.customer_id,
                 employee_id,
                 sale.description[:60],
-                subtotal,
-                tax,
-                total,
+                Decimal("0"),
+                discount,
+                Decimal("0"),
+                Decimal("0"),
+                sale.payment_method,
                 user_id,
             ),
         )
@@ -2451,7 +2488,7 @@ def registrar_venta(sale: SaleOrderInput):
         cur.execute(
             """
             INSERT INTO ENTREGAS (id_Entrega, id_Factura, ent_Descripcion, ent_FechaHora, ent_Num_Produc, ESTADO_ENT)
-            VALUES (%s, %s, 'Entrega venta POS', NOW(), %s, 'PEN')
+            VALUES (%s, %s, 'PRUEBA Entrega venta POS', NOW(), %s, 'PEN')
             """,
             (delivery_id, invoice_id, len(sale_items)),
         )
@@ -2751,18 +2788,18 @@ def confirmar_entrega(delivery_id: str, payload: DeliveryConfirmInput):
                 UPDATE PROxENT
                 SET pxe_Qty_Entregada = %s,
                     pxe_Motivo = %s,
-                    ESTADO_PxENT = 'APR'
+                ESTADO_PxENT = 'ENT'
                 WHERE id_Entrega = %s AND id_Producto = %s
                 """,
                 (delivered_qty, reason[:60] if reason else None, clean_id, prod_id),
             )
 
         cur.execute(
-            "UPDATE ENTREGAS SET ESTADO_ENT = 'APR' WHERE id_Entrega = %s",
+            "UPDATE ENTREGAS SET ESTADO_ENT = 'ENT' WHERE id_Entrega = %s",
             (clean_id,),
         )
         conn.commit()
-        return {"id": clean_id, "estado": "APR", "mensaje": "Despacho de venta confirmado exitosamente."}
+        return {"id": clean_id, "estado": "ENT", "mensaje": "Despacho de venta confirmado exitosamente."}
     except HTTPException:
         if conn: conn.rollback()
         raise
@@ -2927,21 +2964,6 @@ def aprobar_ajuste(adjustment_id: str):
             else:
                 raise
 
-        # Al aprobar, impactar en saldo del producto
-        cur.execute(
-            "SELECT id_Producto, pxa_Qty_Ajustada FROM PROxAJU WHERE id_Ajuste = %s",
-            (clean_id,),
-        )
-        for prod_id, delta in cur.fetchall():
-            cur.execute(
-                """
-                UPDATE PRODUCTOS 
-                SET pro_Qty_Ajustes = pro_Qty_Ajustes + %s,
-                    pro_Saldo_Final = pro_Saldo_Final + %s
-                WHERE id_Producto = %s
-                """,
-                (delta, delta, prod_id),
-            )
         conn.commit()
         return {"id": clean_id, "estado": "APR", "mensaje": "Ajuste aprobado e impactado en inventario."}
     except HTTPException:
@@ -3523,59 +3545,62 @@ def eliminar_carga_empleado(employee_id: str, carga_id: str):
 
 @app.get("/api/nomina/bonificaciones")
 def listar_bonificaciones():
-    conn, cur = None, None
-    try:
-        conn = mysql.connector.connect(**get_db_config())
-        cur = conn.cursor(dictionary=True)
-        cur.execute("SELECT TRIM(id_Bonificacion) AS id, TRIM(bon_Descripcion) AS nombre, bon_Valor AS valor, TRIM(ESTADO_BON) AS estado FROM BONIFICACIONES WHERE ESTADO_BON = 'ACT' OR ESTADO_BON IS NULL ORDER BY bon_Descripcion")
-        rows = cur.fetchall()
-        if not rows:
-            cur.execute(
-                """
-                INSERT IGNORE INTO BONIFICACIONES (id_Bonificacion, bon_Descripcion, bon_Valor, ESTADO_BON)
-                VALUES 
-                ('BON-000001', 'Horas Extras 50%', 25.00, 'ACT'),
-                ('BON-000002', 'Horas Extras 100%', 45.00, 'ACT'),
-                ('BON-000003', 'Bono Puntualidad y Asistencia', 30.00, 'ACT'),
-                ('BON-000004', 'Comisión por Cumplimiento de Ventas', 50.00, 'ACT'),
-                ('BON-000005', 'Bono de Responsabilidad y Desempeño', 60.00, 'ACT'),
-                ('BON-000006', 'Subsidio de Alimentación / Transporte', 40.00, 'ACT')
-                """
-            )
-            conn.commit()
-            cur.execute("SELECT TRIM(id_Bonificacion) AS id, TRIM(bon_Descripcion) AS nombre, bon_Valor AS valor, TRIM(ESTADO_BON) AS estado FROM BONIFICACIONES WHERE ESTADO_BON = 'ACT' OR ESTADO_BON IS NULL ORDER BY bon_Descripcion")
-            rows = cur.fetchall()
-        return rows
-    except mysql.connector.Error as error:
-        raise_database_error(error)
-    finally:
-        if cur: cur.close()
-        if conn and conn.is_connected(): conn.close()
+    return _listar_catalogo_nomina("bonificaciones")
 
 
 @app.get("/api/nomina/descuentos")
 def listar_descuentos():
+    return _listar_catalogo_nomina("descuentos")
+
+
+PAYROLL_CATALOG_CONFIG = {
+    "bonificaciones": ("BONIFICACIONES", "id_Bonificacion", "bon_Descripcion", "bon_Valor", "ESTADO_BON", "BON"),
+    "descuentos": ("DESCUENTOS", "id_Descuento", "des_Descripcion", "des_Valor", "ESTADO_DES", "DES"),
+}
+
+
+def _listar_catalogo_nomina(tipo: str):
+    table, id_column, name_column, value_column, status_column, _ = PAYROLL_CATALOG_CONFIG[tipo]
     conn, cur = None, None
     try:
         conn = mysql.connector.connect(**get_db_config())
         cur = conn.cursor(dictionary=True)
-        cur.execute("SELECT TRIM(id_Descuento) AS id, TRIM(des_Descripcion) AS nombre, des_Valor AS valor, TRIM(ESTADO_DES) AS estado FROM DESCUENTOS WHERE ESTADO_DES = 'ACT' OR ESTADO_DES IS NULL ORDER BY des_Descripcion")
+        cur.execute(
+            f"SELECT TRIM({id_column}) AS id, TRIM({name_column}) AS nombre, "
+            f"{value_column} AS valor, COALESCE(TRIM({status_column}), 'ACT') AS estado "
+            f"FROM {table} ORDER BY {name_column}"
+        )
         rows = cur.fetchall()
         if not rows:
-            cur.execute(
-                """
-                INSERT IGNORE INTO DESCUENTOS (id_Descuento, des_Descripcion, des_Valor, ESTADO_DES)
-                VALUES 
-                ('DES-000001', 'Aporte Individual IESS (9.45%)', 0.00, 'ACT'),
-                ('DES-000002', 'Préstamo Quirografario BIESS', 50.00, 'ACT'),
-                ('DES-000003', 'Préstamo Hipotecario BIESS', 120.00, 'ACT'),
-                ('DES-000004', 'Anticipo Quincenal de Sueldo', 100.00, 'ACT'),
-                ('DES-000005', 'Atrasos y Multas Disciplinarias', 15.00, 'ACT'),
-                ('DES-000006', 'Retención Judicial / Pensión Alimenticia', 80.00, 'ACT')
-                """
+            default_rows = {
+                "bonificaciones": [
+                    ("BON-000001", "Horas Extras 50%", 25.00, "ACT"),
+                    ("BON-000002", "Horas Extras 100%", 45.00, "ACT"),
+                    ("BON-000003", "Bono Puntualidad y Asistencia", 30.00, "ACT"),
+                    ("BON-000004", "Comisión por Cumplimiento de Ventas", 50.00, "ACT"),
+                    ("BON-000005", "Bono de Responsabilidad y Desempeño", 60.00, "ACT"),
+                    ("BON-000006", "Subsidio de Alimentación / Transporte", 40.00, "ACT"),
+                ],
+                "descuentos": [
+                    ("DES-000001", "Aporte Individual IESS (9.45%)", 0.00, "ACT"),
+                    ("DES-000002", "Préstamo Quirografario BIESS", 50.00, "ACT"),
+                    ("DES-000003", "Préstamo Hipotecario BIESS", 120.00, "ACT"),
+                    ("DES-000004", "Anticipo Quincenal de Sueldo", 100.00, "ACT"),
+                    ("DES-000005", "Atrasos y Multas Disciplinarias", 15.00, "ACT"),
+                    ("DES-000006", "Retención Judicial / Pensión Alimenticia", 80.00, "ACT"),
+                ],
+            }[tipo]
+            cur.executemany(
+                f"INSERT IGNORE INTO {table} ({id_column}, {name_column}, {value_column}, {status_column}) "
+                "VALUES (%s, %s, %s, %s)",
+                default_rows,
             )
             conn.commit()
-            cur.execute("SELECT TRIM(id_Descuento) AS id, TRIM(des_Descripcion) AS nombre, des_Valor AS valor, TRIM(ESTADO_DES) AS estado FROM DESCUENTOS WHERE ESTADO_DES = 'ACT' OR ESTADO_DES IS NULL ORDER BY des_Descripcion")
+            cur.execute(
+                f"SELECT TRIM({id_column}) AS id, TRIM({name_column}) AS nombre, "
+                f"{value_column} AS valor, COALESCE(TRIM({status_column}), 'ACT') AS estado "
+                f"FROM {table} ORDER BY {name_column}"
+            )
             rows = cur.fetchall()
         return rows
     except mysql.connector.Error as error:
@@ -3583,6 +3608,120 @@ def listar_descuentos():
     finally:
         if cur: cur.close()
         if conn and conn.is_connected(): conn.close()
+
+
+def _crear_catalogo_nomina(tipo: str, data: PayrollCatalogInput):
+    table, id_column, name_column, value_column, status_column, prefix = PAYROLL_CATALOG_CONFIG[tipo]
+    conn, cur = None, None
+    try:
+        conn = mysql.connector.connect(**get_db_config())
+        cur = conn.cursor()
+        cur.execute(f"SELECT 1 FROM {table} WHERE LOWER(TRIM({name_column})) = LOWER(%s) LIMIT 1", (data.name,))
+        if cur.fetchone():
+            raise HTTPException(status_code=409, detail=f"Ya existe un concepto con el nombre '{data.name}'.")
+        cur.execute(
+            f"SELECT COALESCE(MAX(CAST(SUBSTRING({id_column}, 5) AS UNSIGNED)), 0) "
+            f"FROM {table} WHERE {id_column} LIKE %s",
+            (f"{prefix}-%",),
+        )
+        next_number = int(cur.fetchone()[0] or 0) + 1
+        catalog_id = f"{prefix}-{next_number:06d}"
+        cur.execute(
+            f"INSERT INTO {table} ({id_column}, {name_column}, {value_column}, {status_column}) "
+            "VALUES (%s, %s, %s, %s)",
+            (catalog_id, data.name, data.amount, data.status),
+        )
+        conn.commit()
+        return {"id": catalog_id, "mensaje": f"Concepto '{data.name}' creado correctamente."}
+    except mysql.connector.Error as error:
+        if conn: conn.rollback()
+        raise_database_error(error)
+    finally:
+        if cur: cur.close()
+        if conn and conn.is_connected(): conn.close()
+
+
+def _actualizar_catalogo_nomina(tipo: str, catalog_id: str, data: PayrollCatalogInput):
+    table, id_column, name_column, value_column, status_column, _ = PAYROLL_CATALOG_CONFIG[tipo]
+    clean_id = catalog_id.strip().upper()
+    conn, cur = None, None
+    try:
+        conn = mysql.connector.connect(**get_db_config())
+        cur = conn.cursor()
+        cur.execute(f"SELECT 1 FROM {table} WHERE {id_column} = %s", (clean_id,))
+        if not cur.fetchone():
+            raise HTTPException(status_code=404, detail=f"No se encontró el concepto '{clean_id}'.")
+        cur.execute(
+            f"SELECT 1 FROM {table} WHERE LOWER(TRIM({name_column})) = LOWER(%s) "
+            f"AND {id_column} <> %s LIMIT 1",
+            (data.name, clean_id),
+        )
+        if cur.fetchone():
+            raise HTTPException(status_code=409, detail=f"Ya existe otro concepto con el nombre '{data.name}'.")
+        cur.execute(
+            f"UPDATE {table} SET {name_column} = %s, {value_column} = %s, {status_column} = %s "
+            f"WHERE {id_column} = %s",
+            (data.name, data.amount, data.status, clean_id),
+        )
+        conn.commit()
+        return {"id": clean_id, "mensaje": f"Concepto '{clean_id}' actualizado correctamente."}
+    except mysql.connector.Error as error:
+        if conn: conn.rollback()
+        raise_database_error(error)
+    finally:
+        if cur: cur.close()
+        if conn and conn.is_connected(): conn.close()
+
+
+def _eliminar_catalogo_nomina(tipo: str, catalog_id: str):
+    table, id_column, _, _, status_column, _ = PAYROLL_CATALOG_CONFIG[tipo]
+    clean_id = catalog_id.strip().upper()
+    conn, cur = None, None
+    try:
+        conn = mysql.connector.connect(**get_db_config())
+        cur = conn.cursor()
+        cur.execute(f"SELECT 1 FROM {table} WHERE {id_column} = %s", (clean_id,))
+        if not cur.fetchone():
+            raise HTTPException(status_code=404, detail=f"No se encontró el concepto '{clean_id}'.")
+        cur.execute(f"UPDATE {table} SET {status_column} = 'INA' WHERE {id_column} = %s", (clean_id,))
+        conn.commit()
+        return {"id": clean_id, "mensaje": f"Concepto '{clean_id}' desactivado correctamente."}
+    except mysql.connector.Error as error:
+        if conn: conn.rollback()
+        raise_database_error(error)
+    finally:
+        if cur: cur.close()
+        if conn and conn.is_connected(): conn.close()
+
+
+@app.post("/api/nomina/bonificaciones")
+def crear_bonificacion(data: PayrollCatalogInput):
+    return _crear_catalogo_nomina("bonificaciones", data)
+
+
+@app.put("/api/nomina/bonificaciones/{catalog_id}")
+def actualizar_bonificacion(catalog_id: str, data: PayrollCatalogInput):
+    return _actualizar_catalogo_nomina("bonificaciones", catalog_id, data)
+
+
+@app.delete("/api/nomina/bonificaciones/{catalog_id}")
+def eliminar_bonificacion(catalog_id: str):
+    return _eliminar_catalogo_nomina("bonificaciones", catalog_id)
+
+
+@app.post("/api/nomina/descuentos")
+def crear_descuento(data: PayrollCatalogInput):
+    return _crear_catalogo_nomina("descuentos", data)
+
+
+@app.put("/api/nomina/descuentos/{catalog_id}")
+def actualizar_descuento(catalog_id: str, data: PayrollCatalogInput):
+    return _actualizar_catalogo_nomina("descuentos", catalog_id, data)
+
+
+@app.delete("/api/nomina/descuentos/{catalog_id}")
+def eliminar_descuento(catalog_id: str):
+    return _eliminar_catalogo_nomina("descuentos", catalog_id)
 
 
 @app.get("/api/nomina")
@@ -3880,6 +4019,14 @@ def crear_banco(banco: BancoInput):
             cur.execute("SELECT MAX(CAST(SUBSTRING(id_Banco, 5) AS UNSIGNED)) FROM BANCOS WHERE id_Banco LIKE 'BAN-%'")
             row = cur.fetchone()
             seq = (row[0] or 0) + 1 if row else 1
+            banco_id = f"BAN-{seq:06d}"
+        if len(banco_id) > 10 or not re.match(r"^[A-Z0-9-]+$", banco_id):
+            raise HTTPException(status_code=422, detail="El código del banco no es válido.")
+
+        cur.execute("SELECT id_Banco FROM BANCOS WHERE id_Banco = %s LIMIT 1", (banco_id,))
+        if cur.fetchone():
+            raise HTTPException(status_code=409, detail=f"Ya existe un banco con el código {banco_id}.")
+
         # Validar duplicidad de nombre de banco
         cur.execute("SELECT id_Banco FROM BANCOS WHERE LOWER(TRIM(ban_Nombre)) = LOWER(%s) LIMIT 1", (banco.name.strip(),))
         existing_ban = cur.fetchone()
@@ -3890,11 +4037,8 @@ def crear_banco(banco: BancoInput):
             """
             INSERT INTO BANCOS (id_Banco, ban_Nombre, ESTADO_BAN)
             VALUES (%s, %s, %s)
-            ON DUPLICATE KEY UPDATE
-                ban_Nombre = VALUES(ban_Nombre),
-                ESTADO_BAN = VALUES(ESTADO_BAN)
             """,
-            (banco_id[:10], banco.name[:50].strip(), (banco.status[:3].upper() if banco.status else 'ACT'))
+            (banco_id, banco.name[:50].strip(), (banco.status[:3].upper() if banco.status else 'ACT'))
         )
         conn.commit()
         return {"id": banco_id, "mensaje": f"Banco '{banco.name}' registrado exitosamente con código {banco_id}."}
