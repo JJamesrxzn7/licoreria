@@ -1,21 +1,45 @@
 import base64
 import hashlib
 import hmac
+import json
 import logging
 import os
 import re
 import secrets
 import time
+from contextvars import ContextVar
 from datetime import date, datetime, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
+from urllib.parse import urlsplit
 from uuid import uuid4
 
 import mysql.connector  # type: ignore
+import psycopg
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from starlette.concurrency import run_in_threadpool
+
+import postgres_auth
+import postgres_ajustes
+import postgres_bancos
+import postgres_cuentas
+import postgres_asientos
+import postgres_connection
+import postgres_nomina_catalogos
+import postgres_nomina
+import postgres_empleados
+import postgres_authorization
+import postgres_catalogos
+import postgres_comerciales
+import postgres_compras
+import postgres_maestros
+import postgres_modulos
+import postgres_usuarios
+import postgres_ventas
 
 # Cargar variables de entorno desde .env (con fallback si python-dotenv no estuviera instalado)
 try:
@@ -33,14 +57,73 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 app = FastAPI(title="Licorería La Cava - API de Bases de Datos II")
+audit_user_id: ContextVar[str | None] = ContextVar("audit_user_id", default=None)
+audit_client_ip: ContextVar[str | None] = ContextVar("audit_client_ip", default=None)
+
+
+def get_cors_origins() -> list[str]:
+    configured = os.getenv("CORS_ORIGINS")
+    if configured is None:
+        if os.getenv("APP_ENV", "").strip().lower() == "production":
+            raise ValueError("CORS_ORIGINS debe configurarse en producción.")
+        return ["http://127.0.0.1:5173", "http://localhost:5173"]
+
+    origins = [origin.strip() for origin in configured.split(",") if origin.strip()]
+    if not origins:
+        raise ValueError("CORS_ORIGINS debe incluir al menos un origen permitido.")
+
+    for origin in origins:
+        parsed = urlsplit(origin)
+        try:
+            parsed.port
+        except ValueError as error:
+            raise ValueError("CORS_ORIGINS contiene un origen no válido.") from error
+        if (
+            origin == "*"
+            or "*" in parsed.netloc
+            or parsed.scheme not in {"http", "https"}
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.path
+            or parsed.query
+            or parsed.fragment
+            or any(character.isspace() for character in origin)
+        ):
+            raise ValueError(
+                "CORS_ORIGINS debe contener únicamente orígenes HTTP/HTTPS exactos."
+            )
+    return origins
+
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=get_cors_origins(),
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.get("/healthz", include_in_schema=False)
+def health_check():
+    return {"status": "ok"}
+
+
+@app.get("/readyz", include_in_schema=False)
+def readiness_check():
+    try:
+        if database_backend() != "postgresql":
+            raise ValueError("El backend de producción debe ser PostgreSQL.")
+        with postgres_connection.connect_postgres() as conn:
+            conn.execute("SELECT 1")
+    except (HTTPException, psycopg.Error, ValueError) as error:
+        logger.error("PostgreSQL readiness check failed", exc_info=True)
+        raise HTTPException(
+            status_code=503,
+            detail="PostgreSQL no está disponible.",
+        ) from error
+    return {"status": "ready"}
 
 CENT = Decimal("0.01")
 
@@ -53,7 +136,7 @@ def get_db_config() -> dict[str, str | int | bool]:
         raise HTTPException(
             status_code=500, detail="La variable MARIADB_PORT no es válida."
         ) from error
-    return {
+    config: dict[str, str | int | bool] = {
         "host": os.getenv("MARIADB_HOST", "localhost"),
         "port": port,
         "user": os.getenv("MARIADB_USER", "root"),
@@ -61,6 +144,81 @@ def get_db_config() -> dict[str, str | int | bool]:
         "database": os.getenv("MARIADB_DATABASE", "licoreriadatabase"),
         "use_pure": True,
     }
+    ca_file = os.getenv("MARIADB_SSL_CA", "").strip()
+    if ca_file:
+        if not Path(ca_file).is_file():
+            raise HTTPException(
+                status_code=500, detail="No se encuentra el certificado CA de MariaDB."
+            )
+        config.update(ssl_ca=ca_file, ssl_verify_cert=True, ssl_verify_identity=True)
+    timeout = os.getenv("MARIADB_CONNECTION_TIMEOUT", "").strip()
+    if timeout:
+        try:
+            timeout_seconds = int(timeout)
+            if timeout_seconds <= 0:
+                raise ValueError("El tiempo debe ser positivo.")
+        except ValueError as error:
+            raise HTTPException(
+                status_code=500, detail="La variable MARIADB_CONNECTION_TIMEOUT no es válida."
+            ) from error
+        config["connection_timeout"] = timeout_seconds
+    return config
+
+
+def database_backend() -> str:
+    backend = os.getenv("DATABASE_BACKEND", "mariadb").strip().lower()
+    if os.getenv("APP_ENV", "").strip().lower() == "production" and backend != "postgresql":
+        logger.error("La producción requiere DATABASE_BACKEND=postgresql.")
+        raise HTTPException(
+            status_code=500,
+            detail="La producción requiere PostgreSQL.",
+        )
+    if backend not in {"mariadb", "postgresql"}:
+        logger.error("DATABASE_BACKEND no es válido.")
+        raise HTTPException(status_code=500, detail="DATABASE_BACKEND no es válido.")
+    return backend
+
+
+def validate_production_configuration() -> None:
+    if os.getenv("APP_ENV", "").strip().lower() != "production":
+        return
+    if database_backend() != "postgresql":
+        raise RuntimeError("La producción requiere PostgreSQL.")
+    secret = os.getenv("AUTH_TOKEN_SECRET", "").strip()
+    if secret.startswith("replace-with-") or len(secret.encode("utf-8")) < 32:
+        raise RuntimeError("AUTH_TOKEN_SECRET debe tener al menos 32 bytes.")
+    if not os.getenv("DATABASE_URL", "").strip():
+        raise RuntimeError("DATABASE_URL debe configurarse en producción.")
+    ca_path = os.getenv("POSTGRES_SSL_ROOT_CERT", "").strip()
+    if not ca_path or not Path(ca_path).is_file():
+        raise RuntimeError("POSTGRES_SSL_ROOT_CERT debe apuntar a un certificado CA válido.")
+    get_cors_origins()
+
+
+validate_production_configuration()
+
+
+def connect_database():
+    if database_backend() != "mariadb":
+        raise HTTPException(
+            status_code=503,
+            detail="Esta operación aún no está disponible en PostgreSQL.",
+        )
+    conn = mysql.connector.connect(**get_db_config())
+    cur = None
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SET @auditoria_usuario = %s, @auditoria_ip = %s",
+            (audit_user_id.get(), audit_client_ip.get()),
+        )
+    except mysql.connector.Error:
+        conn.close()
+        raise
+    finally:
+        if cur:
+            cur.close()
+    return conn
 
 
 def get_user_id(cursor=None) -> str:
@@ -116,6 +274,23 @@ def raise_database_error(error: mysql.connector.Error) -> None:
         status_code=500,
         detail="Ocurrió un error al procesar la solicitud.",
     ) from error
+
+
+def postgres_http_error(error: psycopg.Error | ValueError) -> HTTPException:
+    logger.exception("Error de configuración o de base de datos PostgreSQL.")
+    if isinstance(error, (psycopg.OperationalError, ValueError)):
+        status_code = 503
+        detail = "No se pudo conectar o configurar PostgreSQL."
+    elif isinstance(error, psycopg.IntegrityError):
+        status_code = 409
+        detail = "La operación entra en conflicto con los datos o dependencias existentes."
+    else:
+        status_code = 500
+        detail = "No se pudo completar la operación en PostgreSQL."
+    return HTTPException(
+        status_code=status_code,
+        detail=detail,
+    )
 
 
 # ==========================================
@@ -1136,11 +1311,39 @@ class CentroCostoInput(BaseModel):
 # 0. CATÁLOGOS AUXILIARES (Ciudades, Unidades, Categorías, Marcas, Perchas, Bancos)
 # ==========================================
 
+@app.get("/api/capabilities")
+def api_capabilities():
+    postgres = database_backend() == "postgresql"
+    payroll_approval = not postgres or os.getenv("PAYROLL_APPROVAL_ENABLED", "").lower() == "true"
+    return {"salesIdempotency": postgres, "userManagementWrites": not postgres,
+            "adjustmentApproval": not postgres, "adjustmentReasonMax": 30 if postgres else 100,
+            "bankUpdates": True, "journalWorkflow": not postgres,
+            "payrollCatalogUpdates": True, "payrollCatalogNameMax": 40 if postgres else 60,
+            "payrollUpdates": not postgres, "payrollApproval": payroll_approval,
+            "payrollAnnulment": True, "payrollDelete": not postgres,
+            "employeeCreation": True, "employeeUpdates": not postgres,
+            "employeeRelatedWrites": not postgres}
+
+
 @app.get("/api/catalogos/generales")
 def obtener_catalogos_generales():
+    try:
+        backend = database_backend()
+    except HTTPException as error:
+        return JSONResponse(status_code=error.status_code, content={"detail": error.detail})
+    if backend == "postgresql":
+        try:
+            actor = audit_user_id.get()
+            roles = postgres_auth.active_roles(actor)
+            if roles is None:
+                raise HTTPException(status_code=401, detail="La sesión ya no está activa.")
+            modules = {module for module, action in postgres_auth.grants(roles) if action == "VER"}
+            return postgres_catalogos.listar_catalogos(actor, audit_client_ip.get(), modules)
+        except (psycopg.Error, ValueError) as error:
+            raise postgres_http_error(error) from error
     conn, cur = None, None
     try:
-        conn = mysql.connector.connect(**get_db_config())
+        conn = connect_database()
         cur = conn.cursor(dictionary=True)
 
         cur.execute("SELECT TRIM(id_Ciudad) AS id, TRIM(ciu_Descripcion) AS nombre, TRIM(ciu_Provincia) AS provincia, TRIM(ciu_Region) AS region FROM CIUDADES ORDER BY ciu_Descripcion")
@@ -1203,9 +1406,14 @@ def listar_ciudades():
 
 @app.get("/api/unidades-medida")
 def listar_unidades_medida():
+    if database_backend() == "postgresql":
+        try:
+            return postgres_catalogos.listar_unidades(audit_user_id.get(), audit_client_ip.get())
+        except (psycopg.Error, ValueError) as error:
+            raise postgres_http_error(error) from error
     conn, cur = None, None
     try:
-        conn = mysql.connector.connect(**get_db_config())
+        conn = connect_database()
         cur = conn.cursor(dictionary=True)
         cur.execute("SELECT TRIM(id_Unidad_Medida) AS id, TRIM(um_Descripcion) AS nombre, um_FactorConversion AS factor FROM UNIDADES_MEDIDAS ORDER BY um_Descripcion")
         rows = cur.fetchall()
@@ -1240,7 +1448,7 @@ def listar_unidades_medida():
 def crear_unidad_medida(data: UnidadMedidaInput):
     conn, cur = None, None
     try:
-        conn = mysql.connector.connect(**get_db_config())
+        conn = connect_database()
         cur = conn.cursor()
         cur.execute("SELECT 1 FROM UNIDADES_MEDIDAS WHERE id_Unidad_Medida = %s", (data.id,))
         if cur.fetchone():
@@ -1272,7 +1480,7 @@ def actualizar_unidad_medida(id_um: str, data: UnidadMedidaUpdateInput):
     id_clean = id_um.strip().upper()[:3]
     conn, cur = None, None
     try:
-        conn = mysql.connector.connect(**get_db_config())
+        conn = connect_database()
         cur = conn.cursor()
         cur.execute("SELECT 1 FROM UNIDADES_MEDIDAS WHERE id_Unidad_Medida = %s", (id_clean,))
         if not cur.fetchone():
@@ -1302,7 +1510,7 @@ def eliminar_unidad_medida(id_um: str):
     id_clean = id_um.strip().upper()[:3]
     conn, cur = None, None
     try:
-        conn = mysql.connector.connect(**get_db_config())
+        conn = connect_database()
         cur = conn.cursor()
         cur.execute("SELECT 1 FROM UNIDADES_MEDIDAS WHERE id_Unidad_Medida = %s", (id_clean,))
         if not cur.fetchone():
@@ -1349,9 +1557,14 @@ def listar_marcas():
 
 @app.get("/api/compras/catalogos")
 def listar_catalogos_compras():
+    if database_backend() == "postgresql":
+        try:
+            return postgres_comerciales.listar_catalogos_compras()
+        except (psycopg.Error, ValueError) as error:
+            raise postgres_http_error(error) from error
     conn, cur = None, None
     try:
-        conn = mysql.connector.connect(**get_db_config())
+        conn = connect_database()
         cur = conn.cursor(dictionary=True)
         cur.execute(
             """
@@ -1382,9 +1595,14 @@ def listar_catalogos_compras():
 
 @app.get("/api/compras")
 def listar_compras():
+    if database_backend() == "postgresql":
+        try:
+            return postgres_comerciales.listar_documentos("compras")
+        except (psycopg.Error, ValueError) as error:
+            raise postgres_http_error(error) from error
     conn, cur = None, None
     try:
-        conn = mysql.connector.connect(**get_db_config())
+        conn = connect_database()
         cur = conn.cursor(dictionary=True)
         cur.execute(
             """
@@ -1456,11 +1674,23 @@ def crear_compra(purchase: PurchaseOrderInput):
             status_code=422,
             detail="El total supera la capacidad NUMERIC(7,2) de la base de datos.",
         )
+    if database_backend() == "postgresql":
+        actor = audit_user_id.get()
+        if not actor:
+            raise HTTPException(status_code=401, detail="Debes iniciar sesión para continuar.")
+        try:
+            return postgres_compras.crear_compra(
+                purchase.supplier_id, purchase.delivery_date, purchase.tax_rate,
+                [(item.product_id, item.quantity, item.unit_cost) for item in purchase.items],
+                subtotal, tax, total, actor, audit_client_ip.get(),
+            )
+        except (psycopg.Error, ValueError) as error:
+            raise postgres_http_error(error) from error
 
     order_id = None
     conn, cur = None, None
     try:
-        conn = mysql.connector.connect(**get_db_config())
+        conn = connect_database()
         cur = conn.cursor()
         user_id = get_user_id(cur)
 
@@ -1578,10 +1808,22 @@ def cambiar_estado_compra(order_id: str, procedure: str) -> dict[str, str]:
     clean_id = str(order_id or "").strip()
     if not clean_id or len(clean_id) > 10 or RE_SQLI_DANGEROUS.search(clean_id) or not re.match(r"^[A-Za-z0-9\-]+$", clean_id):
         raise HTTPException(status_code=422, detail="El identificador de compra no es válido.")
+    if database_backend() == "postgresql":
+        actor = audit_user_id.get()
+        if not actor:
+            raise HTTPException(status_code=401, detail="Debes iniciar sesión para continuar.")
+        if procedure not in {"SP_COMPRA_APROBAR", "SP_COMPRA_ANULAR"}:
+            raise HTTPException(status_code=500, detail="Operación de compra no reconocida.")
+        try:
+            return postgres_compras.cambiar_estado_compra(
+                clean_id, procedure == "SP_COMPRA_APROBAR", actor, audit_client_ip.get()
+            )
+        except (psycopg.Error, ValueError) as error:
+            raise postgres_http_error(error) from error
 
     conn, cur = None, None
     try:
-        conn = mysql.connector.connect(**get_db_config())
+        conn = connect_database()
         cur = conn.cursor()
 
         # Validar existencia y estado actual de la orden en la BD
@@ -1698,9 +1940,19 @@ def anular_compra(order_id: str):
 
 @app.get("/api/productos")
 def listar_productos():
+    if database_backend() == "postgresql":
+        try:
+            roles = postgres_auth.active_roles(audit_user_id.get())
+            if roles is None:
+                raise HTTPException(status_code=401, detail="La sesión ya no está activa.")
+            grants = postgres_auth.grants(roles)
+            include_cost = ("COMPRAS", "VER") in grants or ("CONTABILIDAD", "VER") in grants
+            return postgres_maestros.listar("productos", include_cost=include_cost)
+        except (psycopg.Error, ValueError) as error:
+            raise postgres_http_error(error) from error
     conn, cur = None, None
     try:
-        conn = mysql.connector.connect(**get_db_config())
+        conn = connect_database()
         cur = conn.cursor(dictionary=True)
         cur.execute("SHOW COLUMNS FROM PRODUCTOS LIKE 'id_Percha'")
         has_shelf = bool(cur.fetchone())
@@ -1762,7 +2014,7 @@ def listar_productos():
 def crear_producto(prod: ProductInput):
     conn, cur = None, None
     try:
-        conn = mysql.connector.connect(**get_db_config())
+        conn = connect_database()
         cur = conn.cursor()
 
         # Validación anti-duplicados por nombre
@@ -1909,7 +2161,7 @@ def actualizar_producto(product_id: str, prod: ProductInput):
 
     conn, cur = None, None
     try:
-        conn = mysql.connector.connect(**get_db_config())
+        conn = connect_database()
         cur = conn.cursor()
 
         # Verificar existencia
@@ -2003,7 +2255,7 @@ def cambiar_estado_producto(product_id: str, payload: ProductStatusInput):
 
     conn, cur = None, None
     try:
-        conn = mysql.connector.connect(**get_db_config())
+        conn = connect_database()
         cur = conn.cursor()
         cur.execute("SELECT id_Producto FROM PRODUCTOS WHERE id_Producto = %s", (clean_id,))
         if not cur.fetchone():
@@ -2036,9 +2288,14 @@ def cambiar_estado_producto(product_id: str, payload: ProductStatusInput):
 
 @app.get("/api/clientes")
 def listar_clientes():
+    if database_backend() == "postgresql":
+        try:
+            return postgres_maestros.listar("clientes")
+        except (psycopg.Error, ValueError) as error:
+            raise postgres_http_error(error) from error
     conn, cur = None, None
     try:
-        conn = mysql.connector.connect(**get_db_config())
+        conn = connect_database()
         cur = conn.cursor(dictionary=True)
         cur.execute(
             """
@@ -2073,7 +2330,7 @@ def crear_cliente(cli: CustomerInput):
     conn, cur = None, None
     customer_id = cli.id or f"CLI-{uuid4().hex[:5].upper()}"
     try:
-        conn = mysql.connector.connect(**get_db_config())
+        conn = connect_database()
         cur = conn.cursor()
         cur.execute(
             """
@@ -2108,7 +2365,7 @@ def crear_cliente(cli: CustomerInput):
 def actualizar_cliente(customer_id: str, cli: CustomerInput):
     conn, cur = None, None
     try:
-        conn = mysql.connector.connect(**get_db_config())
+        conn = connect_database()
         cur = conn.cursor()
         cur.execute(
             """
@@ -2149,9 +2406,14 @@ def actualizar_cliente(customer_id: str, cli: CustomerInput):
 
 @app.get("/api/proveedores")
 def listar_proveedores():
+    if database_backend() == "postgresql":
+        try:
+            return postgres_maestros.listar("proveedores")
+        except (psycopg.Error, ValueError) as error:
+            raise postgres_http_error(error) from error
     conn, cur = None, None
     try:
-        conn = mysql.connector.connect(**get_db_config())
+        conn = connect_database()
         cur = conn.cursor(dictionary=True)
         cur.execute(
             """
@@ -2183,7 +2445,7 @@ def listar_proveedores():
 def crear_proveedor(prv: SupplierInput):
     conn, cur = None, None
     try:
-        conn = mysql.connector.connect(**get_db_config())
+        conn = connect_database()
         cur = conn.cursor()
 
         # 1. Validar que no exista otro proveedor con el mismo RUC/Cédula
@@ -2257,7 +2519,7 @@ def actualizar_proveedor(supplier_id: str, prv: SupplierInput):
 
     conn, cur = None, None
     try:
-        conn = mysql.connector.connect(**get_db_config())
+        conn = connect_database()
         cur = conn.cursor()
 
         # Verificar existencia
@@ -2334,7 +2596,7 @@ def cambiar_estado_proveedor(supplier_id: str, payload: dict):
 
     conn, cur = None, None
     try:
-        conn = mysql.connector.connect(**get_db_config())
+        conn = connect_database()
         cur = conn.cursor()
 
         cur.execute("SELECT prv_Nombre FROM PROVEEDORES WHERE id_Proveedor = %s", (clean_id,))
@@ -2370,9 +2632,14 @@ def cambiar_estado_proveedor(supplier_id: str, payload: dict):
 
 @app.get("/api/ventas")
 def listar_ventas():
+    if database_backend() == "postgresql":
+        try:
+            return postgres_ventas.listar_ventas()
+        except (psycopg.Error, ValueError) as error:
+            raise postgres_http_error(error) from error
     conn, cur = None, None
     try:
-        conn = mysql.connector.connect(**get_db_config())
+        conn = connect_database()
         cur = conn.cursor(dictionary=True)
         cur.execute(
             """
@@ -2426,12 +2693,25 @@ def listar_ventas():
 
 
 @app.post("/api/ventas")
-def registrar_venta(sale: SaleOrderInput):
+def registrar_venta(sale: SaleOrderInput, request: Request):
+    if database_backend() == "postgresql":
+        actor = audit_user_id.get()
+        if not actor:
+            raise HTTPException(status_code=401, detail="Debes iniciar sesión para continuar.")
+        try:
+            return postgres_ventas.crear_venta(
+                sale, actor, audit_client_ip.get(),
+                request_id=request.headers.get("Idempotency-Key", ""),
+            )
+        except postgres_ventas.VentaError as error:
+            raise HTTPException(status_code=error.status_code, detail=error.detail) from error
+        except (psycopg.Error, ValueError) as error:
+            raise postgres_http_error(error) from error
     invoice_id = f"FAC{uuid4().hex[:10].upper()}"
     delivery_id = f"ENT{uuid4().hex[:10].upper()}"
     conn, cur = None, None
     try:
-        conn = mysql.connector.connect(**get_db_config())
+        conn = connect_database()
         cur = conn.cursor(dictionary=True)
         user_id = get_user_id(cur)
 
@@ -2522,9 +2802,19 @@ def registrar_venta(sale: SaleOrderInput):
 
 @app.post("/api/ventas/{invoice_id}/aprobar")
 def aprobar_factura(invoice_id: str):
+    if database_backend() == "postgresql":
+        actor = audit_user_id.get()
+        if not actor:
+            raise HTTPException(status_code=401, detail="Debes iniciar sesión para continuar.")
+        try:
+            return postgres_ventas.aprobar_factura(invoice_id, actor, audit_client_ip.get())
+        except postgres_ventas.VentaError as error:
+            raise HTTPException(status_code=error.status_code, detail=error.detail) from error
+        except (psycopg.Error, ValueError) as error:
+            raise postgres_http_error(error) from error
     conn, cur = None, None
     try:
-        conn = mysql.connector.connect(**get_db_config())
+        conn = connect_database()
         cur = conn.cursor()
         user_id = get_user_id(cur)
         cur.callproc("SP_FACTURA_APROBAR", (invoice_id, user_id))
@@ -2540,9 +2830,19 @@ def aprobar_factura(invoice_id: str):
 
 @app.post("/api/ventas/{invoice_id}/anular")
 def anular_factura(invoice_id: str):
+    if database_backend() == "postgresql":
+        actor = audit_user_id.get()
+        if not actor:
+            raise HTTPException(status_code=401, detail="Debes iniciar sesión para continuar.")
+        try:
+            return postgres_ventas.anular_factura(invoice_id, actor, audit_client_ip.get())
+        except postgres_ventas.VentaError as error:
+            raise HTTPException(status_code=error.status_code, detail=error.detail) from error
+        except (psycopg.Error, ValueError) as error:
+            raise postgres_http_error(error) from error
     conn, cur = None, None
     try:
-        conn = mysql.connector.connect(**get_db_config())
+        conn = connect_database()
         cur = conn.cursor()
         user_id = get_user_id(cur)
         cur.callproc("SP_FACTURA_ANULAR", (invoice_id, user_id))
@@ -2562,9 +2862,14 @@ def anular_factura(invoice_id: str):
 
 @app.get("/api/recepciones")
 def listar_recepciones():
+    if database_backend() == "postgresql":
+        try:
+            return postgres_comerciales.listar_documentos("recepciones")
+        except (psycopg.Error, ValueError) as error:
+            raise postgres_http_error(error) from error
     conn, cur = None, None
     try:
-        conn = mysql.connector.connect(**get_db_config())
+        conn = connect_database()
         cur = conn.cursor(dictionary=True)
         cur.execute(
             """
@@ -2615,10 +2920,22 @@ def confirmar_recepcion(receipt_id: str, payload: ReceptionConfirmInput):
     clean_id = str(receipt_id or "").strip()
     if not re.match(r"^[A-Za-z0-9\-]+$", clean_id) or RE_SQLI_DANGEROUS.search(clean_id):
         raise HTTPException(status_code=400, detail="Identificador de recibo inválido.")
+    if database_backend() == "postgresql":
+        actor = audit_user_id.get()
+        if not actor:
+            raise HTTPException(status_code=401, detail="Debes iniciar sesión para continuar.")
+        try:
+            return postgres_compras.confirmar_recepcion(
+                clean_id,
+                [(item.product_id, item.received_qty, item.reason) for item in payload.items],
+                actor, audit_client_ip.get(),
+            )
+        except (psycopg.Error, ValueError) as error:
+            raise postgres_http_error(error) from error
 
     conn, cur = None, None
     try:
-        conn = mysql.connector.connect(**get_db_config())
+        conn = connect_database()
         cur = conn.cursor()
 
         cur.execute("SELECT ESTADO_REC FROM RECEPCIONES WHERE id_Recibo = %s", (clean_id,))
@@ -2694,9 +3011,14 @@ def confirmar_recepcion(receipt_id: str, payload: ReceptionConfirmInput):
 
 @app.get("/api/entregas")
 def listar_entregas():
+    if database_backend() == "postgresql":
+        try:
+            return postgres_comerciales.listar_documentos("entregas")
+        except (psycopg.Error, ValueError) as error:
+            raise postgres_http_error(error) from error
     conn, cur = None, None
     try:
-        conn = mysql.connector.connect(**get_db_config())
+        conn = connect_database()
         cur = conn.cursor(dictionary=True)
         cur.execute(
             """
@@ -2747,10 +3069,20 @@ def confirmar_entrega(delivery_id: str, payload: DeliveryConfirmInput):
     clean_id = str(delivery_id or "").strip()
     if not re.match(r"^[A-Za-z0-9\-]+$", clean_id) or RE_SQLI_DANGEROUS.search(clean_id):
         raise HTTPException(status_code=400, detail="Identificador de entrega no válido.")
+    if database_backend() == "postgresql":
+        actor = audit_user_id.get()
+        if not actor:
+            raise HTTPException(status_code=401, detail="Debes iniciar sesión para continuar.")
+        try:
+            return postgres_ventas.confirmar_entrega(clean_id, payload, actor, audit_client_ip.get())
+        except postgres_ventas.VentaError as error:
+            raise HTTPException(status_code=error.status_code, detail=error.detail) from error
+        except (psycopg.Error, ValueError) as error:
+            raise postgres_http_error(error) from error
 
     conn, cur = None, None
     try:
-        conn = mysql.connector.connect(**get_db_config())
+        conn = connect_database()
         cur = conn.cursor()
 
         cur.execute("SELECT ESTADO_ENT FROM ENTREGAS WHERE id_Entrega = %s", (clean_id,))
@@ -2817,9 +3149,14 @@ def confirmar_entrega(delivery_id: str, payload: DeliveryConfirmInput):
 
 @app.get("/api/ajustes")
 def listar_ajustes():
+    if database_backend() == "postgresql":
+        try:
+            return postgres_modulos.listar("ajustes")
+        except (psycopg.Error, ValueError) as error:
+            raise postgres_http_error(error) from error
     conn, cur = None, None
     try:
-        conn = mysql.connector.connect(**get_db_config())
+        conn = connect_database()
         cur = conn.cursor(dictionary=True)
         cur.execute(
             """
@@ -2849,9 +3186,17 @@ def listar_ajustes():
 
 @app.post("/api/ajustes")
 def crear_ajuste(aju: PhysicalAdjustmentInput):
+    if database_backend() == "postgresql":
+        actor = audit_user_id.get()
+        if not actor:
+            raise HTTPException(status_code=401, detail="Debes iniciar sesión para continuar.")
+        try:
+            return postgres_ajustes.crear_ajuste(aju, actor, audit_client_ip.get())
+        except (psycopg.Error, ValueError) as error:
+            raise postgres_http_error(error) from error
     conn, cur = None, None
     try:
-        conn = mysql.connector.connect(**get_db_config())
+        conn = connect_database()
         cur = conn.cursor()
 
         # Validar existencia de producto
@@ -2939,7 +3284,7 @@ def aprobar_ajuste(adjustment_id: str):
 
     conn, cur = None, None
     try:
-        conn = mysql.connector.connect(**get_db_config())
+        conn = connect_database()
         cur = conn.cursor()
 
         cur.execute("SELECT ESTADO_AJU FROM AJUSTES WHERE id_Ajuste = %s", (clean_id,))
@@ -2983,9 +3328,18 @@ def anular_ajuste(adjustment_id: str):
     if not re.match(r"^[A-Za-z0-9\-]+$", clean_id) or RE_SQLI_DANGEROUS.search(clean_id):
         raise HTTPException(status_code=400, detail="Identificador de ajuste no válido.")
 
+    if database_backend() == "postgresql":
+        actor = audit_user_id.get()
+        if not actor:
+            raise HTTPException(status_code=401, detail="Debes iniciar sesión para continuar.")
+        try:
+            return postgres_ajustes.anular_ajuste(clean_id, actor, audit_client_ip.get())
+        except (psycopg.Error, ValueError) as error:
+            raise postgres_http_error(error) from error
+
     conn, cur = None, None
     try:
-        conn = mysql.connector.connect(**get_db_config())
+        conn = connect_database()
         cur = conn.cursor()
 
         cur.execute("SELECT ESTADO_AJU FROM AJUSTES WHERE id_Ajuste = %s", (clean_id,))
@@ -3026,9 +3380,14 @@ def anular_ajuste(adjustment_id: str):
 
 @app.get("/api/departamentos")
 def listar_departamentos():
+    if database_backend() == "postgresql":
+        try:
+            return postgres_modulos.listar("departamentos")
+        except (psycopg.Error, ValueError) as error:
+            raise postgres_http_error(error) from error
     conn, cur = None, None
     try:
-        conn = mysql.connector.connect(**get_db_config())
+        conn = connect_database()
         cur = conn.cursor(dictionary=True)
         cur.execute(
             """
@@ -3069,9 +3428,14 @@ def listar_departamentos():
 
 @app.get("/api/cargos")
 def listar_cargos():
+    if database_backend() == "postgresql":
+        try:
+            return postgres_modulos.listar("cargos")
+        except (psycopg.Error, ValueError) as error:
+            raise postgres_http_error(error) from error
     conn, cur = None, None
     try:
-        conn = mysql.connector.connect(**get_db_config())
+        conn = connect_database()
         cur = conn.cursor(dictionary=True)
         cur.execute("SELECT TRIM(id_Cargo) AS id, TRIM(cgo_Descripcion) AS nombre FROM CARGOS ORDER BY cgo_Descripcion")
         rows = cur.fetchall()
@@ -3090,9 +3454,14 @@ def listar_cargos():
 
 @app.get("/api/empleados")
 def listar_empleados():
+    if database_backend() == "postgresql":
+        try:
+            return postgres_modulos.listar("empleados")
+        except (psycopg.Error, ValueError) as error:
+            raise postgres_http_error(error) from error
     conn, cur = None, None
     try:
-        conn = mysql.connector.connect(**get_db_config())
+        conn = connect_database()
         cur = conn.cursor(dictionary=True)
         cur.execute(
             """
@@ -3144,9 +3513,17 @@ def listar_empleados():
 
 @app.post("/api/empleados")
 def crear_empleado(emp: EmployeeInput):
+    if database_backend() == "postgresql":
+        actor = audit_user_id.get()
+        if not actor:
+            raise HTTPException(status_code=401, detail="Debes iniciar sesión para continuar.")
+        try:
+            return postgres_empleados.crear_empleado(emp, actor, audit_client_ip.get())
+        except (psycopg.Error, ValueError) as error:
+            raise postgres_http_error(error) from error
     conn, cur = None, None
     try:
-        conn = mysql.connector.connect(**get_db_config())
+        conn = connect_database()
         cur = conn.cursor()
         user_id = get_user_id(cur)
 
@@ -3232,7 +3609,7 @@ def crear_empleado(emp: EmployeeInput):
 def actualizar_empleado(employee_id: str, emp: EmployeeInput):
     conn, cur = None, None
     try:
-        conn = mysql.connector.connect(**get_db_config())
+        conn = connect_database()
         cur = conn.cursor()
         user_id = get_user_id(cur)
         dep_id = emp.department_id[:10]
@@ -3309,9 +3686,14 @@ def actualizar_empleado(employee_id: str, emp: EmployeeInput):
 
 @app.get("/api/empleados/{employee_id}/cargos")
 def listar_historial_cargos(employee_id: str):
+    if database_backend() == "postgresql":
+        try:
+            return postgres_modulos.listar("historial_cargos", employee_id)
+        except (psycopg.Error, ValueError) as error:
+            raise postgres_http_error(error) from error
     conn, cur = None, None
     try:
-        conn = mysql.connector.connect(**get_db_config())
+        conn = connect_database()
         cur = conn.cursor(dictionary=True)
         cur.execute(
             """
@@ -3340,7 +3722,7 @@ def listar_historial_cargos(employee_id: str):
 def asignar_cargo_empleado(employee_id: str, cargo: CargoAssignInput):
     conn, cur = None, None
     try:
-        conn = mysql.connector.connect(**get_db_config())
+        conn = connect_database()
         cur = conn.cursor()
         user_id = get_user_id(cur)
         
@@ -3374,9 +3756,14 @@ def asignar_cargo_empleado(employee_id: str, cargo: CargoAssignInput):
 
 @app.get("/api/empleados/{employee_id}/cargas")
 def listar_cargas_empleado(employee_id: str):
+    if database_backend() == "postgresql":
+        try:
+            return postgres_modulos.listar("cargas", employee_id)
+        except (psycopg.Error, ValueError) as error:
+            raise postgres_http_error(error) from error
     conn, cur = None, None
     try:
-        conn = mysql.connector.connect(**get_db_config())
+        conn = connect_database()
         cur = conn.cursor(dictionary=True)
         cur.execute(
             """
@@ -3412,7 +3799,7 @@ def listar_cargas_empleado(employee_id: str):
 def registrar_carga_empleado(employee_id: str, carga: DependentInput):
     conn, cur = None, None
     try:
-        conn = mysql.connector.connect(**get_db_config())
+        conn = connect_database()
         cur = conn.cursor()
         user_id = get_user_id(cur)
 
@@ -3475,7 +3862,7 @@ def registrar_carga_empleado(employee_id: str, carga: DependentInput):
 def actualizar_carga_empleado(employee_id: str, carga_id: str, carga: DependentInput):
     conn, cur = None, None
     try:
-        conn = mysql.connector.connect(**get_db_config())
+        conn = connect_database()
         cur = conn.cursor()
         user_id = get_user_id(cur)
         # Validar duplicidad de cédula en otras cargas familiares activas
@@ -3530,7 +3917,7 @@ def actualizar_carga_empleado(employee_id: str, carga_id: str, carga: DependentI
 def eliminar_carga_empleado(employee_id: str, carga_id: str):
     conn, cur = None, None
     try:
-        conn = mysql.connector.connect(**get_db_config())
+        conn = connect_database()
         cur = conn.cursor()
         cur.execute("UPDATE CARGAS SET ESTADO_CAR = 'INA' WHERE id_Carga = %s AND id_Empleado = %s", (carga_id, employee_id))
         conn.commit()
@@ -3560,10 +3947,15 @@ PAYROLL_CATALOG_CONFIG = {
 
 
 def _listar_catalogo_nomina(tipo: str):
+    if database_backend() == "postgresql":
+        try:
+            return postgres_modulos.listar(tipo)
+        except (psycopg.Error, ValueError) as error:
+            raise postgres_http_error(error) from error
     table, id_column, name_column, value_column, status_column, _ = PAYROLL_CATALOG_CONFIG[tipo]
     conn, cur = None, None
     try:
-        conn = mysql.connector.connect(**get_db_config())
+        conn = connect_database()
         cur = conn.cursor(dictionary=True)
         cur.execute(
             f"SELECT TRIM({id_column}) AS id, TRIM({name_column}) AS nombre, "
@@ -3611,10 +4003,18 @@ def _listar_catalogo_nomina(tipo: str):
 
 
 def _crear_catalogo_nomina(tipo: str, data: PayrollCatalogInput):
+    if database_backend() == "postgresql":
+        actor = audit_user_id.get()
+        if not actor:
+            raise HTTPException(status_code=401, detail="Debes iniciar sesión para continuar.")
+        try:
+            return postgres_nomina_catalogos.crear(tipo, data, actor, audit_client_ip.get())
+        except (psycopg.Error, ValueError) as error:
+            raise postgres_http_error(error) from error
     table, id_column, name_column, value_column, status_column, prefix = PAYROLL_CATALOG_CONFIG[tipo]
     conn, cur = None, None
     try:
-        conn = mysql.connector.connect(**get_db_config())
+        conn = connect_database()
         cur = conn.cursor()
         cur.execute(f"SELECT 1 FROM {table} WHERE LOWER(TRIM({name_column})) = LOWER(%s) LIMIT 1", (data.name,))
         if cur.fetchone():
@@ -3642,11 +4042,19 @@ def _crear_catalogo_nomina(tipo: str, data: PayrollCatalogInput):
 
 
 def _actualizar_catalogo_nomina(tipo: str, catalog_id: str, data: PayrollCatalogInput):
+    if database_backend() == "postgresql":
+        actor = audit_user_id.get()
+        if not actor:
+            raise HTTPException(status_code=401, detail="Debes iniciar sesión para continuar.")
+        try:
+            return postgres_nomina_catalogos.actualizar(tipo, catalog_id, data, actor, audit_client_ip.get())
+        except (psycopg.Error, ValueError) as error:
+            raise postgres_http_error(error) from error
     table, id_column, name_column, value_column, status_column, _ = PAYROLL_CATALOG_CONFIG[tipo]
     clean_id = catalog_id.strip().upper()
     conn, cur = None, None
     try:
-        conn = mysql.connector.connect(**get_db_config())
+        conn = connect_database()
         cur = conn.cursor()
         cur.execute(f"SELECT 1 FROM {table} WHERE {id_column} = %s", (clean_id,))
         if not cur.fetchone():
@@ -3674,11 +4082,19 @@ def _actualizar_catalogo_nomina(tipo: str, catalog_id: str, data: PayrollCatalog
 
 
 def _eliminar_catalogo_nomina(tipo: str, catalog_id: str):
+    if database_backend() == "postgresql":
+        actor = audit_user_id.get()
+        if not actor:
+            raise HTTPException(status_code=401, detail="Debes iniciar sesión para continuar.")
+        try:
+            return postgres_nomina_catalogos.desactivar(tipo, catalog_id, actor, audit_client_ip.get())
+        except (psycopg.Error, ValueError) as error:
+            raise postgres_http_error(error) from error
     table, id_column, _, _, status_column, _ = PAYROLL_CATALOG_CONFIG[tipo]
     clean_id = catalog_id.strip().upper()
     conn, cur = None, None
     try:
-        conn = mysql.connector.connect(**get_db_config())
+        conn = connect_database()
         cur = conn.cursor()
         cur.execute(f"SELECT 1 FROM {table} WHERE {id_column} = %s", (clean_id,))
         if not cur.fetchone():
@@ -3726,9 +4142,14 @@ def eliminar_descuento(catalog_id: str):
 
 @app.get("/api/nomina")
 def listar_nomina():
+    if database_backend() == "postgresql":
+        try:
+            return postgres_modulos.listar("nomina")
+        except (psycopg.Error, ValueError) as error:
+            raise postgres_http_error(error) from error
     conn, cur = None, None
     try:
-        conn = mysql.connector.connect(**get_db_config())
+        conn = connect_database()
         cur = conn.cursor(dictionary=True)
         cur.execute(
             """
@@ -3805,9 +4226,17 @@ def listar_nomina():
 
 @app.post("/api/nomina")
 def crear_rol_pago(payroll: PayrollInput):
+    if database_backend() == "postgresql":
+        actor = audit_user_id.get()
+        if not actor:
+            raise HTTPException(status_code=401, detail="Debes iniciar sesión para continuar.")
+        try:
+            return postgres_nomina.crear(payroll, actor, audit_client_ip.get())
+        except (psycopg.Error, ValueError) as error:
+            raise postgres_http_error(error) from error
     conn, cur = None, None
     try:
-        conn = mysql.connector.connect(**get_db_config())
+        conn = connect_database()
         cur = conn.cursor()
         user_id = get_user_id(cur)
 
@@ -3934,7 +4363,7 @@ def crear_rol_pago(payroll: PayrollInput):
 def actualizar_rol_pago(pago_id: str, payroll: PayrollInput):
     conn, cur = None, None
     try:
-        conn = mysql.connector.connect(**get_db_config())
+        conn = connect_database()
         cur = conn.cursor()
         user_id = get_user_id(cur)
         cur.execute(
@@ -4023,9 +4452,19 @@ def actualizar_rol_pago(pago_id: str, payroll: PayrollInput):
 
 @app.post("/api/nomina/{pago_id}/aprobar")
 def aprobar_nomina(pago_id: str):
+    if database_backend() == "postgresql":
+        if os.getenv("PAYROLL_APPROVAL_ENABLED", "").lower() != "true":
+            raise HTTPException(status_code=503, detail="La aprobación de nómina no está habilitada.")
+        actor = audit_user_id.get()
+        if not actor:
+            raise HTTPException(status_code=401, detail="Debes iniciar sesión para continuar.")
+        try:
+            return postgres_nomina.aprobar(pago_id, actor, audit_client_ip.get())
+        except (psycopg.Error, ValueError) as error:
+            raise postgres_http_error(error) from error
     conn, cur = None, None
     try:
-        conn = mysql.connector.connect(**get_db_config())
+        conn = connect_database()
         cur = conn.cursor()
         user_id = get_user_id(cur)
         cur.callproc("SP_PAGO_APROBAR", (pago_id, user_id))
@@ -4041,9 +4480,17 @@ def aprobar_nomina(pago_id: str):
 
 @app.post("/api/nomina/{pago_id}/anular")
 def anular_nomina(pago_id: str):
+    if database_backend() == "postgresql":
+        actor = audit_user_id.get()
+        if not actor:
+            raise HTTPException(status_code=401, detail="Debes iniciar sesión para continuar.")
+        try:
+            return postgres_nomina.anular(pago_id, actor, audit_client_ip.get())
+        except (psycopg.Error, ValueError) as error:
+            raise postgres_http_error(error) from error
     conn, cur = None, None
     try:
-        conn = mysql.connector.connect(**get_db_config())
+        conn = connect_database()
         cur = conn.cursor()
         user_id = get_user_id(cur)
         cur.callproc("SP_PAGO_ANULAR", (pago_id, user_id))
@@ -4061,7 +4508,7 @@ def anular_nomina(pago_id: str):
 def eliminar_rol_pago(pago_id: str):
     conn, cur = None, None
     try:
-        conn = mysql.connector.connect(**get_db_config())
+        conn = connect_database()
         cur = conn.cursor()
         user_id = get_user_id(cur)
         cur.execute(
@@ -4098,9 +4545,14 @@ def eliminar_rol_pago(pago_id: str):
 
 @app.get("/api/contabilidad/bancos")
 def listar_bancos():
+    if database_backend() == "postgresql":
+        try:
+            return postgres_modulos.listar("bancos")
+        except (psycopg.Error, ValueError) as error:
+            raise postgres_http_error(error) from error
     conn, cur = None, None
     try:
-        conn = mysql.connector.connect(**get_db_config())
+        conn = connect_database()
         cur = conn.cursor(dictionary=True)
         cur.execute(
             """
@@ -4122,9 +4574,17 @@ def listar_bancos():
 
 @app.post("/api/contabilidad/bancos")
 def crear_banco(banco: BancoInput):
+    if database_backend() == "postgresql":
+        actor = audit_user_id.get()
+        if not actor:
+            raise HTTPException(status_code=401, detail="Debes iniciar sesión para continuar.")
+        try:
+            return postgres_bancos.crear_banco(banco, actor, audit_client_ip.get())
+        except (psycopg.Error, ValueError) as error:
+            raise postgres_http_error(error) from error
     conn, cur = None, None
     try:
-        conn = mysql.connector.connect(**get_db_config())
+        conn = connect_database()
         cur = conn.cursor()
         banco_id = banco.id.strip().upper() if banco.id and banco.id.strip() else ""
         if not banco_id:
@@ -4164,9 +4624,17 @@ def crear_banco(banco: BancoInput):
 
 @app.put("/api/contabilidad/bancos/{banco_id}")
 def actualizar_banco(banco_id: str, banco: BancoInput):
+    if database_backend() == "postgresql":
+        actor = audit_user_id.get()
+        if not actor:
+            raise HTTPException(status_code=401, detail="Debes iniciar sesión para continuar.")
+        try:
+            return postgres_bancos.actualizar_banco(banco_id, banco, actor, audit_client_ip.get())
+        except (psycopg.Error, ValueError) as error:
+            raise postgres_http_error(error) from error
     conn, cur = None, None
     try:
-        conn = mysql.connector.connect(**get_db_config())
+        conn = connect_database()
         cur = conn.cursor()
         cur.execute(
             """
@@ -4190,9 +4658,14 @@ def actualizar_banco(banco_id: str, banco: BancoInput):
 
 @app.get("/api/contabilidad/centros-costos")
 def listar_centros_costos():
+    if database_backend() == "postgresql":
+        try:
+            return postgres_modulos.listar("centros_costos")
+        except (psycopg.Error, ValueError) as error:
+            raise postgres_http_error(error) from error
     conn, cur = None, None
     try:
-        conn = mysql.connector.connect(**get_db_config())
+        conn = connect_database()
         cur = conn.cursor(dictionary=True)
         cur.execute(
             """
@@ -4220,7 +4693,7 @@ def listar_centros_costos():
 def crear_centro_costo(cco: CentroCostoInput):
     conn, cur = None, None
     try:
-        conn = mysql.connector.connect(**get_db_config())
+        conn = connect_database()
         cur = conn.cursor()
         cco_id = cco.id.strip().upper() if cco.id and cco.id.strip() else ""
         if not cco_id:
@@ -4271,7 +4744,7 @@ def crear_centro_costo(cco: CentroCostoInput):
 def actualizar_centro_costo(cco_id: str, cco: CentroCostoInput):
     conn, cur = None, None
     try:
-        conn = mysql.connector.connect(**get_db_config())
+        conn = connect_database()
         cur = conn.cursor()
         dep_id = cco.department_id.strip()[:10]
         cur.execute("SELECT id_Departamento FROM DEPARTAMENTOS WHERE id_Departamento = %s", (dep_id,))
@@ -4309,9 +4782,14 @@ def actualizar_centro_costo(cco_id: str, cco: CentroCostoInput):
 
 @app.get("/api/contabilidad/cuentas")
 def listar_cuentas():
+    if database_backend() == "postgresql":
+        try:
+            return postgres_modulos.listar("cuentas")
+        except (psycopg.Error, ValueError) as error:
+            raise postgres_http_error(error) from error
     conn, cur = None, None
     try:
-        conn = mysql.connector.connect(**get_db_config())
+        conn = connect_database()
         cur = conn.cursor(dictionary=True)
         cur.execute("INSERT IGNORE INTO TIPO_CUENTA (id_Tipo_Cta, tip_Descripcion) VALUES ('MAY', 'Mayor'), ('DET', 'Detalle')")
         conn.commit()
@@ -4350,9 +4828,18 @@ def crear_cuenta(acc: AccountInput):
             detail="El tipo de cuenta debe ser únicamente 'MAY' (Cuenta de Mayor) o 'DET' (Cuenta de Detalle)."
         )
 
+    if database_backend() == "postgresql":
+        actor = audit_user_id.get()
+        if not actor:
+            raise HTTPException(status_code=401, detail="Debes iniciar sesión para continuar.")
+        try:
+            return postgres_cuentas.crear_cuenta(acc, actor, audit_client_ip.get())
+        except (psycopg.Error, ValueError) as error:
+            raise postgres_http_error(error) from error
+
     conn, cur = None, None
     try:
-        conn = mysql.connector.connect(**get_db_config())
+        conn = connect_database()
         cur = conn.cursor()
         cur.execute("INSERT IGNORE INTO TIPO_CUENTA (id_Tipo_Cta, tip_Descripcion) VALUES ('MAY', 'Mayor'), ('DET', 'Detalle')")
         cur.execute(
@@ -4378,9 +4865,14 @@ def crear_cuenta(acc: AccountInput):
 
 @app.get("/api/contabilidad/asientos")
 def listar_asientos():
+    if database_backend() == "postgresql":
+        try:
+            return postgres_modulos.listar("asientos")
+        except (psycopg.Error, ValueError) as error:
+            raise postgres_http_error(error) from error
     conn, cur = None, None
     try:
-        conn = mysql.connector.connect(**get_db_config())
+        conn = connect_database()
         cur = conn.cursor(dictionary=True)
         cur.execute(
             """
@@ -4436,10 +4928,19 @@ def crear_asiento(entry: JournalEntryInput):
         if line.debit > Decimal("0") and line.credit > Decimal("0"):
             raise HTTPException(status_code=422, detail=f"Línea #{idx}: Una línea no puede tener importes simultáneos en Debe y Haber.")
 
+    if database_backend() == "postgresql":
+        actor = audit_user_id.get()
+        if not actor:
+            raise HTTPException(status_code=401, detail="Debes iniciar sesión para continuar.")
+        try:
+            return postgres_asientos.crear_asiento(entry, actor, audit_client_ip.get())
+        except (psycopg.Error, ValueError) as error:
+            raise postgres_http_error(error) from error
+
     asiento_id = f"ASI{uuid4().hex[:7].upper()}"
     conn, cur = None, None
     try:
-        conn = mysql.connector.connect(**get_db_config())
+        conn = connect_database()
         cur = conn.cursor()
 
         # Validación vital: ninguna cuenta del asiento puede ser de tipo MAYOR
@@ -4504,7 +5005,7 @@ def crear_asiento(entry: JournalEntryInput):
 def aprobar_asiento(asiento_id: str):
     conn, cur = None, None
     try:
-        conn = mysql.connector.connect(**get_db_config())
+        conn = connect_database()
         cur = conn.cursor()
         user_id = get_user_id(cur)
         cur.callproc("SP_ASIENTO_APROBAR", (asiento_id, user_id))
@@ -4522,7 +5023,7 @@ def aprobar_asiento(asiento_id: str):
 def anular_asiento(asiento_id: str):
     conn, cur = None, None
     try:
-        conn = mysql.connector.connect(**get_db_config())
+        conn = connect_database()
         cur = conn.cursor()
         user_id = get_user_id(cur)
         cur.callproc("SP_ASIENTO_ANULAR", (asiento_id, user_id))
@@ -4592,13 +5093,31 @@ def verify_password(raw_password: str, stored_hash: str) -> bool:
 def create_auth_token(user_id: str) -> str:
     expires_at = int(time.time()) + AUTH_TOKEN_TTL_SECONDS
     payload = base64.urlsafe_b64encode(
-        f"{user_id}:{expires_at}".encode("utf-8")
+        f"{user_id}:{secrets.token_urlsafe(16)}:{expires_at}".encode("utf-8")
     ).decode("ascii").rstrip("=")
     signature = hmac.new(
         AUTH_TOKEN_SECRET, payload.encode("ascii"), hashlib.sha256
     ).digest()
     encoded_signature = base64.urlsafe_b64encode(signature).decode("ascii").rstrip("=")
     return f"{payload}.{encoded_signature}"
+
+
+def parse_auth_token(token: str) -> tuple[str, int]:
+    try:
+        payload, encoded_signature = token.split(".", 1)
+        expected = hmac.new(AUTH_TOKEN_SECRET, payload.encode("ascii"), hashlib.sha256).digest()
+        supplied = base64.urlsafe_b64decode(encoded_signature + "=" * (-len(encoded_signature) % 4))
+        if not hmac.compare_digest(expected, supplied):
+            raise ValueError("Firma inválida.")
+        decoded = base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)).decode("utf-8")
+        identity, expiry = decoded.rsplit(":", 1)
+        user_id = identity.split(":", 1)[0]
+        expires_at = int(expiry)
+        if not user_id or len(user_id) > 16 or expires_at <= int(time.time()):
+            raise ValueError("Token expirado o inválido.")
+        return user_id, expires_at
+    except (ValueError, UnicodeError):
+        raise HTTPException(status_code=401, detail="La sesión no es válida o expiró.")
 
 
 class InitialAdminEmployeeInput(EmployeeInput):
@@ -4621,9 +5140,14 @@ class InitialAdminSetupInput(BaseModel):
 
 @app.get("/api/auth/setup-status")
 def estado_configuracion_inicial():
+    if database_backend() == "postgresql":
+        try:
+            return {"initialized": postgres_auth.is_initialized()}
+        except (psycopg.Error, ValueError) as error:
+            raise postgres_http_error(error) from error
     conn, cur = None, None
     try:
-        conn = mysql.connector.connect(**get_db_config())
+        conn = connect_database()
         cur = conn.cursor(dictionary=True)
         cur.execute("SELECT EXISTS(SELECT 1 FROM USUARIOS LIMIT 1) AS initialized")
         return {"initialized": bool(cur.fetchone()["initialized"])}
@@ -4641,7 +5165,7 @@ def configurar_administrador_inicial(payload: InitialAdminSetupInput):
     conn, cur = None, None
     setup_lock_acquired = False
     try:
-        conn = mysql.connector.connect(**get_db_config())
+        conn = connect_database()
         cur = conn.cursor(dictionary=True)
         cur.execute("SELECT GET_LOCK('licoreria_initial_admin_setup', 10) AS acquired")
         setup_lock_acquired = cur.fetchone()["acquired"] == 1
@@ -4803,28 +5327,19 @@ def get_authenticated_user(
 ) -> str:
     if credentials is None or credentials.scheme.lower() != "bearer":
         raise HTTPException(status_code=401, detail="Debes iniciar sesión para continuar.")
-    try:
-        payload, encoded_signature = credentials.credentials.split(".", 1)
-        expected_signature = hmac.new(
-            AUTH_TOKEN_SECRET, payload.encode("ascii"), hashlib.sha256
-        ).digest()
-        supplied_signature = base64.urlsafe_b64decode(
-            encoded_signature + "=" * (-len(encoded_signature) % 4)
-        )
-        if not hmac.compare_digest(expected_signature, supplied_signature):
-            raise ValueError("Firma inválida.")
-        decoded_payload = base64.urlsafe_b64decode(
-            payload + "=" * (-len(payload) % 4)
-        ).decode("utf-8")
-        user_id, expires_at = decoded_payload.rsplit(":", 1)
-        if int(expires_at) <= int(time.time()):
-            raise ValueError("Token expirado.")
-    except (ValueError, UnicodeDecodeError):
-        raise HTTPException(status_code=401, detail="La sesión no es válida o expiró.")
+    user_id, _ = parse_auth_token(credentials.credentials)
+
+    if database_backend() == "postgresql":
+        try:
+            if postgres_auth.session_revoked(credentials.credentials) or postgres_auth.active_roles(user_id) is None:
+                raise HTTPException(status_code=401, detail="La sesión ya no está activa.")
+            return user_id
+        except (psycopg.Error, ValueError) as error:
+            raise postgres_http_error(error) from error
 
     conn, cur = None, None
     try:
-        conn = mysql.connector.connect(**get_db_config())
+        conn = connect_database()
         cur = conn.cursor()
         cur.execute(
             "SELECT 1 FROM USUARIOS WHERE id_Usuario = %s AND ESTADO_USR = 'ACT' LIMIT 1",
@@ -4842,10 +5357,107 @@ def get_authenticated_user(
             conn.close()
 
 
+def get_audit_actor(request: Request) -> str | None:
+    authorization = request.headers.get("authorization", "")
+    scheme, separator, token = authorization.partition(" ")
+    if not separator or scheme.lower() != "bearer":
+        return None
+
+    try:
+        return parse_auth_token(token)[0]
+    except HTTPException:
+        return None
+
+
+@app.middleware("http")
+async def audit_api_activity(request: Request, call_next):
+    path = request.url.path
+    login_request = path == "/api/auth/login" and request.method == "POST"
+    should_log = path.startswith("/api/") and (
+        request.method == "GET" or login_request
+    )
+    actor_token = audit_user_id.set(
+        None if login_request and database_backend() == "postgresql" else get_audit_actor(request)
+    )
+    client_ip_token = audit_client_ip.set(
+        request.client.host if request.client else None
+    )
+    try:
+        response = await call_next(request)
+        if should_log and not (login_request and response.status_code < 400):
+            route = request.scope.get("route")
+            endpoint = getattr(route, "path", path)
+            table = (
+                "USUARIOS"
+                if login_request
+                else f"API:{endpoint.removeprefix('/api/').replace('/', '_')}"
+            )[:50].upper()
+            action = "LOGIN_FAIL" if login_request else "SELECT"
+            log_id = f"LOG-{uuid4().hex[:10].upper()}"
+            actor = getattr(request.state, "audit_actor", audit_user_id.get())
+            details = json.dumps({"endpoint": endpoint, "status": response.status_code})
+            if database_backend() == "postgresql":
+                try:
+                    postgres_catalogos.registrar_auditoria(
+                        log_id, actor, table, action, audit_client_ip.get(), details
+                    )
+                except (psycopg.Error, ValueError) as error:
+                    http_error = postgres_http_error(error)
+                    return JSONResponse(
+                        status_code=http_error.status_code,
+                        content={"detail": http_error.detail},
+                    )
+                return response
+            conn, cur = None, None
+            try:
+                conn = connect_database()
+                cur = conn.cursor()
+                cur.execute(
+                    """
+                    INSERT INTO LOG_AUDITORIA
+                        (id_Log, id_Usuario, log_FechaHora, log_TablaAfectada,
+                         log_Accion, log_IP, log_ValorAnterior, log_ValorNuevo)
+                    VALUES (%s, %s, NOW(), %s, %s, %s, NULL, %s)
+                    """,
+                    (
+                        log_id,
+                        actor,
+                        table,
+                        action,
+                        audit_client_ip.get(),
+                        details,
+                    ),
+                )
+                conn.commit()
+            except mysql.connector.Error as error:
+                if conn and conn.is_connected():
+                    conn.rollback()
+                raise_database_error(error)
+            finally:
+                if cur:
+                    cur.close()
+                if conn and conn.is_connected():
+                    conn.close()
+        return response
+    finally:
+        audit_user_id.reset(actor_token)
+        audit_client_ip.reset(client_ip_token)
+
+
 def require_user_manager(user_id: str = Depends(get_authenticated_user)) -> str:
+    if database_backend() == "postgresql":
+        try:
+            roles = postgres_auth.active_roles(user_id)
+            if roles is None:
+                raise HTTPException(status_code=401, detail="La sesión ya no está activa.")
+            if not postgres_auth.is_admin(roles):
+                raise HTTPException(status_code=403, detail="No tienes permiso para administrar usuarios.")
+            return user_id
+        except (psycopg.Error, ValueError) as error:
+            raise postgres_http_error(error) from error
     conn, cur = None, None
     try:
-        conn = mysql.connector.connect(**get_db_config())
+        conn = connect_database()
         cur = conn.cursor()
         cur.execute(
             """
@@ -4885,9 +5497,19 @@ def require_user_manager(user_id: str = Depends(get_authenticated_user)) -> str:
 
 
 def require_administrator(user_id: str = Depends(get_authenticated_user)) -> str:
+    if database_backend() == "postgresql":
+        try:
+            roles = postgres_auth.active_roles(user_id)
+            if roles is None:
+                raise HTTPException(status_code=401, detail="La sesión ya no está activa.")
+            if not postgres_auth.is_admin(roles):
+                raise HTTPException(status_code=403, detail="No tienes permiso para consultar la auditoría.")
+            return user_id
+        except (psycopg.Error, ValueError) as error:
+            raise postgres_http_error(error) from error
     conn, cur = None, None
     try:
-        conn = mysql.connector.connect(**get_db_config())
+        conn = connect_database()
         cur = conn.cursor()
         cur.execute(
             """
@@ -4919,9 +5541,14 @@ def require_administrator(user_id: str = Depends(get_authenticated_user)) -> str
 
 @app.get("/api/auditoria")
 def listar_auditoria(_: str = Depends(require_administrator)):
+    if database_backend() == "postgresql":
+        try:
+            return postgres_usuarios.listar_auditoria()
+        except (psycopg.Error, ValueError) as error:
+            raise postgres_http_error(error) from error
     conn, cur = None, None
     try:
-        conn = mysql.connector.connect(**get_db_config())
+        conn = connect_database()
         cur = conn.cursor(dictionary=True)
         cur.execute(
             """
@@ -4968,6 +5595,14 @@ PERMISSION_TO_ROUTES_MAP = {
     "PRM-REP": ["reports"],
 }
 
+MODULE_TO_ROUTES_MAP = {
+    "VENTAS": ["pos", "sales", "customers"],
+    "INVENTARIOS": ["adjustments", "receptions", "deliveries"],
+    "COMPRAS": ["pos_orders", "suppliers", "products", "catalog", "units"],
+    "TALENTO_HUMANO": ["employees", "hr", "payroll"],
+    "CONTABILIDAD": ["accounting", "bancos", "cost_centers", "reports"],
+}
+
 ALL_FRONTEND_ROUTES = [
     "dashboard", "pos", "sales", "customers", "adjustments",
     "receptions", "deliveries", "pos_orders", "suppliers",
@@ -4980,6 +5615,29 @@ def puede_administrar_usuarios(role_names: list[str], permission_ids: list[str])
         role.strip().lower() in {"admin", "administrador", "superadministrador", "jefe_talento_humano"}
         for role in role_names
     )
+
+
+def rutas_permitidas(
+    role_ids: list[str], role_names: list[str], permissions: list[dict]
+) -> list[str]:
+    permission_ids = [str(permission["id_Permiso"]).strip() for permission in permissions]
+    is_admin = "ROL-ADMIN" in role_ids or any(
+        str(role).strip().lower() in {"admin", "administrador", "superadministrador"}
+        for role in role_names
+    )
+    if is_admin:
+        return list(ALL_FRONTEND_ROUTES)
+
+    allowed = {"dashboard"}
+    for permission in permissions:
+        permission_id = str(permission["id_Permiso"]).strip()
+        allowed.update(PERMISSION_TO_ROUTES_MAP.get(permission_id, []))
+        if str(permission["prm_Accion"]).strip().upper() == "VER":
+            module = str(permission["prm_Modulo"]).strip().upper()
+            allowed.update(MODULE_TO_ROUTES_MAP.get(module, []))
+    if puede_administrar_usuarios(role_names, permission_ids):
+        allowed.add("usuarios")
+    return [route for route in ALL_FRONTEND_ROUTES if route in allowed]
 
 
 class LoginInput(BaseModel):
@@ -5002,8 +5660,45 @@ class LogoutInput(BaseModel):
 def login_usuario(payload: LoginInput, request: Request):
     conn, cur = None, None
     client_ip = request.client.host if request.client else "127.0.0.1"
+    if database_backend() == "postgresql":
+        try:
+            result, error = postgres_auth.login(
+                payload.username, payload.password, client_ip, verify_password
+            )
+        except (psycopg.Error, ValueError) as error:
+            raise postgres_http_error(error) from error
+        if error:
+            raise HTTPException(status_code=error[0], detail=error[1])
+        user, roles, permissions = result
+        role_ids = [r["id_rol"] for r in roles]
+        role_names = [r["rol_nombre"] for r in roles]
+        # La presentación refleja la matriz, no permisos heredados fuera de ella.
+        route_permissions = [
+            {"id_Permiso": "", "prm_Modulo": module, "prm_Accion": action}
+            for module, action in postgres_auth.grants(roles)
+        ]
+        allowed_routes = rutas_permitidas([], [], route_permissions)
+        if postgres_auth.is_admin(roles):
+            allowed_routes = list(ALL_FRONTEND_ROUTES)
+        user_id = user["id_usuario"].strip()
+        return {
+            "success": True,
+            "token": create_auth_token(user_id),
+            "user": {
+                "id": user_id,
+                "username": user["usr_username"].strip(),
+                "employeeId": (user["id_empleado"] or "").strip(),
+                "fullName": f"{user['emp_nombre1'] or ''} {user['emp_apellido1'] or ''}".strip() or user["usr_username"].strip(),
+                "department": (user["dep_nombre"] or "General").strip(),
+                "primaryRole": role_names[0] if role_names else "Usuario",
+                "roles": role_names,
+                "roleIds": role_ids,
+                "permissions": [p["id_permiso"] for p in permissions],
+                "allowedRoutes": allowed_routes,
+            },
+        }
     try:
-        conn = mysql.connector.connect(**get_db_config())
+        conn = connect_database()
         cur = conn.cursor(dictionary=True)
 
         # 1. Buscar usuario
@@ -5031,6 +5726,12 @@ def login_usuario(payload: LoginInput, request: Request):
 
         if not user_row:
             raise HTTPException(status_code=401, detail="Usuario o contraseña incorrectos.")
+
+        request.state.audit_actor = user_row["id_Usuario"].strip()
+        cur.execute(
+            "SET @auditoria_usuario = %s, @auditoria_ip = %s",
+            (request.state.audit_actor, client_ip),
+        )
 
         if user_row["ESTADO_USR"] != "ACT":
             if user_row["ESTADO_USR"] == "PEN":
@@ -5091,30 +5792,23 @@ def login_usuario(payload: LoginInput, request: Request):
         perm_ids = [str(p["id_Permiso"]).strip() for p in permissions]
 
         # 4. Calcular rutas permitidas
-        can_manage_users = puede_administrar_usuarios(role_names, perm_ids)
-        is_admin = ("ROL-ADMIN" in role_ids) or any(
-            str(role).strip().lower() in {"admin", "administrador", "superadministrador"} for role in role_names
-        )
-        if is_admin:
-            allowed_routes = list(ALL_FRONTEND_ROUTES)
-        else:
-            allowed_set = set(["dashboard"])
-            for pid in perm_ids:
-                if pid in PERMISSION_TO_ROUTES_MAP:
-                    allowed_set.update(PERMISSION_TO_ROUTES_MAP[pid])
-            if can_manage_users:
-                allowed_set.add("usuarios")
-            # Mantener orden coherente de navItems
-            allowed_routes = [r for r in ALL_FRONTEND_ROUTES if r in allowed_set]
+        allowed_routes = rutas_permitidas(role_ids, role_names, permissions)
 
         # 5. Registrar en LOG_AUDITORIA
         log_id = f"LOG-{uuid4().hex[:10].upper()}"
         cur.execute(
             """
-            INSERT INTO LOG_AUDITORIA (id_Log, id_Usuario, log_FechaHora, log_TablaAfectada, log_Accion, log_ValorAnterior, log_ValorNuevo)
-            VALUES (%s, %s, NOW(), 'USUARIOS', 'LOGIN', NULL, %s)
+            INSERT INTO LOG_AUDITORIA
+                (id_Log, id_Usuario, log_FechaHora, log_TablaAfectada, log_Accion,
+                 log_IP, log_ValorAnterior, log_ValorNuevo)
+            VALUES (%s, %s, NOW(), 'USUARIOS', 'LOGIN', %s, NULL, %s)
             """,
-            (log_id, user_row["id_Usuario"], f"Inicio de sesión exitoso desde {client_ip}")
+            (
+                log_id,
+                user_row["id_Usuario"],
+                client_ip,
+                f"Inicio de sesión exitoso desde {client_ip}",
+            ),
         )
         conn.commit()
 
@@ -5146,10 +5840,18 @@ def login_usuario(payload: LoginInput, request: Request):
         if conn and conn.is_connected(): conn.close()
 
 @app.post("/api/auth/logout")
-def logout_usuario(payload: LogoutInput):
+def logout_usuario(payload: LogoutInput, request: Request):
+    if database_backend() == "postgresql":
+        token = request.headers["authorization"].partition(" ")[2]
+        user_id, expires_at = parse_auth_token(token)
+        try:
+            postgres_auth.revoke_session(token, expires_at, user_id, audit_client_ip.get())
+        except (psycopg.Error, ValueError) as error:
+            raise postgres_http_error(error) from error
+        return {"success": True, "mensaje": "Sesión finalizada correctamente."}
     conn, cur = None, None
     try:
-        conn = mysql.connector.connect(**get_db_config())
+        conn = connect_database()
         cur = conn.cursor(dictionary=True)
         user_id = payload.user_id
         if not user_id and payload.username:
@@ -5232,9 +5934,14 @@ def listar_cuentas_demo():
 
 @app.get("/api/auth/roles")
 def listar_roles_catalogo(_: str = Depends(require_user_manager)):
+    if database_backend() == "postgresql":
+        try:
+            return postgres_usuarios.listar_roles()
+        except (psycopg.Error, ValueError) as error:
+            raise postgres_http_error(error) from error
     conn, cur = None, None
     try:
-        conn = mysql.connector.connect(**get_db_config())
+        conn = connect_database()
         cur = conn.cursor(dictionary=True)
         cur.execute(
             """
@@ -5288,7 +5995,7 @@ class RegistroPublicoInput(BaseModel):
 def registrar_solicitud_usuario(payload: RegistroPublicoInput):
     conn, cur = None, None
     try:
-        conn = mysql.connector.connect(**get_db_config())
+        conn = connect_database()
         cur = conn.cursor(dictionary=True)
         cur.execute(
             """
@@ -5432,9 +6139,14 @@ class UsuarioOut(BaseModel):
 
 @app.get("/api/usuarios")
 def listar_usuarios(_: str = Depends(require_user_manager)):
+    if database_backend() == "postgresql":
+        try:
+            return postgres_usuarios.listar_usuarios()
+        except (psycopg.Error, ValueError) as error:
+            raise postgres_http_error(error) from error
     conn, cur = None, None
     try:
-        conn = mysql.connector.connect(**get_db_config())
+        conn = connect_database()
         cur = conn.cursor(dictionary=True)
         cur.execute("SELECT u.id_Usuario, u.id_Empleado, u.usr_Username AS username, u.ESTADO_USR, e.emp_Nombre1, e.emp_Apellido1, d.dep_Nombre FROM USUARIOS u LEFT JOIN EMPLEADOS e ON u.id_Empleado = e.id_Empleado LEFT JOIN DEPARTAMENTOS d ON e.id_Departamento = d.id_Departamento ORDER BY u.usr_Username ASC")
         usuarios = cur.fetchall()
@@ -5453,9 +6165,14 @@ def listar_usuarios(_: str = Depends(require_user_manager)):
 
 @app.get("/api/usuarios/empleados-disponibles")
 def listar_empleados_disponibles(_: str = Depends(require_user_manager)):
+    if database_backend() == "postgresql":
+        try:
+            return postgres_usuarios.empleados_disponibles()
+        except (psycopg.Error, ValueError) as error:
+            raise postgres_http_error(error) from error
     conn, cur = None, None
     try:
-        conn = mysql.connector.connect(**get_db_config())
+        conn = connect_database()
         cur = conn.cursor(dictionary=True)
         cur.execute(
             """
@@ -5483,9 +6200,14 @@ def listar_empleados_disponibles(_: str = Depends(require_user_manager)):
 
 @app.get("/api/usuarios/{usuario_id}/roles")
 def obtener_roles_usuario(usuario_id: str, _: str = Depends(require_user_manager)):
+    if database_backend() == "postgresql":
+        try:
+            return postgres_usuarios.roles_usuario(usuario_id)
+        except (psycopg.Error, ValueError) as error:
+            raise postgres_http_error(error) from error
     conn, cur = None, None
     try:
-        conn = mysql.connector.connect(**get_db_config())
+        conn = connect_database()
         cur = conn.cursor(dictionary=True)
         cur.execute("SELECT r.id_Rol AS id, r.rol_Nombre AS nombre FROM USUARIOSxROLES ur JOIN ROLES r ON ur.id_Rol = r.id_Rol WHERE ur.id_Usuario = %s AND ur.ESTADO_UxR = 'ACT' AND r.ESTADO_ROL = 'ACT' ORDER BY r.rol_Nombre ASC", (usuario_id,))
         return cur.fetchall()
@@ -5503,7 +6225,7 @@ def crear_usuario(
 ):
     conn, cur = None, None
     try:
-        conn = mysql.connector.connect(**get_db_config())
+        conn = connect_database()
         cur = conn.cursor(dictionary=True)
         cur.execute(
             "SELECT id_Usuario FROM USUARIOS WHERE usr_Username = %s OR id_Empleado = %s LIMIT 1",
@@ -5554,7 +6276,7 @@ def actualizar_usuario(
 ):
     conn, cur = None, None
     try:
-        conn = mysql.connector.connect(**get_db_config())
+        conn = connect_database()
         cur = conn.cursor(dictionary=True)
         cur.execute("SELECT id_Usuario, ESTADO_USR FROM USUARIOS WHERE id_Usuario = %s LIMIT 1", (usuario_id,))
         existing_user = cur.fetchone()
@@ -5634,7 +6356,7 @@ def desactivar_usuario(
 ):
     conn, cur = None, None
     try:
-        conn = mysql.connector.connect(**get_db_config())
+        conn = connect_database()
         cur = conn.cursor(dictionary=True)
         cur.execute("SELECT id_Usuario FROM USUARIOS WHERE id_Usuario = %s LIMIT 1", (usuario_id,))
         if not cur.fetchone():
@@ -5671,7 +6393,7 @@ def asignar_rol_usuario(
 ):
     conn, cur = None, None
     try:
-        conn = mysql.connector.connect(**get_db_config())
+        conn = connect_database()
         cur = conn.cursor(dictionary=True)
         rol_id = payload.rol_id
         cur.execute("SELECT id_Usuario FROM USUARIOS WHERE id_Usuario = %s LIMIT 1", (usuario_id,))
@@ -5726,7 +6448,7 @@ def remover_rol_usuario(
 ):
     conn, cur = None, None
     try:
-        conn = mysql.connector.connect(**get_db_config())
+        conn = connect_database()
         cur = conn.cursor(dictionary=True)
         cur.execute("SELECT ESTADO_USR FROM USUARIOS WHERE id_Usuario = %s LIMIT 1", (usuario_id,))
         user_row = cur.fetchone()
@@ -5777,7 +6499,7 @@ def remover_rol_usuario(
 def listar_empleados():
     conn, cur = None, None
     try:
-        conn = mysql.connector.connect(**get_db_config())
+        conn = connect_database()
         cur = conn.cursor(dictionary=True)
         cur.execute("SELECT e.id_Empleado AS id, e.emp_Nombre1 AS nombre, e.emp_Apellido1 AS apellido, d.dep_Nombre AS departamento FROM EMPLEADOS e LEFT JOIN DEPARTAMENTOS d ON e.id_Departamento = d.id_Departamento ORDER BY e.emp_Nombre1 ASC, e.emp_Apellido1 ASC")
         return cur.fetchall()
@@ -5788,6 +6510,65 @@ def listar_empleados():
         if conn and conn.is_connected(): conn.close()
 
 
+@app.middleware("http")
+async def postgres_access_control(request: Request, call_next):
+   """Comprobación en cada solicitud, incluida la revocación de roles y usuarios."""
+   def rejected(status_code: int, detail: str):
+       headers = {}
+       origin = request.headers.get("origin")
+       if origin and origin in get_cors_origins():
+           headers["Access-Control-Allow-Origin"] = origin
+           headers["Vary"] = "Origin"
+       return JSONResponse(status_code=status_code, content={"detail": detail},
+                           headers=headers)
+
+   path = request.url.path
+   if not path.startswith("/api/") or request.method == "OPTIONS":
+       return await call_next(request)
+   try:
+       backend = database_backend()
+   except HTTPException as error:
+       return rejected(error.status_code, error.detail)
+   if backend != "postgresql":
+       return await call_next(request)
+   if path == "/api/auth/login" and request.method == "POST":
+       return await call_next(request)
+   if path == "/api/auth/setup-status" and request.method == "GET":
+       return await call_next(request)
+   is_logout = path == "/api/auth/logout" and request.method == "POST"
+   is_role_catalog = path == "/api/auth/roles" and request.method == "GET"
+   # Las demás funciones de autenticación todavía usan SQL exclusivo de MariaDB.
+   if path.startswith("/api/auth/") and not (is_logout or is_role_catalog):
+       return rejected(503, "Esta operación aún no está disponible en PostgreSQL.")
+   user_id = get_audit_actor(request)
+   if not user_id:
+       return rejected(401, "Debes iniciar sesión para continuar.")
+   try:
+       token = request.headers["authorization"].partition(" ")[2]
+       if await run_in_threadpool(postgres_auth.session_revoked, token):
+           return rejected(401, "La sesión ya no está activa.")
+       roles = await run_in_threadpool(postgres_auth.active_roles, user_id)
+   except (psycopg.Error, ValueError) as error:
+       http_error = postgres_http_error(error)
+       return rejected(http_error.status_code, http_error.detail)
+   if roles is None:
+       return rejected(401, "La sesión ya no está activa.")
+   if is_logout:
+       return await call_next(request)
+   if is_role_catalog:
+       if not postgres_auth.is_admin(roles):
+           return rejected(403, "No tienes permiso para administrar usuarios.")
+       return await call_next(request)
+   requirement = postgres_authorization.requirement(path, request.method)
+   if requirement and not postgres_authorization.allowed(roles, requirement):
+       return rejected(403, "No tienes permiso para esta operación.")
+   if not postgres_authorization.supported(path, request.method):
+       return rejected(503, "Esta operación aún no está disponible en PostgreSQL.")
+   if not postgres_authorization.allowed(roles, requirement):
+       return rejected(403, "No tienes permiso para esta operación.")
+   return await call_next(request)
+
+
 if __name__ == "__main__":
     import sys
     import uvicorn
@@ -5796,5 +6577,6 @@ if __name__ == "__main__":
     for path_str in [str(api_dir), str(workspace_dir)]:
         if path_str not in sys.path:
             sys.path.insert(0, path_str)
-    print("Iniciando servidor API en http://127.0.0.1:8000 ...")
-    uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True, app_dir=str(api_dir))
+    api_host = os.getenv("API_HOST", "0.0.0.0")
+    print(f"Iniciando servidor API en {api_host}:8000 ...")
+    uvicorn.run("main:app", host=api_host, port=8000, reload=True, app_dir=str(api_dir))

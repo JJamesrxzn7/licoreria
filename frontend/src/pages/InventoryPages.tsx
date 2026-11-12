@@ -1,9 +1,12 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Calendar, Check, CheckCircle2, Edit3, Plus, Save, Scale, Search, Trash2, X } from 'lucide-react';
 import { useGlobalStore } from '../context';
-import { catalogApi, productApi, purchaseApi, warehouseApi, GeneralCatalogs, PurchaseCatalogs, PurchaseOrderRecord } from '../api';
+import { catalogApi, productApi, purchaseApi, systemApi, warehouseApi, GeneralCatalogs, PurchaseCatalogs, PurchaseOrderRecord } from '../api';
 import { Adjustment, Delivery, Product, Reception } from '../types';
 import { PaginationControls, usePagination } from '../components/Pagination';
+import { deliveryDocument, downloadCommercialPdf, purchaseDocument, receptionDocument } from '../commercialPdf';
+import { useAuth } from '../context/AuthContext';
+import { canPerform } from '../rolePermissions';
 
 const money = (value: number) => `$${value.toFixed(2)}`;
 const RE_SQLI = /(\b(UNION|SELECT|INSERT|UPDATE|DELETE|DROP|ALTER|TRUNCATE|EXEC|EXECUTE)\b|--|\/\*|\*\/|;|'|"|<script)/i;
@@ -574,7 +577,7 @@ export const Catalog = () => {
                       </small>
                     </td>
                     <td>{product.shelf || '—'}</td>
-                    <td>{money(product.cost)}</td>
+                    <td>{product.cost === undefined ? 'No disponible' : money(product.cost)}</td>
                     <td style={{ fontWeight: 600, color: 'var(--primary)' }}>{money(product.price)}</td>
                     <td>{product.minStock ?? product.stock}</td>
                     <td>
@@ -872,6 +875,7 @@ export const Products = Catalog;
 
 export const PurchaseOrders = () => {
   const { state } = useGlobalStore();
+  const { user } = useAuth();
   const [catalogs, setCatalogs] = useState<PurchaseCatalogs | null>(null);
   const [orders, setOrders] = useState<PurchaseOrderRecord[]>([]);
   const ordersPagination = usePagination(orders);
@@ -1033,7 +1037,8 @@ export const PurchaseOrders = () => {
     <div>
       <div className="page-heading"><div><span className="eyebrow">ABASTECIMIENTO</span><h1>Órdenes de compra</h1><p>Registro y seguimiento de órdenes de aprovisionamiento.</p></div></div>
       {loading && <p className="helper-text" role="status">Cargando órdenes de compra...</p>}
-      <section className="card">
+      {notice && <p className="form-notice" role="status">{notice}</p>}
+      {canPerform(user, 'COMPRAS', 'CREAR') && <section className="card">
         <h2 className="section-title">Nueva orden de compra</h2>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '16px', marginBottom: '20px' }}>
           <label className="form-group">
@@ -1098,8 +1103,7 @@ export const PurchaseOrders = () => {
           </button>
         </div>
         {catalogs && (!activeSuppliers.length || !activeProducts.length) && <p className="helper-text">Deben existir proveedores y productos activos para crear órdenes.</p>}
-        {notice && <p className="form-notice" role="status">{notice}</p>}
-      </section>
+      </section>}
 
       <section className="card">
         <h2 className="section-title">Historial de órdenes de compra</h2>
@@ -1141,9 +1145,13 @@ export const PurchaseOrders = () => {
                   <td style={{ fontWeight: 600, color: 'var(--primary)' }}>{money(Number(order.total))}</td>
                   <td><span className={`badge badge-${order.estado}`}>{order.estado}</span></td>
                   <td>
+                    <button type="button" className="btn btn-outline" onClick={() => {
+                      try { downloadCommercialPdf(purchaseDocument(order)); }
+                      catch (error) { setNotice(error instanceof Error ? `No se pudo generar el PDF: ${error.message}` : 'No se pudo generar el PDF.'); }
+                    }}>Descargar PDF</button>
                     {order.estado === 'ABI' && (
                       <div className="inline-actions">
-                        <button
+                        {canPerform(user, 'COMPRAS', 'APROBAR') && <button
                           type="button"
                           className="btn btn-secondary"
                           disabled={saving}
@@ -1156,8 +1164,8 @@ export const PurchaseOrders = () => {
                           })}
                         >
                           Aprobar
-                        </button>
-                        <button
+                        </button>}
+                        {canPerform(user, 'COMPRAS', 'ANULAR') && <button
                           type="button"
                           className="btn btn-outline"
                           disabled={saving}
@@ -1171,7 +1179,7 @@ export const PurchaseOrders = () => {
                           })}
                         >
                           Anular
-                        </button>
+                        </button>}
                       </div>
                     )}
                   </td>
@@ -1237,6 +1245,7 @@ export const PurchaseOrders = () => {
 
 export const Receptions = () => {
   const { state, updateState } = useGlobalStore();
+  const { user } = useAuth();
   const receptionsPagination = usePagination(state.receptions);
   const [quantities, setQuantities] = useState<Record<string, Record<string, string>>>({});
   const [reasons, setReasons] = useState<Record<string, Record<string, string>>>({});
@@ -1257,14 +1266,12 @@ export const Receptions = () => {
   const loadReceptions = async () => {
     try {
       const remoteReceptions = await warehouseApi.listReceptions();
-      if (remoteReceptions && remoteReceptions.length) {
-        updateState(draft => {
-          draft.receptions = remoteReceptions;
-          return draft;
-        });
-      }
-    } catch {
-      // Conserva estado local
+      updateState(draft => {
+        draft.receptions = remoteReceptions;
+        return draft;
+      });
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : 'No fue posible cargar las recepciones.');
     }
   };
 
@@ -1344,11 +1351,14 @@ export const Receptions = () => {
             <td><input className="input" maxLength={60} aria-label={`Motivo de diferencia para ${item.productId}`} value={reasons[reception.id]?.[item.productId] ?? ''} onChange={event => setReasons(previous => ({ ...previous, [reception.id]: { ...previous[reception.id], [item.productId]: event.target.value } }))} placeholder="Obligatorio si hay diferencia" /></td>
           </tr>)}
         </tbody></table></div>
-        <button type="button" className="btn btn-primary" onClick={() => initiateReception(reception)}>Registrar cantidades recibidas</button>
+        {canPerform(user, 'INVENTARIOS', 'APROBAR') && <button type="button" className="btn btn-primary" onClick={() => initiateReception(reception)}>Registrar cantidades recibidas</button>}
       </section>)}
-      <section className="card"><div className="section-heading"><div><h2>Historial de recepciones</h2><p>Recepciones procesadas y pendientes.</p></div></div><div className="table-scroll"><table><thead><tr><th>Recepción</th><th>Orden</th><th>Fecha</th><th>Estado</th><th>Detalle</th></tr></thead><tbody>
-        {receptionsPagination.pageItems.map(reception => <tr key={reception.id}><td>{reception.id}</td><td>{reception.poId}</td><td>{new Date(reception.date).toLocaleDateString('es-EC')}</td><td><span className={`badge badge-${reception.status}`}>{reception.status}</span></td><td>{reception.items.map(item => `${item.productId}: ${item.receivedQty}/${item.expectedQty}`).join(' · ')}</td></tr>)}
-        {!state.receptions.length && <tr><td colSpan={5} className="empty-state">Las órdenes aprobadas generarán recepciones aquí.</td></tr>}
+      <section className="card"><div className="section-heading"><div><h2>Historial de recepciones</h2><p>Recepciones procesadas y pendientes.</p></div></div><div className="table-scroll"><table><thead><tr><th>Recepción</th><th>Orden</th><th>Fecha</th><th>Estado</th><th>Detalle</th><th>PDF</th></tr></thead><tbody>
+        {receptionsPagination.pageItems.map(reception => <tr key={reception.id}><td>{reception.id}</td><td>{reception.poId}</td><td>{new Date(reception.date).toLocaleDateString('es-EC')}</td><td><span className={`badge badge-${reception.status}`}>{reception.status}</span></td><td>{reception.items.map(item => `${item.productId}: ${item.receivedQty}/${item.expectedQty}`).join(' · ')}</td><td><button type="button" className="btn btn-outline" onClick={() => {
+          try { downloadCommercialPdf(receptionDocument(reception, state.products)); }
+          catch (error) { setNotice(error instanceof Error ? `No se pudo generar el PDF: ${error.message}` : 'No se pudo generar el PDF.'); }
+        }}>Descargar PDF</button></td></tr>)}
+        {!state.receptions.length && <tr><td colSpan={6} className="empty-state">Las órdenes aprobadas generarán recepciones aquí.</td></tr>}
       </tbody></table></div><PaginationControls page={receptionsPagination.page} pageCount={receptionsPagination.pageCount} firstItem={receptionsPagination.firstItem} lastItem={receptionsPagination.lastItem} totalItems={state.receptions.length} onPageChange={receptionsPagination.setPage} /></section>
 
       {/* Modal de Confirmación de Recepción */}
@@ -1408,6 +1418,7 @@ export const Receptions = () => {
 
 export const Deliveries = () => {
   const { state, updateState } = useGlobalStore();
+  const { user } = useAuth();
   const deliveriesPagination = usePagination(state.deliveries);
   const [quantities, setQuantities] = useState<Record<string, Record<string, string>>>({});
   const [reasons, setReasons] = useState<Record<string, Record<string, string>>>({});
@@ -1419,6 +1430,7 @@ export const Deliveries = () => {
       productName: string;
       expectedQty: number;
       deliveredQty: number;
+      deliveredQtyPreviously: number;
       diff: number;
       reason: string;
     }>;
@@ -1451,14 +1463,15 @@ export const Deliveries = () => {
         ...item,
         productName,
         deliveredQty,
+        deliveredQtyPreviously: item.deliveredQty,
         diff: deliveredQty - item.expectedQty,
         reason,
       };
     });
 
     for (const r of rows) {
-      if (!Number.isInteger(r.deliveredQty) || r.deliveredQty < 0 || r.deliveredQty > 100000) {
-        return setNotice(`La cantidad entregada para el producto '${r.productName}' debe ser un número entero entre 0 y 100,000.`);
+      if (!Number.isInteger(r.deliveredQty) || r.deliveredQty < r.deliveredQtyPreviously || r.deliveredQty > r.expectedQty) {
+        return setNotice(`La cantidad acumulada de '${r.productName}' debe estar entre ${r.deliveredQtyPreviously} y ${r.expectedQty}.`);
       }
       if (r.diff !== 0 && !r.reason) {
         return setNotice(`Debe registrar obligatoriamente el motivo de la diferencia para '${r.productName}' (facturado: ${r.expectedQty}, entregado: ${r.deliveredQty}).`);
@@ -1483,8 +1496,18 @@ export const Deliveries = () => {
         deliveredQty: r.deliveredQty,
         reason: r.reason,
       }));
-      await warehouseApi.confirmDelivery(confirmModal.delivery.id, payloadItems);
-      setNotice(`Entrega ${confirmModal.delivery.id} confirmada y despachada exitosamente.`);
+      const result = await warehouseApi.confirmDelivery(confirmModal.delivery.id, payloadItems);
+      setNotice(result.mensaje);
+      setQuantities(previous => {
+        const next = { ...previous };
+        delete next[confirmModal.delivery.id];
+        return next;
+      });
+      setReasons(previous => {
+        const next = { ...previous };
+        delete next[confirmModal.delivery.id];
+        return next;
+      });
       setConfirmModal(null);
       void loadDeliveries();
     } catch (err: any) {
@@ -1503,9 +1526,9 @@ export const Deliveries = () => {
         const invoice = state.invoices.find(candidate => candidate.id === delivery.invoiceId);
         return <section className="card" key={delivery.id}>
           <div className="section-heading"><div><h2>{delivery.id} <span className="badge badge-PENDING">Pendiente</span></h2><p>Factura {delivery.invoiceId} · {state.customers.find(customer => customer.id === invoice?.customerId)?.name ?? 'Cliente'} · {new Date(delivery.date).toLocaleDateString('es-EC')}</p></div></div>
-          <div className="table-scroll"><table><thead><tr><th>Producto</th><th>Solicitado</th><th>Entregado</th><th>Diferencia</th><th>Motivo</th></tr></thead><tbody>
+          <div className="table-scroll"><table><thead><tr><th>Producto</th><th>Solicitado</th><th>Entregado acumulado</th><th>Diferencia</th><th>Motivo</th></tr></thead><tbody>
             {delivery.items.map(item => <tr key={item.productId}><td>{state.products.find(product => product.id === item.productId)?.name ?? item.productId}</td><td>{item.expectedQty}</td>
-              <td><input className="input compact-input" type="number" min="0" max="100000" value={quantities[delivery.id]?.[item.productId] ?? item.expectedQty} onChange={event => setQuantities(previous => ({ ...previous, [delivery.id]: { ...previous[delivery.id], [item.productId]: event.target.value } }))} /></td>
+              <td><input className="input compact-input" type="number" min={item.deliveredQty} max={item.expectedQty} value={quantities[delivery.id]?.[item.productId] ?? item.expectedQty} onChange={event => setQuantities(previous => ({ ...previous, [delivery.id]: { ...previous[delivery.id], [item.productId]: event.target.value } }))} /></td>
               <td>
                 <span style={{ fontWeight: 600, color: (Number(quantities[delivery.id]?.[item.productId] ?? item.expectedQty) - item.expectedQty) !== 0 ? '#b42318' : '#027a48' }}>
                   {Number(quantities[delivery.id]?.[item.productId] ?? item.expectedQty) - item.expectedQty}
@@ -1514,12 +1537,15 @@ export const Deliveries = () => {
               <td><input className="input" maxLength={60} aria-label={`Motivo de diferencia para ${item.productId}`} placeholder="Obligatorio si hay diferencia" value={reasons[delivery.id]?.[item.productId] ?? ''} onChange={event => setReasons(previous => ({ ...previous, [delivery.id]: { ...previous[delivery.id], [item.productId]: event.target.value } }))} /></td>
             </tr>)}
           </tbody></table></div>
-          <button type="button" className="btn btn-primary" onClick={() => initiateDelivery(delivery)}>Confirmar cantidades entregadas</button>
+          {canPerform(user, 'INVENTARIOS', 'APROBAR') && <button type="button" className="btn btn-primary" onClick={() => initiateDelivery(delivery)}>Confirmar cantidades entregadas</button>}
         </section>;
       })}
-      <section className="card"><div className="section-heading"><div><h2>Historial de entregas</h2><p>Despachos registrados desde el punto de venta.</p></div></div><div className="table-scroll"><table><thead><tr><th>Entrega</th><th>Factura</th><th>Cliente</th><th>Fecha</th><th>Estado</th><th>Detalle</th></tr></thead><tbody>
-        {deliveriesPagination.pageItems.map(delivery => <tr key={delivery.id}><td>{delivery.id}</td><td>{delivery.invoiceId}</td><td>{delivery.invoiceId}</td><td>{new Date(delivery.date).toLocaleDateString('es-EC')}</td><td><span className={`badge badge-${delivery.status}`}>{delivery.status}</span></td><td>{delivery.items.map(item => `${item.productId}: ${item.deliveredQty}/${item.expectedQty}`).join(' · ')}</td></tr>)}
-        {!state.deliveries.length && <tr><td colSpan={6} className="empty-state">Las facturas aprobadas en el POS generarán órdenes de entrega aquí.</td></tr>}
+      <section className="card"><div className="section-heading"><div><h2>Historial de entregas</h2><p>Despachos registrados desde el punto de venta.</p></div></div><div className="table-scroll"><table><thead><tr><th>Entrega</th><th>Factura</th><th>Cliente</th><th>Fecha</th><th>Estado</th><th>Detalle</th><th>PDF</th></tr></thead><tbody>
+        {deliveriesPagination.pageItems.map(delivery => <tr key={delivery.id}><td>{delivery.id}</td><td>{delivery.invoiceId}</td><td>{delivery.invoiceId}</td><td>{new Date(delivery.date).toLocaleDateString('es-EC')}</td><td><span className={`badge badge-${delivery.status}`}>{delivery.status}</span></td><td>{delivery.items.map(item => `${item.productId}: ${item.deliveredQty}/${item.expectedQty}`).join(' · ')}</td><td><button type="button" className="btn btn-outline" onClick={() => {
+          try { downloadCommercialPdf(deliveryDocument(delivery, state.products, state.invoices, state.customers)); }
+          catch (error) { setNotice(error instanceof Error ? `No se pudo generar el PDF: ${error.message}` : 'No se pudo generar el PDF.'); }
+        }}>Descargar PDF</button></td></tr>)}
+        {!state.deliveries.length && <tr><td colSpan={7} className="empty-state">Las facturas aprobadas en el POS generarán órdenes de entrega aquí.</td></tr>}
       </tbody></table></div><PaginationControls page={deliveriesPagination.page} pageCount={deliveriesPagination.pageCount} firstItem={deliveriesPagination.firstItem} lastItem={deliveriesPagination.lastItem} totalItems={state.deliveries.length} onPageChange={deliveriesPagination.setPage} /></section>
 
       {/* Modal de Confirmación de Despacho */}
@@ -1579,6 +1605,8 @@ export const Deliveries = () => {
 
 export const Adjustments = () => {
   const { state, updateState } = useGlobalStore();
+  const { user } = useAuth();
+  const [capabilities, setCapabilities] = useState<{ adjustmentApproval: boolean; adjustmentReasonMax: number } | null>(null);
   const adjustmentsPagination = usePagination(state.adjustments);
   const [form, setForm] = useState({ type: 'OUT' as Adjustment['type'], productId: '', qty: 1, reason: '', responsible: 'EMP-000001' });
   const [notice, setNotice] = useState('');
@@ -1587,23 +1615,28 @@ export const Adjustments = () => {
     action: 'APR' | 'ANU';
   } | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [creating, setCreating] = useState(false);
 
   const loadAdjustments = async () => {
     try {
       const remoteAdjustments = await warehouseApi.listAdjustments();
-      if (remoteAdjustments && remoteAdjustments.length) {
-        updateState(draft => {
-          draft.adjustments = remoteAdjustments;
-          return draft;
-        });
-      }
-    } catch {
-      // Conserva estado local
+      updateState(draft => {
+        draft.adjustments = remoteAdjustments;
+        return draft;
+      });
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : 'No se pudieron cargar los ajustes.');
     }
   };
 
   useEffect(() => {
     void loadAdjustments();
+    void systemApi.capabilities()
+      .then(setCapabilities)
+      .catch(error => setNotice(error instanceof Error ? error.message : 'No se pudo verificar la configuración de ajustes.'));
+    void productApi.listProducts()
+      .then(products => updateState(draft => { draft.products = products; return draft; }))
+      .catch(error => setNotice(error instanceof Error ? error.message : 'No se pudieron cargar los productos.'));
   }, []);
 
   const saveManualAdjustment = async () => {
@@ -1611,13 +1644,15 @@ export const Adjustments = () => {
     if (!form.type) return setNotice('Debe seleccionar el tipo de ajuste (Entrada o Salida).');
     if (!form.productId) return setNotice('Debe seleccionar un producto del catálogo.');
     if (!Number.isInteger(form.qty) || form.qty < 1 || form.qty > 100000) return setNotice('La cantidad del ajuste debe ser un número entero entre 1 y 100,000.');
-    if (!form.reason?.trim() || form.reason.trim().length < 3 || form.reason.trim().length > 100) {
-      return setNotice('El motivo del ajuste debe tener entre 3 y 100 caracteres.');
+    if (!capabilities) return setNotice('No se pudo verificar la configuración de ajustes.');
+    if (!form.reason?.trim() || form.reason.trim().length < 3 || form.reason.trim().length > capabilities.adjustmentReasonMax) {
+      return setNotice(`El motivo del ajuste debe tener entre 3 y ${capabilities.adjustmentReasonMax} caracteres.`);
     }
     if (RE_SQLI.test(form.reason.trim())) {
       return setNotice('El motivo contiene caracteres o comandos no permitidos (anti-SQLi detectado).');
     }
 
+    setCreating(true);
     try {
       const res = await warehouseApi.createAdjustment({
         idProducto: form.productId,
@@ -1630,6 +1665,8 @@ export const Adjustments = () => {
       setForm({ type: 'OUT', productId: '', qty: 1, reason: '', responsible: 'EMP-000001' });
     } catch (err: any) {
       setNotice(err?.message || 'Error al registrar el ajuste físico.');
+    } finally {
+      setCreating(false);
     }
   };
 
@@ -1661,7 +1698,7 @@ export const Adjustments = () => {
   return (
     <div>
       <div className="page-heading"><div><span className="eyebrow">CONTROL DE BODEGA</span><h1>Ajustes físicos</h1><p>Registro de mermas y sobrantes con impacto en inventario.</p></div></div>
-      <section className="card"><h2 className="section-title">Registrar ajuste</h2><div className="grid-4">
+      {canPerform(user, 'INVENTARIOS', 'CREAR') && <section className="card"><h2 className="section-title">Registrar ajuste</h2><div className="grid-4">
         <label className="form-group">
           Tipo <strong style={{ color: '#ef4444' }}>*</strong>
           <select className="select" value={form.type} onChange={event => setForm({ ...form, type: event.target.value as Adjustment['type'] })}>
@@ -1674,7 +1711,7 @@ export const Adjustments = () => {
           Producto <strong style={{ color: '#ef4444' }}>*</strong>
           <select className="select" value={form.productId} onChange={event => setForm({ ...form, productId: event.target.value })}>
             <option value="">-- Seleccione un producto --</option>
-            {state.products.map(product => <option key={product.id} value={product.id}>{product.name} · stock {product.stock}</option>)}
+            {state.products.filter(product => product.status === 'ACTIVE').map(product => <option key={product.id} value={product.id}>{product.name} · stock {product.stock}</option>)}
           </select>
         </label>
         <label className="form-group">
@@ -1683,13 +1720,14 @@ export const Adjustments = () => {
         </label>
         <label className="form-group">
           Motivo <strong style={{ color: '#ef4444' }}>*</strong>
-          <input className="input" maxLength={100} value={form.reason} onChange={event => setForm({ ...form, reason: event.target.value })} placeholder="Causa del ajuste (3 a 100 caracteres)" />
+          <input className="input" maxLength={capabilities?.adjustmentReasonMax ?? 30} value={form.reason} onChange={event => setForm({ ...form, reason: event.target.value })} placeholder={`Causa del ajuste (3 a ${capabilities?.adjustmentReasonMax ?? 30} caracteres)`} />
         </label>
-        <div className="form-action"><button type="button" className="btn btn-primary" onClick={saveManualAdjustment}>Crear ajuste ABI</button></div>
-      </div></section>
+        <div className="form-action"><button type="button" className="btn btn-primary" disabled={creating || !capabilities} onClick={saveManualAdjustment}>{creating ? 'Guardando...' : 'Crear ajuste ABI'}</button></div>
+      </div></section>}
       {notice && <p className="form-notice" role="status">{notice}</p>}
+      {capabilities && !capabilities.adjustmentApproval && <p className="helper-text">La aprobación de ajustes aún no está disponible en PostgreSQL.</p>}
       <section className="card"><h2 className="section-title">Historial de ajustes</h2><div className="table-scroll"><table><thead><tr><th>Fecha</th><th>Producto</th><th>Tipo</th><th>Cantidad</th><th>Responsable</th><th>Motivo</th><th>Estado</th><th>Acciones</th></tr></thead><tbody>
-        {adjustmentsPagination.pageItems.map(adjustment => <tr key={adjustment.id}><td>{new Date(adjustment.date).toLocaleDateString('es-EC')}</td><td>{state.products.find(product => product.id === adjustment.productId)?.name ?? adjustment.productId}</td><td>{adjustment.type === 'IN' ? 'Ingreso' : 'Egreso'}</td><td>{adjustment.qty}</td><td>{adjustment.responsible}</td><td>{adjustment.reason}</td><td><span className={`badge badge-${adjustment.status}`}>{adjustment.status}</span></td><td>{adjustment.status === 'ABI' && <div className="inline-actions"><button className="btn btn-secondary" type="button" onClick={() => askAction(adjustment, 'APR')}>Aprobar</button><button className="btn btn-outline" type="button" onClick={() => askAction(adjustment, 'ANU')}>Anular</button></div>}</td></tr>)}
+        {adjustmentsPagination.pageItems.map(adjustment => <tr key={adjustment.id}><td>{new Date(adjustment.date).toLocaleDateString('es-EC')}</td><td>{state.products.find(product => product.id === adjustment.productId)?.name ?? adjustment.productId}</td><td>{adjustment.type === 'IN' ? 'Ingreso' : 'Egreso'}</td><td>{adjustment.qty}</td><td>{adjustment.responsible}</td><td>{adjustment.reason}</td><td><span className={`badge badge-${adjustment.status}`}>{adjustment.status}</span></td><td>{adjustment.status === 'ABI' && <div className="inline-actions">{capabilities?.adjustmentApproval && canPerform(user, 'INVENTARIOS', 'APROBAR') && <button className="btn btn-secondary" type="button" onClick={() => askAction(adjustment, 'APR')}>Aprobar</button>}{canPerform(user, 'INVENTARIOS', 'ANULAR') && <button className="btn btn-outline" type="button" onClick={() => askAction(adjustment, 'ANU')}>Anular</button>}</div>}</td></tr>)}
         {!state.adjustments.length && <tr><td colSpan={8} className="empty-state">No hay ajustes registrados.</td></tr>}
       </tbody></table></div><PaginationControls page={adjustmentsPagination.page} pageCount={adjustmentsPagination.pageCount} firstItem={adjustmentsPagination.firstItem} lastItem={adjustmentsPagination.lastItem} totalItems={state.adjustments.length} onPageChange={adjustmentsPagination.setPage} /></section>
 

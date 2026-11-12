@@ -12,7 +12,7 @@ export interface Product {
   categoryId?: string;
   ml: number;
   abv: number;
-  cost: number;
+  cost?: number;
   price: number;
   stock: number;
   minStock: number;
@@ -78,7 +78,7 @@ export interface Invoice {
   items: CartItem[];
   subtotal: number;
   discount: number;
-  taxRate: number;
+  taxRate: number | null;
   tax: number;
   total: number;
   paymentMethod: 'CASH' | 'CARD' | 'TRANSFER' | 'CREDIT';

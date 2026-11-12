@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { AlertCircle, ArrowLeft, Lock, Mail, Shield, User } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
-import { usuariosApi, rolesApi } from '../api';
+import { usuariosApi, rolesApi, systemApi } from '../api';
 import type { Empleado, Rol } from '../api';
 
 type RegistroProps = {
@@ -27,6 +27,7 @@ export default function Registro({ onBack }: RegistroProps) {
   const [success, setSuccess] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [loadingCatalogs, setLoadingCatalogs] = useState(false);
+  const [canModify, setCanModify] = useState(false);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const [touched, setTouched] = useState<Record<string, boolean>>({});
 
@@ -73,11 +74,12 @@ export default function Registro({ onBack }: RegistroProps) {
     if (!isUserManager) return;
     let cancelled = false;
     setLoadingCatalogs(true);
-    Promise.all([usuariosApi.empleadosDisponibles(), rolesApi.listar()])
-      .then(([employeeList, roleList]) => {
+    Promise.all([usuariosApi.empleadosDisponibles(), rolesApi.listar(), systemApi.capabilities()])
+      .then(([employeeList, roleList, capabilities]) => {
         if (cancelled) return;
         setEmpleados(employeeList);
         setRolesDisponibles(roleList.filter(role => role.estado === 'ACT'));
+        setCanModify(capabilities.userManagementWrites === true);
       })
       .catch((err: unknown) => {
         if (!cancelled) {
@@ -97,7 +99,7 @@ export default function Registro({ onBack }: RegistroProps) {
     setError(null);
     setSuccess(null);
 
-    if (!isUserManager) {
+    if (!isUserManager || !canModify) {
       setError('No tienes permiso para crear usuarios.');
       return;
     }
@@ -157,6 +159,13 @@ export default function Registro({ onBack }: RegistroProps) {
         <button type="button" className="btn btn-outline" onClick={onBack}>Volver</button>
       </section>
     );
+  }
+
+  if (!canModify) {
+    return <section className="card" role="status">
+      <p>{error ?? (loadingCatalogs ? 'Verificando disponibilidad...' : 'La creación de usuarios no está disponible en esta configuración.')}</p>
+      <button type="button" onClick={onBack}>Volver</button>
+    </section>;
   }
 
   return (

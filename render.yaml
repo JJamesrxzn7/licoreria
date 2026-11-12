@@ -1,0 +1,38 @@
+services:
+  - type: web
+    name: licoreria-api
+    runtime: python
+    rootDir: API
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /readyz
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: DATABASE_BACKEND
+        value: postgresql
+      - key: DATABASE_URL
+        sync: false
+      - key: POSTGRES_SSL_ROOT_CERT
+        value: /etc/secrets/supabase-ca.crt
+      - key: AUTH_TOKEN_SECRET
+        generateValue: true
+      - key: CORS_ORIGINS
+        sync: false
+
+  - type: web
+    name: licoreria-frontend
+    runtime: static
+    rootDir: frontend
+    buildCommand: npm ci && npm run build
+    staticPublishPath: dist
+    envVars:
+      - key: VITE_API_URL
+        fromService:
+          type: web
+          name: licoreria-api
+          property: host
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html

@@ -1,9 +1,12 @@
 import { useEffect, useMemo, useState } from 'react';
 import { BookOpen, Calculator, FileText, Plus, X, Building2, PieChart, Edit3, List } from 'lucide-react';
 import { useGlobalStore } from '../context';
-import { accountingApi, hrApi, purchaseApi, salesApi } from '../api';
+import { accountingApi, hrApi, purchaseApi, salesApi, systemApi } from '../api';
 import { Banco, CentroCosto, Invoice, JournalEntry, JournalEntryLine } from '../types';
 import { PaginationControls, usePagination } from '../components/Pagination';
+import { downloadCommercialPdf, invoiceDocument } from '../commercialPdf';
+import { useAuth } from '../context/AuthContext';
+import { canPerform } from '../rolePermissions';
 
 const money = (value: number) => `$${value.toFixed(2)}`;
 const paymentLabel: Record<Invoice['paymentMethod'], string> = { CASH: 'Efectivo', CARD: 'Tarjeta', TRANSFER: 'Transferencia', CREDIT: 'Crédito' };
@@ -14,6 +17,7 @@ const RE_NAME_GENERAL = /^[A-Za-zÁÉÍÓÚáéíóúÑñÜü0-9\s\.\-&/]+$/;
 
 export const Sales = () => {
   const { state, updateState } = useGlobalStore();
+  const { user } = useAuth();
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
   const [selected, setSelected] = useState<Invoice | null>(null);
@@ -40,15 +44,21 @@ export const Sales = () => {
       await salesApi.annulInvoice(invoiceId);
       setNotice(`Factura ${invoiceId} anulada exitosamente.`);
       void loadSales();
+      if (selected?.id === invoiceId) setSelected(null);
     } catch (error) {
-      updateState(draft => {
-        const inv = draft.invoices.find(i => i.id === invoiceId);
-        if (inv) inv.status = 'ANU';
-        return draft;
-      });
-      setNotice(`Factura ${invoiceId} anulada exitosamente.`);
+      setNotice(error instanceof Error ? error.message : 'No se pudo anular la factura.');
     }
-    if (selected?.id === invoiceId) setSelected(null);
+  };
+
+  const handleApprove = async (invoiceId: string) => {
+    try {
+      await salesApi.approveInvoice(invoiceId);
+      setNotice(`Factura ${invoiceId} aprobada exitosamente.`);
+      void loadSales();
+      if (selected?.id === invoiceId) setSelected(null);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : 'No se pudo aprobar la factura.');
+    }
   };
 
   const visibleInvoices = useMemo(() => state.invoices.filter(invoice => {
@@ -59,6 +69,13 @@ export const Sales = () => {
   }), [state.invoices, state.customers, statusFilter, search]);
   const total = visibleInvoices.reduce((sum, invoice) => invoice.status === 'ANU' ? sum : sum + invoice.total, 0);
   const salesPagination = usePagination(visibleInvoices, `${search}:${statusFilter}`);
+  const downloadInvoice = (invoice: Invoice) => {
+    try {
+      downloadCommercialPdf(invoiceDocument(invoice, state.customers));
+    } catch (error) {
+      setNotice(error instanceof Error ? `No se pudo generar el PDF: ${error.message}` : 'No se pudo generar el PDF.');
+    }
+  };
 
   return (
     <div>
@@ -74,10 +91,11 @@ export const Sales = () => {
       </section>
       {selected && <div className="modal-backdrop" role="presentation" onClick={event => { if (event.target === event.currentTarget) setSelected(null); }}><section className="modal-card" role="dialog" aria-modal="true" aria-labelledby="invoice-title">
         <div className="section-heading"><div><span className="eyebrow">DETALLE DE VENTA</span><h2 id="invoice-title">{selected.id}</h2></div><button type="button" className="icon-button" aria-label="Cerrar detalle" onClick={() => setSelected(null)}><X size={18} /></button></div>
+        {notice && <p className="form-notice" role="status">{notice}</p>}
         <p className="helper-text">{state.customers.find(customer => customer.id === selected.customerId)?.name ?? selected.customerId} · {new Date(selected.date).toLocaleString('es-EC')}</p>
-        <div className="table-scroll"><table><thead><tr><th>Producto</th><th>Cantidad</th><th>Precio</th><th>Importe</th></tr></thead><tbody>{selected.items?.map((item, index) => <tr key={`${selected.id}-${item.product?.id || index}`}><td>{item.product?.name || item.product?.id || 'Producto'}</td><td>{item.qty}</td><td>{money(item.product?.price || 0)}</td><td>{money(item.subtotal)}</td></tr>)}</tbody></table></div>
-        <div className="invoice-totals"><span>Subtotal <strong>{money(selected.subtotal)}</strong></span><span>Descuento <strong>{money(selected.discount)}</strong></span><span>Impuestos ({selected.taxRate}%) <strong>{money(selected.tax)}</strong></span><span>Total <strong>{money(selected.total)}</strong></span></div>
-        {selected.status !== 'ANU' && <div className="form-actions" style={{ marginTop: '1rem' }}><button type="button" className="btn btn-outline" onClick={() => handleAnnul(selected.id)}>Anular factura</button></div>}
+        <div className="table-scroll"><table><thead><tr><th>Producto</th><th>Cantidad</th><th>Precio</th><th>Importe</th></tr></thead><tbody>{invoiceDocument(selected, state.customers).rows.map((row, index) => <tr key={`${selected.id}-${index}`}>{row.map((cell, cellIndex) => <td key={cellIndex}>{cell}</td>)}</tr>)}</tbody></table></div>
+        <div className="invoice-totals"><span>Subtotal <strong>{money(selected.subtotal)}</strong></span><span>Descuento <strong>{money(selected.discount)}</strong></span><span>Impuestos {selected.taxRate === null ? '(tasa histórica desconocida)' : `(${selected.taxRate}%)`} <strong>{money(selected.tax)}</strong></span><span>Total <strong>{money(selected.total)}</strong></span></div>
+        <div className="form-actions" style={{ marginTop: '1rem' }}><button type="button" className="btn btn-outline" onClick={() => downloadInvoice(selected)}>Descargar PDF</button>{selected.status === 'ABI' && canPerform(user, 'VENTAS', 'APROBAR') && <button type="button" className="btn btn-outline" onClick={() => void handleApprove(selected.id)}>Aprobar factura</button>}{selected.status !== 'ANU' && canPerform(user, 'VENTAS', 'ANULAR') && <button type="button" className="btn btn-outline" onClick={() => void handleAnnul(selected.id)}>Anular factura</button>}</div>
       </section></div>}
     </div>
   );
@@ -85,7 +103,19 @@ export const Sales = () => {
 
 export const Accounting = ({ initialTab = 'diario' }: { initialTab?: 'diario' | 'cuentas' | 'bancos' | 'centros_costos' }) => {
   const { state, updateState } = useGlobalStore();
+  const { user } = useAuth();
   const [activeTab, setActiveTab] = useState<'diario' | 'cuentas' | 'bancos' | 'centros_costos'>(initialTab);
+  const [bankUpdates, setBankUpdates] = useState(false);
+  const [journalWorkflow, setJournalWorkflow] = useState(false);
+
+  useEffect(() => {
+    void systemApi.capabilities()
+      .then(capabilities => {
+        setBankUpdates(capabilities.bankUpdates);
+        setJournalWorkflow(capabilities.journalWorkflow);
+      })
+      .catch(error => setBancoNotice(error instanceof Error ? error.message : 'No se pudo verificar la configuración de bancos.'));
+  }, []);
 
   useEffect(() => {
     if (initialTab) setActiveTab(initialTab);
@@ -136,18 +166,16 @@ export const Accounting = ({ initialTab = 'diario' }: { initialTab?: 'diario' | 
   const loadAccounting = async () => {
     try {
       const [remoteAccounts, remoteEntries] = await Promise.all([
-        accountingApi.listAccounts().catch(() => null),
-        accountingApi.listEntries().catch(() => null),
+        accountingApi.listAccounts(),
+        accountingApi.listEntries(),
       ]);
-      if (remoteAccounts !== null || remoteEntries !== null) {
-        updateState(draft => {
-          if (Array.isArray(remoteAccounts)) draft.accounts = remoteAccounts;
-          if (Array.isArray(remoteEntries)) draft.journalEntries = remoteEntries;
-          return draft;
-        });
-      }
-    } catch {
-      // Conserva estado local
+      updateState(draft => {
+        draft.accounts = remoteAccounts;
+        draft.journalEntries = remoteEntries;
+        return draft;
+      });
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : 'No se pudieron cargar las cuentas y asientos.');
     }
   };
 
@@ -155,29 +183,27 @@ export const Accounting = ({ initialTab = 'diario' }: { initialTab?: 'diario' | 
     try {
       const res = await accountingApi.listBancos();
       if (Array.isArray(res)) setBancos(res);
-    } catch {
-      // ignore
+    } catch (error) {
+      setBancoNotice(error instanceof Error ? error.message : 'No se pudieron cargar los bancos.');
     }
   };
 
   const loadCentrosCostos = async () => {
     try {
-      const [resCco, resDep] = await Promise.all([
-        accountingApi.listCentrosCostos().catch(() => []),
-        hrApi.listDepartments().catch(() => []),
-      ]);
-      if (Array.isArray(resCco)) setCentrosCostos(resCco);
-      if (Array.isArray(resDep) && resDep.length) {
-        setDepartments(resDep);
-      } else {
-        setDepartments([
-          { id: 'DEP-000001', nombre: 'Administración' },
-          { id: 'DEP-000002', nombre: 'Bodega y Logística' },
-          { id: 'DEP-TEST', nombre: 'Ventas y Comercial' },
-        ]);
+      const resCco = await accountingApi.listCentrosCostos();
+      setCentrosCostos(resCco);
+      try {
+        setDepartments(await hrApi.listDepartments());
+      } catch (error) {
+        setDepartments(Array.from(new Map(resCco
+          .filter(cco => cco.idDepartamento)
+          .map(cco => [cco.idDepartamento, { id: cco.idDepartamento, nombre: cco.departamento || cco.idDepartamento }])).values()));
+        setCcoNotice(error instanceof Error
+          ? `No se pudo cargar el catálogo completo de departamentos: ${error.message}`
+          : 'No se pudo cargar el catálogo completo de departamentos.');
       }
-    } catch {
-      // ignore
+    } catch (error) {
+      setCcoNotice(error instanceof Error ? error.message : 'No se pudieron cargar los centros de costos.');
     }
   };
 
@@ -267,6 +293,10 @@ export const Accounting = ({ initialTab = 'diario' }: { initialTab?: 'diario' | 
       setNotice('El asiento debe tener al menos dos líneas contables.');
       return;
     }
+    if (new Set(lines.map(line => line.accountId)).size !== lines.length) {
+      setNotice('Cada cuenta puede aparecer una sola vez en el asiento.');
+      return;
+    }
 
     const validLines = lines.every(line => line.accountId
       && state.accounts.some(account => account.id === line.accountId)
@@ -312,13 +342,9 @@ export const Accounting = ({ initialTab = 'diario' }: { initialTab?: 'diario' | 
       });
       setNotice(res.mensaje || `Asiento ${res.id} registrado exitosamente con fecha ${entryDate}.`);
       void loadAccounting();
-    } catch (err: any) {
-      const entryId = editingEntryId || `ASI-MAN-${Date.now()}`;
-      updateState(draft => {
-        draft.journalEntries.push({ id: entryId, date: entryDate, description: cleanDesc, lines: lines.map(line => ({ ...line })), status: 'ABI', source: 'MANUAL' });
-        return draft;
-      });
-      setNotice(err.message || 'Asiento registrado exitosamente.');
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : 'No se pudo registrar el asiento.');
+      return;
     }
 
     setEditingEntryId('');
@@ -341,14 +367,8 @@ export const Accounting = ({ initialTab = 'diario' }: { initialTab?: 'diario' | 
       await accountingApi.approveEntry(entryId);
       setNotice(`Asiento ${entryId} aprobado y contabilizado exitosamente.`);
       void loadAccounting();
-    } catch (err: any) {
-      const msg = err instanceof Error ? err.message : String(err);
-      updateState(draft => {
-        const draftEntry = draft.journalEntries.find(candidate => candidate.id === entryId);
-        if (draftEntry) draftEntry.status = 'APR';
-        return draft;
-      });
-      setNotice(`Asiento actualizado (${msg}).`);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : 'No se pudo aprobar el asiento.');
     }
   };
 
@@ -612,7 +632,7 @@ export const Accounting = ({ initialTab = 'diario' }: { initialTab?: 'diario' | 
           ========================================================================= */}
       {activeTab === 'diario' && (
         <>
-          <section className="card">
+          {canPerform(user, 'CONTABILIDAD', 'CREAR') && <section className="card">
             <div className="section-heading">
               <div>
                 <h2>{editingEntryId ? `Corregir Asiento (${editingEntryId})` : 'Nuevo Asiento Manual'}</h2>
@@ -752,18 +772,11 @@ export const Accounting = ({ initialTab = 'diario' }: { initialTab?: 'diario' | 
               </button>
             </div>
 
-            {notice && (
-              <p
-                className="form-notice"
-                role="status"
-                style={notice.includes('vital') || notice.includes('Error') ? { color: '#ef4444', borderColor: '#fca5a5', background: '#fef2f2' } : {}}
-              >
-                {notice}
-              </p>
-            )}
-          </section>
+          </section>}
 
           <section className="card">
+            {notice && <p className="form-notice" role="status">{notice}</p>}
+            {!journalWorkflow && <p className="helper-text">La aprobación, anulación y corrección de asientos aún no están disponibles en esta configuración.</p>}
             <div className="section-heading">
               <div>
                 <h2>Libro Diario</h2>
@@ -800,17 +813,17 @@ export const Accounting = ({ initialTab = 'diario' }: { initialTab?: 'diario' | 
                         <td><span className={`badge badge-${entry.status}`}>{entry.status}</span></td>
                         <td>
                           <div className="inline-actions">
-                            {(entry.status === 'PEN' || entry.status === 'ABI') && (
+                            {journalWorkflow && (entry.status === 'PEN' || entry.status === 'ABI') && (
                               <>
-                                <button type="button" className="btn btn-secondary" onClick={() => approveEntry(entry.id)}>
+                                {canPerform(user, 'CONTABILIDAD', 'APROBAR') && <button type="button" className="btn btn-secondary" onClick={() => approveEntry(entry.id)}>
                                   Aprobar
-                                </button>
-                                <button type="button" className="btn btn-outline" onClick={() => annulEntry(entry.id)}>
+                                </button>}
+                                {canPerform(user, 'CONTABILIDAD', 'ANULAR') && <button type="button" className="btn btn-outline" onClick={() => annulEntry(entry.id)}>
                                   Anular
-                                </button>
+                                </button>}
                               </>
                             )}
-                            {entry.status === 'ERR' && entry.source === 'MANUAL' && (
+                            {journalWorkflow && canPerform(user, 'CONTABILIDAD', 'CREAR') && entry.status === 'ERR' && entry.source === 'MANUAL' && (
                               <button type="button" className="btn btn-outline" onClick={() => editManualEntry(entry)}>
                                 Corregir
                               </button>
@@ -834,7 +847,7 @@ export const Accounting = ({ initialTab = 'diario' }: { initialTab?: 'diario' | 
           ========================================================================= */}
       {activeTab === 'cuentas' && (
         <>
-          <section className="card">
+          {canPerform(user, 'CONTABILIDAD', 'CREAR') && <section className="card">
             <h2 className="section-title">Registrar Cuenta Contable</h2>
             <div className="grid-4">
               <label className="form-group">
@@ -886,10 +899,10 @@ export const Accounting = ({ initialTab = 'diario' }: { initialTab?: 'diario' | 
                 </button>
               </div>
             </div>
-            {accNotice && <p className="form-notice" role="status">{accNotice}</p>}
-          </section>
+          </section>}
 
           <section className="card">
+            {accNotice && <p className="form-notice" role="status">{accNotice}</p>}
             <div className="section-heading">
               <div>
                 <h2>Catálogo de Cuentas Contables</h2>
@@ -964,7 +977,7 @@ export const Accounting = ({ initialTab = 'diario' }: { initialTab?: 'diario' | 
           ========================================================================= */}
       {activeTab === 'bancos' && (
         <>
-          <section className="card">
+          {canPerform(user, 'CONTABILIDAD', 'CREAR') && <section className="card">
             <h2 className="section-title">Registrar Entidad Bancaria (BANCOS)</h2>
             <form onSubmit={handleSaveBanco}>
               <div className="grid-3">
@@ -1015,10 +1028,11 @@ export const Accounting = ({ initialTab = 'diario' }: { initialTab?: 'diario' | 
                 </button>
               </div>
             </form>
-            {bancoNotice && <p className="form-notice" role="status">{bancoNotice}</p>}
-          </section>
+          </section>}
 
           <section className="card">
+            {bancoNotice && <p className="form-notice" role="status">{bancoNotice}</p>}
+            {!bankUpdates && <p className="helper-text">La edición y el cambio de estado de bancos no están disponibles en esta configuración.</p>}
             <div className="section-heading">
               <div>
                 <h2>Directorio de Entidades Bancarias</h2>
@@ -1047,7 +1061,7 @@ export const Accounting = ({ initialTab = 'diario' }: { initialTab?: 'diario' | 
                         </span>
                       </td>
                       <td>
-                        <div className="inline-actions">
+                        {bankUpdates && canPerform(user, 'CONTABILIDAD', 'CREAR') && <div className="inline-actions">
                           <button
                             type="button"
                             className="btn btn-outline"
@@ -1065,7 +1079,7 @@ export const Accounting = ({ initialTab = 'diario' }: { initialTab?: 'diario' | 
                           >
                             {b.estado === 'ACT' ? 'Inactivar' : 'Activar'}
                           </button>
-                        </div>
+                        </div>}
                       </td>
                     </tr>
                   ))}
@@ -1386,8 +1400,10 @@ export const Reports = () => {
   const [purchaseLoadError, setPurchaseLoadError] = useState('');
   const validInvoices = state.invoices.filter(invoice => invoice.status !== 'ANU');
   const salesTotal = validInvoices.reduce((sum, invoice) => sum + invoice.total, 0);
-  const inventoryValue = state.products.filter(product => product.status === 'ACTIVE').reduce((sum, product) => sum + product.stock * product.cost, 0);
   const activeProducts = state.products.filter(product => product.status === 'ACTIVE');
+  const inventoryValue = activeProducts.some(product => product.cost === undefined)
+    ? null
+    : activeProducts.reduce((sum, product) => sum + product.stock * (product.cost ?? 0), 0);
   const lowStock = activeProducts.filter(product => product.stock <= product.minStock);
   const payrollTotal = state.payrolls.filter(payroll => payroll.status === 'APR').reduce((sum, payroll) => sum + payroll.amount, 0);
   const topProducts = useMemo(() => {
@@ -1413,7 +1429,7 @@ export const Reports = () => {
       <div className="page-heading"><div><span className="eyebrow">ANÁLISIS DEL NEGOCIO</span><h1>Reportes</h1><p>Indicadores comerciales y financieros consolidados.</p></div><span className="demo-badge">USD</span></div>
       <div className="metric-grid">
         <article className="metric-card"><div className="metric-icon metric-burgundy"><FileText size={18} /></div><span>Ventas netas</span><strong>{money(salesTotal)}</strong><small>{validInvoices.length} facturas no anuladas</small></article>
-        <article className="metric-card"><div className="metric-icon metric-green"><PackageIcon /></div><span>Valor de inventario</span><strong>{money(inventoryValue)}</strong><small>Existencia × costo de compra</small></article>
+        <article className="metric-card"><div className="metric-icon metric-green"><PackageIcon /></div><span>Valor de inventario</span><strong>{inventoryValue === null ? 'No disponible' : money(inventoryValue)}</strong><small>Existencia × costo de compra</small></article>
         <article className="metric-card"><div className="metric-icon metric-amber"><BookOpen size={18} /></div><span>Productos por reponer</span><strong>{lowStock.length}</strong><small>Activos en mínimo o agotados</small></article>
         <article className="metric-card"><div className="metric-icon metric-neutral"><Calculator size={18} /></div><span>Nómina aprobada</span><strong>{money(payrollTotal)}</strong><small>{purchaseLoadError || `${pendingOrders ?? '—'} órdenes ABI pendientes`}</small></article>
       </div>
@@ -1421,7 +1437,7 @@ export const Reports = () => {
         {topProducts.map(([productId, quantity]) => {
           const product = state.products.find(candidate => candidate.id === productId);
           if (!product) return null;
-          return <tr key={productId}><td>{product.name}</td><td>{product.category}</td><td>{quantity}</td><td>{product.stock}</td><td>{money(product.stock * product.cost)}</td></tr>;
+          return <tr key={productId}><td>{product.name}</td><td>{product.category}</td><td>{quantity}</td><td>{product.stock}</td><td>{product.cost === undefined ? 'No disponible' : money(product.stock * product.cost)}</td></tr>;
         })}
         {!topProducts.length && <tr><td colSpan={5} className="empty-state">Registra ventas para generar el reporte de rotación.</td></tr>}
       </tbody></table></div></section>

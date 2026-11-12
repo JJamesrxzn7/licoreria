@@ -5,7 +5,12 @@ import {
   Banco, CentroCosto, AuthUser
 } from './types';
 
-const API_BASE_URL = (import.meta.env.VITE_API_URL || 'http://127.0.0.1:8000').replace(/\/$/, '');
+const configuredApiUrl = import.meta.env.VITE_API_URL?.trim();
+const API_BASE_URL = (
+  configuredApiUrl
+    ? (/^https?:\/\//i.test(configuredApiUrl) ? configuredApiUrl : `https://${configuredApiUrl}`)
+    : `http://${window.location.hostname}:8000`
+).replace(/\/$/, '');
 
 export interface PurchaseSupplier {
   id: string;
@@ -57,6 +62,13 @@ type CreateOrderRequest = {
   tasaIVA: number;
   items: Array<{ idProducto: string; cantidad: number; costoUnitario: number }>;
 };
+
+export class ApiError extends Error {
+  constructor(message: string, public readonly status: number) {
+    super(message);
+    this.name = 'ApiError';
+  }
+}
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   let response: Response;
@@ -121,7 +133,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     } else if (status === 0) {
       mensaje = 'No se pudo conectar con el servidor.';
     }
-    throw new Error(mensaje);
+    throw new ApiError(mensaje, status);
   }
   return body as T;
 }
@@ -279,19 +291,26 @@ export const supplierApi = {
 };
 
 // 5. Módulo Ventas
+export interface InvoiceInput {
+  idCliente: string;
+  idEmpleado?: string;
+  descripcion?: string;
+  tasaIVA?: number;
+  descuento?: number;
+  metodoPago?: string;
+  cuotas?: number;
+  items: Array<{ idProducto: string; cantidad: number; precioUnitario: number }>;
+}
+
+export const systemApi = {
+  capabilities: () => request<{ salesIdempotency: boolean; userManagementWrites: boolean; adjustmentApproval: boolean; adjustmentReasonMax: number; bankUpdates: boolean; journalWorkflow: boolean; payrollCatalogUpdates: boolean; payrollCatalogNameMax: number; payrollUpdates: boolean; payrollApproval: boolean; payrollAnnulment: boolean; payrollDelete: boolean; employeeCreation: boolean; employeeUpdates: boolean; employeeRelatedWrites: boolean }>('/api/capabilities'),
+};
+
 export const salesApi = {
   listInvoices: () => request<Invoice[]>('/api/ventas'),
-  createInvoice: (sale: {
-    idCliente: string;
-    idEmpleado?: string;
-    descripcion?: string;
-    tasaIVA?: number;
-    descuento?: number;
-    metodoPago?: string;
-    cuotas?: number;
-    items: Array<{ idProducto: string; cantidad: number; precioUnitario: number }>;
-  }) => request<{ id: string; deliveryId: string; estado: string; total: string; mensaje: string }>('/api/ventas', {
+  createInvoice: (sale: InvoiceInput, requestId: string) => request<{ id: string; deliveryId: string; estado: string; total: string; mensaje: string }>('/api/ventas', {
     method: 'POST',
+    headers: { 'Idempotency-Key': requestId },
     body: JSON.stringify(sale),
   }),
   approveInvoice: (invoiceId: string) => request<{ id: string; estado: string; mensaje: string }>(`/api/ventas/${encodeURIComponent(invoiceId)}/aprobar`, {
@@ -549,7 +568,7 @@ export const accountingApi = {
 // 9. Auditoría
 export interface AuditLogEntry {
   id: string;
-  usuario: string;
+  usuario: string | null;
   fechaHora: string;
   tabla: string;
   accion: string;

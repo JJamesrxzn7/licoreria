@@ -27,7 +27,7 @@ export default function AuditLogs() {
   const normalizedSearch = search.trim().toLowerCase();
   const filteredLogs = logs.filter(log => [
     log.id,
-    log.usuario,
+    log.usuario ?? '',
     log.tabla,
     log.accion,
     log.valorAnterior ?? '',
@@ -117,7 +117,7 @@ export default function AuditLogs() {
               ) : pagination.pageItems.map(log => (
                 <tr key={log.id}>
                   <td>{formatDate(log.fechaHora)}</td>
-                  <td>{log.usuario}</td>
+                  <td>{formatValue(log.usuario)}</td>
                   <td>{log.tabla}</td>
                   <td><span className="audit-action">{log.accion}</span></td>
                   <td className="audit-value">{formatValue(log.valorAnterior)}</td>

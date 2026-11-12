@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState, useCallback, ReactNode } from 'react';
-import { authApi } from '../api';
+import { ApiError, authApi } from '../api';
 import { AuthUser } from '../types';
 
 type AuthContextType = {
@@ -63,8 +63,8 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     if (user) {
       try {
         await authApi.logout({ userId: user.id, username: user.username });
-      } catch {
-        // Ignorar errores de logout, limpiar sesión de todas formas
+      } catch (error) {
+        if (!(error instanceof ApiError && error.status === 401)) throw error;
       }
     }
     setUser(null);

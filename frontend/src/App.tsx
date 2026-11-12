@@ -53,6 +53,7 @@ const AppContent = () => {
   const [collapsed, setCollapsed] = useState(false);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
+  const [logoutError, setLogoutError] = useState('');
   const profileRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -110,12 +111,14 @@ const AppContent = () => {
     return <Login />;
   }
 
-  const activePage = navItems.find(item => item.id === currentRoute);
-
   const allowedNavItems = navItems.filter(item =>
     user?.allowedRoutes.includes(item.id) && (item.id !== 'audit' || isAdministrator),
   );
   const allowedGroups = [...new Set(allowedNavItems.map(item => item.group))];
+  const canViewCurrentRoute = currentRoute === 'registro'
+    ? allowedNavItems.some(item => item.id === 'usuarios')
+    : allowedNavItems.some(item => item.id === currentRoute);
+  const activePage = canViewCurrentRoute ? navItems.find(item => item.id === currentRoute) : undefined;
 
   const navigate = (route: string) => {
     setCurrentRoute(route);
@@ -123,9 +126,15 @@ const AppContent = () => {
   };
 
   const handleLogout = async () => {
-    await logout();
-    setCurrentRoute('dashboard');
-    setMobileNavOpen(false);
+    setLogoutError('');
+    try {
+      await logout();
+      setCurrentRoute('dashboard');
+      setMobileNavOpen(false);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Error de conexión.';
+      setLogoutError(`No se pudo cerrar la sesión en el servidor: ${message}`);
+    }
   };
 
   const routeViews: Record<string, JSX.Element> = {
@@ -235,7 +244,12 @@ const AppContent = () => {
             </button>
           </div>
         </header>
-        <div className="page-content">{routeViews[currentRoute] ?? <Dashboard />}</div>
+        <div className="page-content">
+          {logoutError && <p className="form-notice" role="alert">{logoutError}</p>}
+          {canViewCurrentRoute
+            ? routeViews[currentRoute]
+            : <section className="card" role="alert">No tienes permiso para acceder a esta sección.</section>}
+        </div>
       </main>
     </div>
   );

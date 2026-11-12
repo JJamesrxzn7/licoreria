@@ -7,6 +7,9 @@ import { useGlobalStore } from '../context';
 import { Employee, Dependent, CargoHistoryEntry } from '../types';
 import { hrApi } from '../api';
 import { PaginationControls, usePagination } from '../components/Pagination';
+import { systemApi } from '../api';
+import { useAuth } from '../context/AuthContext';
+import { canPerform } from '../rolePermissions';
 
 const money = (val: number | string | undefined) =>
   `$${Number(val || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -41,6 +44,12 @@ const todayStr = now.toISOString().slice(0, 10);
 
 export const EmployeeFile: React.FC = () => {
   const { state, updateState } = useGlobalStore();
+  const { user } = useAuth();
+  const [employeeCapabilities, setEmployeeCapabilities] = useState<{
+    employeeCreation: boolean;
+    employeeUpdates: boolean;
+    employeeRelatedWrites: boolean;
+  } | null>(null);
   const [employees, setEmployees] = useState<Employee[]>(state.employees);
   const [departments, setDepartments] = useState<Array<{ id: string; nombre: string }>>([]);
   const [cargos, setCargos] = useState<Array<{ id: string; nombre: string }>>([]);
@@ -137,41 +146,42 @@ export const EmployeeFile: React.FC = () => {
   const loadInitialData = async () => {
     try {
       const [remoteEmps, remoteDepts, remoteCargos] = await Promise.all([
-        hrApi.listEmployees().catch(() => null),
-        hrApi.listDepartments().catch(() => null),
-        hrApi.listCargos().catch(() => null),
+        hrApi.listEmployees(),
+        hrApi.listDepartments(),
+        hrApi.listCargos(),
       ]);
 
-      if (Array.isArray(remoteDepts) && remoteDepts.length) {
+      if (Array.isArray(remoteDepts)) {
         setDepartments(remoteDepts);
-        if (!newEmpForm.idDepartamento) setNewEmpForm(prev => ({ ...prev, idDepartamento: remoteDepts[0].id }));
+        if (!newEmpForm.idDepartamento && remoteDepts[0]) setNewEmpForm(prev => ({ ...prev, idDepartamento: remoteDepts[0].id }));
       }
-      if (Array.isArray(remoteCargos) && remoteCargos.length) {
+      if (Array.isArray(remoteCargos)) {
         setCargos(remoteCargos);
-        if (!newEmpForm.idCargo) {
+        if (!newEmpForm.idCargo && remoteCargos[0]) {
           setNewEmpForm(prev => ({ ...prev, idCargo: remoteCargos[0].id }));
           setNewCargoForm(prev => ({ ...prev, idCargo: remoteCargos[0].id }));
         }
       }
-      if (Array.isArray(remoteEmps) && remoteEmps.length) {
+      if (Array.isArray(remoteEmps)) {
         setEmployees(remoteEmps);
         updateState(draft => {
           draft.employees = remoteEmps;
           return draft;
         });
-        if (!selectedEmpId) {
+        if (!selectedEmpId && remoteEmps[0]) {
           setSelectedEmpId(remoteEmps[0].id);
         }
-      } else if (state.employees.length && !selectedEmpId) {
-        setSelectedEmpId(state.employees[0].id);
       }
-    } catch {
-      // Usar estado local de fallback
+    } catch (error) {
+      setNotice({ type: 'error', message: error instanceof Error ? error.message : 'No se pudieron cargar los datos de empleados.' });
     }
   };
 
   useEffect(() => {
     void loadInitialData();
+    void systemApi.capabilities()
+      .then(setEmployeeCapabilities)
+      .catch(error => setNotice({ type: 'error', message: error instanceof Error ? error.message : 'No se pudo verificar la configuración de empleados.' }));
   }, []);
 
   // Empleado actualmente seleccionado
@@ -204,14 +214,15 @@ export const EmployeeFile: React.FC = () => {
   const loadEmployeeDetails = async (empId: string) => {
     try {
       const [hist, deps] = await Promise.all([
-        hrApi.listCargosHistory(empId).catch(() => []),
-        hrApi.listDependents(empId).catch(() => []),
+        hrApi.listCargosHistory(empId),
+        hrApi.listDependents(empId),
       ]);
       setCargosHistory(hist);
       setDependents(deps);
-    } catch {
+    } catch (error) {
       setCargosHistory([]);
       setDependents([]);
+      setNotice({ type: 'error', message: error instanceof Error ? error.message : 'No se pudieron cargar los datos del empleado.' });
     }
   };
 
@@ -613,7 +624,7 @@ export const EmployeeFile: React.FC = () => {
           <h1>Ficha del Empleado</h1>
           <p>Expediente integral con datos personales, dirección, historial de cargos y registro detallado de cargas familiares.</p>
         </div>
-        <button
+        {employeeCapabilities?.employeeCreation && canPerform(user, 'TALENTO_HUMANO', 'CREAR') && <button
           type="button"
           className="btn btn-primary"
           onClick={() => {
@@ -624,7 +635,7 @@ export const EmployeeFile: React.FC = () => {
           }}
         >
           <Plus size={16} /> + Nuevo Colaborador
-        </button>
+        </button>}
       </div>
 
       {notice && (
@@ -800,7 +811,7 @@ export const EmployeeFile: React.FC = () => {
             </div>
 
             {/* TAB 1: DATOS PERSONALES */}
-            {activeTab === 'personal' && (
+            {activeTab === 'personal' && employeeCapabilities?.employeeUpdates && canPerform(user, 'TALENTO_HUMANO', 'CREAR') && (
               <form onSubmit={handleUpdateEmployee}>
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '14px' }}>
                   <label className="form-group">
@@ -987,13 +998,16 @@ export const EmployeeFile: React.FC = () => {
                 </div>
               </form>
             )}
+            {activeTab === 'personal' && !employeeCapabilities?.employeeUpdates && (
+              <p className="helper-text">La edición de datos del empleado aún no está disponible en esta configuración.</p>
+            )}
 
             {/* TAB 2: HISTORIAL DE CARGOS */}
             {activeTab === 'cargos' && (
               <div>
                 <div style={{ marginBottom: '16px', background: '#f9fafb', padding: '16px', borderRadius: '8px', border: '1px solid #e5e7eb' }}>
                   <h3 style={{ margin: '0 0 10px 0', fontSize: '1rem', color: '#374151' }}>Promover o Asignar Nuevo Cargo (CARGOSxEMPLEADO)</h3>
-                  <form onSubmit={handleAssignCargo} style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr) auto', gap: '12px', alignItems: 'flex-end' }}>
+                  {employeeCapabilities?.employeeRelatedWrites && canPerform(user, 'TALENTO_HUMANO', 'CREAR') && <form onSubmit={handleAssignCargo} style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr) auto', gap: '12px', alignItems: 'flex-end' }}>
                     <label className="form-group" style={{ margin: 0 }}>
                       Nuevo Cargo / Puesto *
                       <select
@@ -1030,7 +1044,8 @@ export const EmployeeFile: React.FC = () => {
                     <button type="submit" className="btn btn-primary" style={{ height: '38px' }}>
                       <Plus size={16} /> Asignar Cargo
                     </button>
-                  </form>
+                  </form>}
+                  {!employeeCapabilities?.employeeRelatedWrites && <p className="helper-text">La asignación independiente de cargos aún no está disponible.</p>}
                 </div>
 
                 <div className="table-scroll">
@@ -1074,7 +1089,8 @@ export const EmployeeFile: React.FC = () => {
                 {/* Formulario de registro de carga */}
                 <div style={{ marginBottom: '20px', background: '#f9fafb', padding: '16px', borderRadius: '8px', border: '1px solid #e5e7eb' }}>
                   <h3 style={{ margin: '0 0 12px 0', fontSize: '1rem', color: '#374151' }}>Registrar Dependiente / Familiar (CARGAS)</h3>
-                  <form onSubmit={handleAddDependent}>
+                  {employeeCapabilities?.employeeRelatedWrites && canPerform(user, 'TALENTO_HUMANO', 'CREAR') ? (
+                    <form onSubmit={handleAddDependent}>
                     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '12px' }}>
                       <label className="form-group">
                         Cédula Carga (10 dígitos) *
@@ -1221,7 +1237,10 @@ export const EmployeeFile: React.FC = () => {
                         </button>
                       </div>
                     </div>
-                  </form>
+                    </form>
+                  ) : (
+                    <p className="helper-text">El registro de cargas familiares aún no está disponible en esta configuración.</p>
+                  )}
                 </div>
 
                 {/* Tabla de Cargas Familiares con opción de Modificar */}
@@ -1250,7 +1269,7 @@ export const EmployeeFile: React.FC = () => {
                           <td>{dep.estadoCivil}</td>
                           <td>{dep.dependencia}</td>
                           <td>
-                            {dep.id && (
+                            {dep.id && employeeCapabilities?.employeeRelatedWrites && canPerform(user, 'TALENTO_HUMANO', 'CREAR') && (
                               <div style={{ display: 'flex', gap: '6px' }}>
                                 <button
                                   type="button"
@@ -1297,7 +1316,7 @@ export const EmployeeFile: React.FC = () => {
       </div>
 
       {/* Modal Modificar Carga Familiar */}
-      {editingDependent && (
+      {editingDependent && employeeCapabilities?.employeeRelatedWrites && canPerform(user, 'TALENTO_HUMANO', 'CREAR') && (
         <div style={{
           position: 'fixed',
           inset: 0,

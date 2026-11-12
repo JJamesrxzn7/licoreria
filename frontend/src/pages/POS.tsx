@@ -2,10 +2,37 @@ import { useEffect, useMemo, useState } from 'react';
 import { Search, ShoppingCart, Trash2, ShieldAlert } from 'lucide-react';
 import { useGlobalStore } from '../context';
 import { CartItem, Product } from '../types';
-import { customerApi, productApi, salesApi, warehouseApi } from '../api';
+import { customerApi, productApi, salesApi, systemApi, warehouseApi } from '../api';
+import type { InvoiceInput } from '../api';
+import { useAuth } from '../context/AuthContext';
+import { canPerform } from '../rolePermissions';
+
+type PendingSale = { requestId: string; sale: InvoiceInput };
+
+function isPendingSale(value: unknown): value is PendingSale {
+  if (!value || typeof value !== 'object' || !('requestId' in value) ||
+      typeof value.requestId !== 'string' || !/^[A-Za-z0-9_-]{16,64}$/.test(value.requestId) ||
+      !('sale' in value) || !value.sale || typeof value.sale !== 'object') return false;
+  const sale = value.sale;
+  if (!('idCliente' in sale) || typeof sale.idCliente !== 'string' ||
+      !('items' in sale) || !Array.isArray(sale.items)) return false;
+  const optionalTypes = [
+    ['idEmpleado', 'string'], ['descripcion', 'string'], ['tasaIVA', 'number'],
+    ['descuento', 'number'], ['metodoPago', 'string'], ['cuotas', 'number'],
+  ] as const;
+  if (optionalTypes.some(([key, type]) => key in sale && typeof Reflect.get(sale, key) !== type)) return false;
+  return sale.items.every((item: unknown) =>
+    !!item && typeof item === 'object' &&
+    'idProducto' in item && typeof item.idProducto === 'string' &&
+    'cantidad' in item && typeof item.cantidad === 'number' &&
+    'precioUnitario' in item && typeof item.precioUnitario === 'number'
+  );
+}
 
 export const POS = () => {
   const { state, updateState } = useGlobalStore();
+  const { user } = useAuth();
+  const canCreateSale = canPerform(user, 'VENTAS', 'CREAR');
   const [searchTerm, setSearchTerm] = useState('');
   const [categoryFilter, setCategoryFilter] = useState('');
   const [cart, setCart] = useState<CartItem[]>([]);
@@ -16,6 +43,27 @@ export const POS = () => {
   const [ageVerified, setAgeVerified] = useState(false);
   const [notice, setNotice] = useState('');
   const [saving, setSaving] = useState(false);
+  const [pendingSale, setPendingSale] = useState<PendingSale | null>(null);
+  const [salesIdempotency, setSalesIdempotency] = useState<boolean | null>(null);
+  const pendingStorageKey = `licoreria_pending_sale_${user?.id ?? ''}`;
+
+  useEffect(() => {
+    try {
+      const saved = sessionStorage.getItem(pendingStorageKey);
+      if (!saved) {
+        setPendingSale(null);
+        return;
+      }
+      const value: unknown = JSON.parse(saved);
+      if (!isPendingSale(value)) {
+        throw new Error('El intento pendiente no tiene un formato válido.');
+      }
+      setPendingSale(value);
+      setNotice('Hay una venta pendiente de confirmar. Reinténtala o revisa las facturas antes de descartarla.');
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : 'No se pudo leer el intento pendiente.');
+    }
+  }, [pendingStorageKey]);
 
   // Sincronizar catálogo y clientes desde el servicio
   const syncFromApi = async () => {
@@ -41,28 +89,23 @@ export const POS = () => {
 
   useEffect(() => {
     void syncFromApi();
+    void systemApi.capabilities()
+      .then(result => setSalesIdempotency(result.salesIdempotency))
+      .catch(error => setNotice(error instanceof Error ? error.message : 'No se pudo verificar la configuración de ventas.'));
   }, []);
 
   const categories = useMemo(() => Array.from(new Set(state.products.map(product => product.category))), [state.products]);
-  const reservedByProduct = useMemo(() => state.deliveries
-    .filter(delivery => delivery.status === 'PENDING')
-    .flatMap(delivery => delivery.items)
-    .reduce<Record<string, number>>((reserved, item) => {
-      reserved[item.productId] = (reserved[item.productId] ?? 0) + item.expectedQty;
-      return reserved;
-    }, {}), [state.deliveries]);
-
   const filteredProducts = useMemo(() => {
     const search = searchTerm.trim().toLocaleLowerCase();
     return state.products.filter(product => product.status === 'ACTIVE'
-      && product.stock - (reservedByProduct[product.id] ?? 0) > 0
+      && product.stock > 0
       && (!categoryFilter || product.category === categoryFilter)
       && (!search || [product.name, product.sku, product.barcode, product.brand]
         .some(value => value.toLocaleLowerCase().includes(search))));
-  }, [state.products, searchTerm, categoryFilter, reservedByProduct]);
+  }, [state.products, searchTerm, categoryFilter]);
 
   const addToCart = (product: Product) => {
-    const available = product.stock - (reservedByProduct[product.id] ?? 0);
+    const available = product.stock;
     const existing = cart.find(item => item.product.id === product.id);
     if (available <= 0 || (existing && existing.qty >= available)) return setNotice('No hay más unidades disponibles para agregar.');
     setAgeVerified(false);
@@ -86,7 +129,7 @@ export const POS = () => {
     if (!product) return;
     if (qty <= 0) return removeFromCart(productId);
     if (!Number.isInteger(qty)) return setNotice('La cantidad vendida debe ser un número entero.');
-    if (qty > product.stock - (reservedByProduct[product.id] ?? 0)) return setNotice('La cantidad supera las existencias disponibles.');
+    if (qty > product.stock) return setNotice('La cantidad supera las existencias disponibles.');
     setAgeVerified(false);
     setNotice('');
     setCart(previous => previous.map(item => item.product.id === productId
@@ -96,15 +139,35 @@ export const POS = () => {
 
   const subtotal = cart.reduce((sum, item) => sum + item.subtotal, 0);
   const safeDiscountRate = Number.isFinite(discountRate) ? Math.min(100, Math.max(0, discountRate)) : 0;
-  const discount = subtotal * safeDiscountRate / 100;
+  const discount = Math.round((subtotal * safeDiscountRate / 100 + Number.EPSILON) * 100) / 100;
   const taxableSubtotal = subtotal - discount;
-  const taxRate = state.settings.taxRate || 15;
+  const taxRate = state.settings.taxRate;
   const tax = taxableSubtotal * taxRate / 100;
   const total = taxableSubtotal + tax;
   const selectedCustomer = state.customers.find(customer => customer.id === customerId);
   const creditAvailable = selectedCustomer ? selectedCustomer.creditLimit - selectedCustomer.creditUsed : 0;
 
+  const sendSale = async (attempt: PendingSale) => {
+    setSaving(true);
+    try {
+      const response = await salesApi.createInvoice(attempt.sale, attempt.requestId);
+      sessionStorage.removeItem(pendingStorageKey);
+      setPendingSale(null);
+      setNotice(response.mensaje);
+      setCart([]);
+      setDiscountRate(0);
+      setAgeVerified(false);
+      setPaymentMethod('CASH');
+      await syncFromApi();
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : 'No fue posible registrar la venta en la base de datos.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const handleCheckout = async () => {
+    if (salesIdempotency === null) return setNotice('No se pudo verificar la configuración de ventas.');
     if (!cart.length) return setNotice('Agrega al menos un producto al carrito.');
     if (total <= 0) return setNotice('El total de la factura debe ser mayor que cero.');
     if (!selectedCustomer || selectedCustomer.status !== 'ACTIVE') return setNotice('Selecciona un cliente activo.');
@@ -112,7 +175,7 @@ export const POS = () => {
     if (!ageVerified) return setNotice('Confirma que verificaste que el cliente es mayor de edad antes de continuar.');
     if (cart.some(item => {
       const current = state.products.find(product => product.id === item.product.id);
-      return !Number.isInteger(item.qty) || !current || current.status !== 'ACTIVE' || current.stock - (reservedByProduct[current.id] ?? 0) < item.qty;
+      return !Number.isInteger(item.qty) || !current || current.status !== 'ACTIVE' || current.stock < item.qty;
     })) return setNotice('El inventario cambió o no alcanza para completar la venta. Actualiza el carrito.');
     if (paymentMethod === 'CREDIT' && total > creditAvailable) {
       return setNotice(`El crédito disponible es $${Math.max(creditAvailable, 0).toFixed(2)}; ajusta la venta o elige otra forma de pago.`);
@@ -121,35 +184,43 @@ export const POS = () => {
       return setNotice('El crédito permite de 1 a 12 cuotas.');
     }
 
-    setSaving(true);
-    try {
-      const apiResponse = await salesApi.createInvoice({
-        idCliente: customerId,
-        descripcion: `PRUEBA Venta POS ${paymentMethod}`,
-        tasaIVA: taxRate,
-        descuento: discount,
-        metodoPago: paymentMethod,
-        cuotas: paymentMethod === 'CREDIT' ? installments : 1,
-        items: cart.map(item => ({
-          idProducto: item.product.id,
-          cantidad: item.qty,
-          precioUnitario: item.product.price,
-        })),
-      });
-      setNotice(apiResponse.mensaje);
-      await syncFromApi();
-    } catch (apiError) {
-      setNotice(apiError instanceof Error ? apiError.message : 'No fue posible registrar la venta en la base de datos.');
-      return;
-    } finally {
-      setSaving(false);
+    const sale: InvoiceInput = {
+      idCliente: customerId,
+      descripcion: `PRUEBA Venta POS ${paymentMethod}`,
+      tasaIVA: taxRate,
+      descuento: discount,
+      metodoPago: paymentMethod,
+      cuotas: paymentMethod === 'CREDIT' ? installments : 1,
+      items: cart.map(item => ({
+        idProducto: item.product.id, cantidad: item.qty, precioUnitario: item.product.price,
+      })),
+    };
+    if (salesIdempotency && pendingSale && JSON.stringify(pendingSale.sale) !== JSON.stringify(sale)) {
+      return setNotice('Hay otra venta sin confirmar. Reinténtala o revisa las facturas antes de descartarla.');
     }
-
-    setCart([]);
-    setDiscountRate(0);
-    setAgeVerified(false);
-    setPaymentMethod('CASH');
-    void syncFromApi();
+    try {
+      if (!salesIdempotency) {
+        setSaving(true);
+        try {
+          const response = await salesApi.createInvoice(sale, 'legacy');
+          setNotice(response.mensaje);
+          setCart([]);
+          setDiscountRate(0);
+          setAgeVerified(false);
+          setPaymentMethod('CASH');
+          await syncFromApi();
+        } finally {
+          setSaving(false);
+        }
+        return;
+      }
+      const attempt = pendingSale ?? { requestId: crypto.randomUUID().replace(/-/g, ''), sale };
+      sessionStorage.setItem(pendingStorageKey, JSON.stringify(attempt));
+      setPendingSale(attempt);
+      await sendSale(attempt);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : 'No se pudo guardar el intento de venta.');
+    }
   };
 
   return (
@@ -159,6 +230,18 @@ export const POS = () => {
         <div className="search-control"><Search size={18} /><input aria-label="Buscar productos" placeholder="Nombre, marca, SKU o código de barras" value={searchTerm} onChange={event => setSearchTerm(event.target.value)} /></div>
       </div>
       {notice && <p className="form-notice" role="status">{notice}</p>}
+      {canCreateSale && salesIdempotency && pendingSale && <div className="form-actions">
+        <button type="button" className="btn btn-outline" disabled={saving} onClick={() => void sendSale(pendingSale)}>Reintentar venta pendiente</button>
+        <button type="button" className="btn btn-outline" disabled={saving} onClick={() => {
+          if (!window.confirm('La venta podría haberse registrado. Verifica las facturas antes de descartar el intento. ¿Descartarlo?')) return;
+          try {
+            sessionStorage.removeItem(pendingStorageKey);
+            setPendingSale(null);
+          } catch (error) {
+            setNotice(error instanceof Error ? error.message : 'No se pudo descartar el intento.');
+          }
+        }}>Descartar intento</button>
+      </div>}
       <div className="pos-container">
         <section className="card pos-catalog" aria-label="Catálogo de productos">
           <div className="section-heading"><div><h2>Catálogo</h2><p>{filteredProducts.length} productos disponibles</p></div>
@@ -168,8 +251,8 @@ export const POS = () => {
           </div>
           <div className="pos-products">
             {filteredProducts.map(product => {
-              const available = product.stock - (reservedByProduct[product.id] ?? 0);
-              return <button type="button" key={product.id} className="pos-product-card" onClick={() => addToCart(product)} aria-label={`Agregar ${product.name} al carrito`}>
+              const available = product.stock;
+              return <button type="button" key={product.id} className="pos-product-card" disabled={!canCreateSale} onClick={() => addToCart(product)} aria-label={canCreateSale ? `Agregar ${product.name} al carrito` : product.name}>
                 <span className="product-category">{product.category}</span>
                 <span className="product-card-name">{product.name}</span>
                 <span className="product-meta">{product.brand} · {product.ml} ml · {product.abv}%</span>
@@ -181,14 +264,14 @@ export const POS = () => {
           </div>
         </section>
 
-        <section className="card pos-cart" aria-label="Carrito de venta">
+        {canCreateSale && <section className="card pos-cart" aria-label="Carrito de venta">
           <h2 className="cart-title"><ShoppingCart size={20} /> Carrito <span>{cart.length}</span></h2>
           <div className="cart-items">
             {cart.map(item => (
               <div key={item.product.id} className="cart-item">
                 <div className="cart-product"><strong>{item.product.name}</strong><span>${item.product.price.toFixed(2)} / {item.product.sellUnit.toLowerCase()}</span></div>
                 <div className="cart-controls">
-                  <input aria-label={`Cantidad de ${item.product.name}`} type="number" min="1" max={item.product.stock - (reservedByProduct[item.product.id] ?? 0)} value={item.qty} onChange={event => updateCartQty(item.product.id, Number(event.target.value))} />
+                  <input aria-label={`Cantidad de ${item.product.name}`} type="number" min="1" max={item.product.stock} value={item.qty} onChange={event => updateCartQty(item.product.id, Number(event.target.value))} />
                   <strong>${item.subtotal.toFixed(2)}</strong>
                   <button type="button" className="icon-button" aria-label={`Quitar ${item.product.name}`} onClick={() => removeFromCart(item.product.id)}><Trash2 size={16} /></button>
                 </div>
@@ -228,7 +311,7 @@ export const POS = () => {
               {saving ? 'Registrando...' : 'Completar venta'}
             </button>
           </div>
-        </section>
+        </section>}
       </div>
     </div>
   );

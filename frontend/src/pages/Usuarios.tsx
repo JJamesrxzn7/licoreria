@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { AlertCircle, Edit3, Eye, EyeOff, RefreshCw, Shield, Trash2, UserPlus } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
-import { rolesApi, usuariosApi } from '../api';
+import { rolesApi, systemApi, usuariosApi } from '../api';
 import type { Rol, Usuario, UsuarioRol } from '../api';
 import { PaginationControls, usePagination } from '../components/Pagination';
 
@@ -18,6 +18,7 @@ export default function Usuarios({ onCreate }: UsuariosProps) {
   const [usuarios, setUsuarios] = useState<Usuario[]>([]);
   const [roles, setRoles] = useState<Rol[]>([]);
   const [loading, setLoading] = useState(false);
+  const [canModify, setCanModify] = useState(false);
   const [viewingRoles, setViewingRoles] = useState<string | null>(null);
   const [usuarioRoles, setUsuarioRoles] = useState<UsuarioRol[]>([]);
   const [editingUsuario, setEditingUsuario] = useState<Usuario | null>(null);
@@ -31,13 +32,16 @@ export default function Usuarios({ onCreate }: UsuariosProps) {
     setLoading(true);
     setError(null);
     try {
-      const [usuariosActualizados, rolesActualizados] = await Promise.all([
+      const [usuariosActualizados, rolesActualizados, capabilities] = await Promise.all([
         usuariosApi.listar(),
         rolesApi.listar(),
+        systemApi.capabilities(),
       ]);
       setUsuarios(usuariosActualizados);
       setRoles(rolesActualizados.filter(role => role.estado === 'ACT'));
+      setCanModify(capabilities.userManagementWrites === true);
     } catch (err) {
+      setCanModify(false);
       setError(err instanceof Error ? err.message : 'No se pudo cargar la lista de usuarios.');
     } finally {
       setLoading(false);
@@ -170,13 +174,14 @@ export default function Usuarios({ onCreate }: UsuariosProps) {
       )}
 
       <div className="usuarios-toolbar">
-        <button type="button" className="btn-primary" onClick={onCreate}>
+        {canModify && <button type="button" className="btn-primary" onClick={onCreate}>
           <UserPlus size={18} /> Nuevo usuario
-        </button>
+        </button>}
         <button type="button" className="btn-secondary" onClick={() => void cargarUsuarios()} disabled={loading}>
           <RefreshCw size={16} /> Actualizar
         </button>
       </div>
+      {!loading && !canModify && !error && <p className="helper-text">La gestión de usuarios está disponible solo para consulta en esta configuración.</p>}
 
       <div className="table-container">
         <table className="data-table">
@@ -217,7 +222,7 @@ export default function Usuarios({ onCreate }: UsuariosProps) {
                   </span>
                 </td>
                 <td className="actions-cell">
-                  <button
+                  {canModify && <button
                     type="button"
                     className="icon-btn"
                     onClick={() => {
@@ -229,11 +234,11 @@ export default function Usuarios({ onCreate }: UsuariosProps) {
                     aria-label={`Editar usuario ${usuario.username}`}
                   >
                     <Edit3 size={16} />
-                  </button>
-                  <button type="button" className="icon-btn" onClick={() => void verRoles(usuario.id_Usuario)} title="Administrar roles" aria-label={`Administrar roles de ${usuario.username}`}>
+                  </button>}
+                  <button type="button" className="icon-btn" onClick={() => void verRoles(usuario.id_Usuario)} title={canModify ? 'Administrar roles' : 'Ver roles'} aria-label={`${canModify ? 'Administrar' : 'Ver'} roles de ${usuario.username}`}>
                     <Shield size={16} />
                   </button>
-                  <button
+                  {canModify && <button
                     type="button"
                     className="icon-btn"
                     onClick={() => void handleCambiarEstado(usuario)}
@@ -245,7 +250,7 @@ export default function Usuarios({ onCreate }: UsuariosProps) {
                     }
                   >
                     {usuario.ESTADO_USR === 'ACT' ? <Trash2 size={16} /> : <Eye size={16} />}
-                  </button>
+                  </button>}
                 </td>
               </tr>
             ))}
@@ -280,14 +285,14 @@ export default function Usuarios({ onCreate }: UsuariosProps) {
                   : usuarioRoles.map(role => (
                     <div key={role.id} className="role-assigned-item">
                       <span>{role.nombre}</span>
-                      <button type="button" className="btn-remove" onClick={() => void handleRemoverRol(role.id)} title="Remover rol" aria-label={`Remover ${role.nombre}`}>
+                      {canModify && <button type="button" className="btn-remove" onClick={() => void handleRemoverRol(role.id)} title="Remover rol" aria-label={`Remover ${role.nombre}`}>
                         ×
-                      </button>
+                      </button>}
                     </div>
                   ))}
               </div>
 
-              <div className="roles-available-section">
+              {canModify && <div className="roles-available-section">
                 <h4>Asignar nuevo rol:</h4>
                 <div className="roles-available-list">
                   {roles
@@ -298,7 +303,7 @@ export default function Usuarios({ onCreate }: UsuariosProps) {
                       </button>
                     ))}
                 </div>
-              </div>
+              </div>}
             </div>
           </div>
         </div>

@@ -5,7 +5,9 @@ import {
 } from 'lucide-react';
 import { useGlobalStore } from '../context';
 import { Payroll, Employee, BonusCatalogItem, DeductionCatalogItem } from '../types';
-import { hrApi } from '../api';
+import { hrApi, systemApi } from '../api';
+import { useAuth } from '../context/AuthContext';
+import { canPerform } from '../rolePermissions';
 import { PaginationControls, usePagination } from '../components/Pagination';
 
 const money = (val: number | string | undefined) =>
@@ -30,6 +32,15 @@ type PayrollCatalogEntry = BonusCatalogItem | DeductionCatalogItem;
 
 export const PayrollManagement: React.FC = () => {
   const { state, updateState } = useGlobalStore();
+  const { user } = useAuth();
+  const [catalogCapabilities, setCatalogCapabilities] = useState<{
+    payrollCatalogUpdates: boolean;
+    payrollCatalogNameMax: number;
+    payrollUpdates: boolean;
+    payrollApproval: boolean;
+    payrollAnnulment: boolean;
+    payrollDelete: boolean;
+  } | null>(null);
   const [payrolls, setPayrolls] = useState<Payroll[]>(state.payrolls);
   const [employees, setEmployees] = useState<Employee[]>(state.employees);
   const [bonusCatalog, setBonusCatalog] = useState<BonusCatalogItem[]>([]);
@@ -99,8 +110,8 @@ export const PayrollManagement: React.FC = () => {
   const loadPayrollData = async () => {
     try {
       const [remotePayrolls, remoteEmps, remoteBonuses, remoteDeductions] = await Promise.all([
-        hrApi.listPayrolls().catch(() => null),
-        hrApi.listEmployees().catch(() => null),
+        hrApi.listPayrolls(),
+        hrApi.listEmployees(),
         hrApi.listBonuses().catch((error: unknown) => {
           setNotice({ type: 'error', message: error instanceof Error ? `No se pudo cargar el catálogo de bonificaciones: ${error.message}` : 'No se pudo cargar el catálogo de bonificaciones.' });
           return null;
@@ -127,21 +138,17 @@ export const PayrollManagement: React.FC = () => {
           setDeductionAmount(Number(firstActive.valor || 0));
         }
       }
-      if (Array.isArray(remoteEmps) && remoteEmps.length) {
+      if (Array.isArray(remoteEmps)) {
         setEmployees(remoteEmps);
         updateState(draft => {
           draft.employees = remoteEmps;
           return draft;
         });
-        if (!selectedEmpId) {
+        if (!selectedEmpId && remoteEmps.length) {
           const firstActive = remoteEmps.find(e => e.status === 'ACTIVE') || remoteEmps[0];
           setSelectedEmpId(firstActive.id);
           setBaseSalary(Number(firstActive.salary || 500));
         }
-      } else if (state.employees.length && !selectedEmpId) {
-        const firstActive = state.employees.find(e => e.status === 'ACTIVE') || state.employees[0];
-        setSelectedEmpId(firstActive.id);
-        setBaseSalary(Number(firstActive.salary || 500));
       }
 
       if (Array.isArray(remotePayrolls)) {
@@ -158,6 +165,9 @@ export const PayrollManagement: React.FC = () => {
 
   useEffect(() => {
     void loadPayrollData();
+    void systemApi.capabilities()
+      .then(capabilities => setCatalogCapabilities(capabilities))
+      .catch(error => setNotice({ type: 'error', message: error instanceof Error ? error.message : 'No se pudo verificar la configuración de nómina.' }));
   }, []);
 
   // Al cambiar empleado, actualizar sueldo base
@@ -277,6 +287,10 @@ export const PayrollManagement: React.FC = () => {
   const handleSavePayroll = async (e: React.FormEvent) => {
     e.preventDefault();
     if (savingPayroll) return;
+    if (!catalogCapabilities || (editingPayrollId && !catalogCapabilities.payrollUpdates)) {
+      setNotice({ type: 'error', message: 'La edición de roles de nómina no está disponible en esta configuración.' });
+      return;
+    }
     if (!selectedEmpId) {
       setNotice({ type: 'error', message: 'Selecciona un colaborador para preparar el rol de pagos.' });
       return;
@@ -433,8 +447,12 @@ export const PayrollManagement: React.FC = () => {
     const form = catalogForms[kind];
     const name = form.nombre.trim();
     const amount = Number(form.valor);
-    if (name.length < 3 || name.length > 60 || !Number.isFinite(amount) || amount < 0 || amount > 50000) {
-      setNotice({ type: 'error', message: 'Ingresa un nombre de 3 a 60 caracteres y un valor entre $0 y $50,000.' });
+    if (!catalogCapabilities) {
+      setNotice({ type: 'error', message: 'No se pudo verificar la configuración de nómina.' });
+      return;
+    }
+    if (name.length < 3 || name.length > catalogCapabilities.payrollCatalogNameMax || !Number.isFinite(amount) || amount < 0 || amount > 50000) {
+      setNotice({ type: 'error', message: `Ingresa un nombre de 3 a ${catalogCapabilities.payrollCatalogNameMax} caracteres y un valor entre $0 y $50,000.` });
       return;
     }
 
@@ -518,14 +536,14 @@ export const PayrollManagement: React.FC = () => {
             <p>{activeCount} activos · {items.length} en total</p>
           </div>
         </div>
-        <form onSubmit={event => void handleSaveCatalog(kind, event)}>
+        {canPerform(user, 'TALENTO_HUMANO', 'CREAR') && <form onSubmit={event => void handleSaveCatalog(kind, event)}>
           <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 130px auto', gap: '9px', alignItems: 'end' }}>
             <label className="form-group">
               Nombre del concepto
               <input
                 className="input"
                 value={catalogForms[kind].nombre}
-                maxLength={60}
+                maxLength={catalogCapabilities?.payrollCatalogNameMax ?? 40}
                 onChange={event => setCatalogForms(current => ({
                   ...current,
                   [kind]: { ...current[kind], nombre: event.target.value },
@@ -550,7 +568,7 @@ export const PayrollManagement: React.FC = () => {
               />
             </label>
             <div style={{ display: 'flex', gap: '7px', marginBottom: '13px' }}>
-              <button type="submit" className="btn btn-primary" disabled={savingCatalog !== null}>
+              <button type="submit" className="btn btn-primary" disabled={savingCatalog !== null || !catalogCapabilities}>
                 <Plus size={15} /> {editing ? 'Guardar' : 'Crear'}
               </button>
               {editing && (
@@ -567,7 +585,8 @@ export const PayrollManagement: React.FC = () => {
               )}
             </div>
           </div>
-        </form>
+        </form>}
+        {catalogCapabilities && !catalogCapabilities.payrollCatalogUpdates && <p className="helper-text">La edición y reactivación de conceptos aún no están disponibles en PostgreSQL.</p>}
         <div className="table-scroll">
           <table>
             <thead><tr><th>Código</th><th>Concepto</th><th>Valor</th><th>Estado</th><th>Acciones</th></tr></thead>
@@ -580,7 +599,7 @@ export const PayrollManagement: React.FC = () => {
                   <td><span className={`status-badge ${item.estado === 'ACT' ? 'status-activo' : 'status-inactivo'}`}>{item.estado === 'ACT' ? 'Activo' : 'Inactivo'}</span></td>
                   <td>
                     <div style={{ display: 'flex', gap: '6px' }}>
-                      <button
+                      {catalogCapabilities?.payrollCatalogUpdates && canPerform(user, 'TALENTO_HUMANO', 'CREAR') && <button
                         type="button"
                         className="btn btn-outline"
                         title="Editar"
@@ -588,9 +607,9 @@ export const PayrollManagement: React.FC = () => {
                         onClick={() => handleEditCatalog(kind, item)}
                       >
                         <Pencil size={14} />
-                      </button>
+                      </button>}
                       {item.estado === 'ACT' ? (
-                        <button
+                        canPerform(user, 'TALENTO_HUMANO', 'ANULAR') && <button
                           type="button"
                           className="btn btn-outline"
                           title="Desactivar"
@@ -601,7 +620,7 @@ export const PayrollManagement: React.FC = () => {
                           <Trash2 size={14} />
                         </button>
                       ) : (
-                        <button
+                        catalogCapabilities?.payrollCatalogUpdates && canPerform(user, 'TALENTO_HUMANO', 'CREAR') && <button
                           type="button"
                           className="btn btn-outline"
                           title="Activar"
@@ -633,7 +652,7 @@ export const PayrollManagement: React.FC = () => {
         <div>
           <span className="eyebrow">TALENTO HUMANO Y COMPENSACIONES</span>
           <h1>Gestión de Roles de Pago</h1>
-          <p>Preparación transaccional línea por línea: catálogo de BONIFICACIONES, DESCUENTOS, periodos PAGOS e impacto contable automático.</p>
+          <p>Preparación transaccional línea por línea: catálogo de BONIFICACIONES, DESCUENTOS y periodos PAGOS. La aprobación contable no está disponible en PostgreSQL.</p>
         </div>
       </div>
 
@@ -667,7 +686,7 @@ export const PayrollManagement: React.FC = () => {
       </div>
 
       {/* Formulario Transaccional de Preparación */}
-      <section className="card" style={{ padding: '20px', marginBottom: '24px' }}>
+      {canPerform(user, 'TALENTO_HUMANO', 'CREAR') && <section className="card" style={{ padding: '20px', marginBottom: '24px' }}>
         <div className="section-heading" style={{ marginBottom: '16px' }}>
           <div>
             <h2 className="section-title" style={{ margin: 0 }}>Preparar Rol de Pago Individual</h2>
@@ -986,7 +1005,7 @@ export const PayrollManagement: React.FC = () => {
               <button
                 type="submit"
                 className="btn btn-primary"
-                disabled={savingPayroll}
+                disabled={savingPayroll || !catalogCapabilities}
                 style={{ padding: '12px 24px', fontSize: '0.95rem' }}
               >
                 <Calculator size={18} /> {savingPayroll ? 'Guardando...' : editingPayrollId ? 'Guardar cambios' : 'Generar Rol de Pago (PAGOS)'}
@@ -999,7 +1018,7 @@ export const PayrollManagement: React.FC = () => {
             </div>
           </div>
         </form>
-      </section>
+      </section>}
 
       {/* Tabla Maestra de Roles de Pago */}
       <section className="card">
@@ -1007,7 +1026,9 @@ export const PayrollManagement: React.FC = () => {
           <div>
             <h2 className="section-title">Historial de Roles de Pago Generados (PAGOS + PAGxEMP)</h2>
             <p style={{ margin: 0, fontSize: '0.85rem', color: '#6b7280' }}>
-              Los roles aprobados transfieren automáticamente su importe al Libro Diario contable mediante trigger SQL.
+              {catalogCapabilities?.payrollApproval
+                ? 'Los roles aprobados transfieren su importe al Libro Diario contable mediante trigger SQL.'
+                : 'Los roles se guardan ABI; la aprobación y su impacto contable siguen bloqueados en esta configuración.'}
             </p>
           </div>
         </div>
@@ -1056,7 +1077,7 @@ export const PayrollManagement: React.FC = () => {
                     </td>
                     <td>
                       <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
-                        <button
+                        {canPerform(user, 'TALENTO_HUMANO', 'VER') && <button
                           type="button"
                           className="btn btn-outline"
                           style={{ padding: '4px 8px', fontSize: '0.75rem' }}
@@ -1064,11 +1085,11 @@ export const PayrollManagement: React.FC = () => {
                           title="Inspeccionar desglose línea por línea"
                         >
                           <Eye size={13} /> Desglose
-                        </button>
+                        </button>}
 
                         {p.status === 'ABI' && (
                           <>
-                            <button
+                            {catalogCapabilities?.payrollUpdates && canPerform(user, 'TALENTO_HUMANO', 'CREAR') && <button
                               type="button"
                               className="btn btn-outline"
                               style={{ padding: '4px 8px', fontSize: '0.75rem' }}
@@ -1077,8 +1098,8 @@ export const PayrollManagement: React.FC = () => {
                               disabled={processingPayrollId !== null || savingPayroll}
                             >
                               <Pencil size={13} /> Editar
-                            </button>
-                            <button
+                            </button>}
+                            {catalogCapabilities?.payrollDelete && canPerform(user, 'TALENTO_HUMANO', 'ANULAR') && <button
                               type="button"
                               className="btn btn-outline"
                               style={{ padding: '4px 8px', fontSize: '0.75rem', color: '#dc2626', borderColor: '#fca5a5' }}
@@ -1087,8 +1108,8 @@ export const PayrollManagement: React.FC = () => {
                               disabled={processingPayrollId !== null || savingPayroll}
                             >
                               <Trash2 size={13} /> Eliminar
-                            </button>
-                            <button
+                            </button>}
+                            {catalogCapabilities?.payrollApproval && canPerform(user, 'TALENTO_HUMANO', 'APROBAR') && <button
                               type="button"
                               className="btn btn-outline"
                               style={{ padding: '4px 8px', fontSize: '0.75rem', color: '#059669', borderColor: '#6ee7b7' }}
@@ -1097,8 +1118,8 @@ export const PayrollManagement: React.FC = () => {
                               disabled={processingPayrollId !== null || savingPayroll}
                             >
                               Aprobar
-                            </button>
-                            <button
+                            </button>}
+                            {catalogCapabilities?.payrollAnnulment && canPerform(user, 'TALENTO_HUMANO', 'ANULAR') && <button
                               type="button"
                               className="btn btn-outline"
                               style={{ padding: '4px 8px', fontSize: '0.75rem', color: '#dc2626', borderColor: '#fca5a5' }}
@@ -1107,7 +1128,7 @@ export const PayrollManagement: React.FC = () => {
                               disabled={processingPayrollId !== null || savingPayroll}
                             >
                               Anular
-                            </button>
+                            </button>}
                           </>
                         )}
                       </div>
