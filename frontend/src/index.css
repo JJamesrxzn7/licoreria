@@ -24,8 +24,8 @@ body { margin: 0; min-width: 320px; min-height: 100vh; background: var(--marfil)
 button, input, select, textarea { font: inherit; }
 button { color: inherit; }
 
-.app-shell { display: flex; min-height: 100vh; }
-.sidebar { width: 254px; flex: 0 0 254px; min-height: 100vh; background: var(--verde-oscuro); color: #f9f7f0; display: flex; flex-direction: column; transition: width .2s, flex-basis .2s; z-index: 20; }
+.app-shell { display: flex; height: 100vh; overflow: hidden; }
+.sidebar { width: 254px; flex: 0 0 254px; height: 100vh; overflow: hidden; background: var(--verde-oscuro); color: #f9f7f0; display: flex; flex-direction: column; transition: width .2s, flex-basis .2s; z-index: 20; }
 .brand { height: 78px; display: flex; align-items: center; gap: 11px; padding: 0 17px; border-bottom: 1px solid rgba(255,255,255,.1); }
 .brand-mark { display: grid; place-items: center; width: 38px; height: 38px; border-radius: 12px; color: #fff; background: var(--borgona); }
 .brand-copy { display: flex; flex: 1; min-width: 0; flex-direction: column; gap: 2px; }
@@ -50,7 +50,7 @@ button { color: inherit; }
 .sidebar-collapsed .nav-link { justify-content: center; padding: 10px; }
 .sidebar-collapsed .sidebar-footer { justify-content: center; padding: 18px 0; }
 
-.main-content { flex: 1; min-width: 0; }
+.main-content { flex: 1; min-width: 0; height: 100vh; overflow-y: auto; }
 .topbar { position: sticky; top: 0; z-index: 10; height: 66px; display: flex; align-items: center; justify-content: space-between; padding: 0 32px; border-bottom: 1px solid var(--border); background: rgba(255,255,255,.92); backdrop-filter: blur(12px); }
 .breadcrumb { color: var(--text-muted); font-size: 12px; }
 .breadcrumb span { padding: 0 8px; color: #bbb9b1; }

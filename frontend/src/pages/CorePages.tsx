@@ -8,11 +8,11 @@ import { PaginationControls, usePagination } from '../components/Pagination';
 const money = (value: number) => `$${value.toFixed(2)}`;
 
 export const Dashboard = () => {
-  const { state, updateState, activeSite } = useGlobalStore();
+  const { state, updateState } = useGlobalStore();
   const [taxInput, setTaxInput] = useState(String(state.settings.taxRate));
   const [pendingPurchases, setPendingPurchases] = useState<number | null>(null);
   const [purchaseLoadError, setPurchaseLoadError] = useState('');
-  const [siteSummary, setSiteSummary] = useState<{
+  const [allSites, setAllSites] = useState<Record<string, {
     siteId: string;
     cityBadge: string;
     greetingTitle: string;
@@ -25,7 +25,8 @@ export const Dashboard = () => {
     customersCount: number;
     suppliersCount: number;
     recentInvoices: Array<{ id: string; cliente: string; fecha: string; total: number; estado: string }>;
-  } | null>(null);
+  }>>({});
+
   const grossSales = state.invoices.filter(invoice => invoice.status !== 'ANU').reduce((sum, invoice) => sum + invoice.total, 0);
   const lowStock = state.products.filter(product => product.status === 'ACTIVE' && product.stock <= product.minStock);
   const totalStock = state.products.filter(product => product.status === 'ACTIVE').reduce((sum, product) => sum + product.stock, 0);
@@ -42,11 +43,21 @@ export const Dashboard = () => {
   useEffect(() => {
     const isGh = typeof window !== 'undefined' && window.location.hostname.endsWith('github.io');
     const apiBase = (import.meta.env.VITE_API_URL?.trim() || (isGh ? 'http://127.0.0.1:8000' : `http://${window.location.hostname}:8000`)).replace(/\/$/, '');
-    fetch(`${apiBase}/api/arquitectura/sede-resumen/${activeSite}`)
-      .then(res => (res.ok ? res.json() : null))
-      .then(data => { if (data) setSiteSummary(data); })
-      .catch(() => setSiteSummary(null));
-  }, [activeSite]);
+    Promise.all(
+      (['QUITO', 'GUAYAQUIL', 'CUENCA_CLOUD'] as const).map(s =>
+        fetch(`${apiBase}/api/arquitectura/sede-resumen/${s}`)
+          .then(res => (res.ok ? res.json() : null))
+          .then(data => [s, data] as const)
+          .catch(() => [s, null] as const)
+      )
+    ).then(entries => {
+      const map: typeof allSites = {};
+      for (const [k, v] of entries) {
+        if (v) map[k] = v;
+      }
+      setAllSites(map);
+    });
+  }, []);
 
   const chartDays = useMemo(() => Array.from({ length: 7 }, (_, offset) => {
     const date = new Date();
@@ -64,20 +75,88 @@ export const Dashboard = () => {
     updateState(draft => { draft.settings.taxRate = value; return draft; });
   };
 
+  const quito = allSites.QUITO;
+  const gye = allSites.GUAYAQUIL;
+  const cue = allSites.CUENCA_CLOUD;
+
   return (
     <div>
       <div className="page-heading">
         <div>
-          <span className="eyebrow">PANEL DE CONTROL · {siteSummary ? siteSummary.engineInfo : 'CLÚSTER MULTI-SITIO'}</span>
-          <h1>{siteSummary ? siteSummary.greetingTitle : 'Buenos días, equipo'}</h1>
-          <p>{siteSummary ? siteSummary.greetingSubtitle : 'Resumen operativo de La Cava en tiempo real.'}</p>
+          <span className="eyebrow">PANEL DE CONTROL NACIONAL · CLÚSTER DISTRIBUIDO LA CAVA</span>
+          <h1>Buenos días, equipo</h1>
+          <p>Consolidado operativo en tiempo real e identidad propia de las 3 sucursales regionales (Quito, Guayaquil y Cuenca).</p>
         </div>
-        <span className="demo-badge">{siteSummary ? siteSummary.cityBadge : 'Quito, Ecuador'}</span>
+        <span className="demo-badge">3 Sedes Conectadas · 6 Bases de Datos</span>
       </div>
+
+      {/* IDENTIDAD CARACTERÍSTICA DE CADA SUCURSAL (SIN TENER QUE CAMBIAR MANUALMENTE EN LA INTERFAZ) */}
+      <div className="grid-3" style={{ marginBottom: '18px' }}>
+        <article className="card" style={{ marginBottom: 0, borderTop: '4px solid #782c3e', background: '#faf9f6' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+            <span className="badge badge-ANU" style={{ background: '#fbf3f0', color: '#782c3e', fontSize: '10px' }}>
+              SEDE MATRIZ · SIERRA NORTE (UIO)
+            </span>
+            <code style={{ fontSize: '10.5px', color: '#183a31', fontWeight: 700 }}>PC Escritorio · :3307 / :27017 / :3308</code>
+          </div>
+          <h3 style={{ fontFamily: "'Playfair Display', Georgia, serif", fontSize: '17px', margin: '0 0 4px', color: '#25251f' }}>
+            Quito — Cava de Altura & Reserva
+          </h3>
+          <p style={{ fontSize: '11.5px', color: '#787970', margin: '0 0 10px' }}>
+            <strong>Especialidad característica:</strong> Vinos Gran Reserva, Whisky Single Malt Escocés, Centro Contable Matriz y 3 BDs (OLTP + MongoDB + Paralela Hash).
+          </p>
+          <div style={{ display: 'flex', justifyContent: 'space-between', borderTop: '1px solid #e9e6de', paddingTop: '9px', fontSize: '11.5px' }}>
+            <span><strong>Ventas UIO:</strong> {money(quito ? quito.salesTotal : grossSales)}</span>
+            <span><strong>Stock UIO:</strong> {quito ? quito.stockUnits : totalStock} bot.</span>
+            <span><strong>Clientes:</strong> {quito ? quito.customersCount : 7}</span>
+          </div>
+        </article>
+
+        <article className="card" style={{ marginBottom: 0, borderTop: '4px solid #183a31', background: '#faf9f6' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+            <span className="badge badge-APR" style={{ fontSize: '10px' }}>
+              SUCURSAL LITORAL · PUERTO PRINCIPAL (GYE)
+            </span>
+            <code style={{ fontSize: '10.5px', color: '#183a31', fontWeight: 700 }}>Laptop · :3306 OLTP / :3309 DWH</code>
+          </div>
+          <h3 style={{ fontFamily: "'Playfair Display', Georgia, serif", fontSize: '17px', margin: '0 0 4px', color: '#25251f' }}>
+            Guayaquil — Hub Marítimo & DWH
+          </h3>
+          <p style={{ fontSize: '11.5px', color: '#787970', margin: '0 0 10px' }}>
+            <strong>Especialidad característica:</strong> Desaduanización SENAE Puerto Marítimo, Cervecería Nacional, Rones Caribeños y Data Warehouse Estrella Power BI.
+          </p>
+          <div style={{ display: 'flex', justifyContent: 'space-between', borderTop: '1px solid #e9e6de', paddingTop: '9px', fontSize: '11.5px' }}>
+            <span><strong>Ventas GYE:</strong> {money(gye ? gye.salesTotal : 2162.0)}</span>
+            <span><strong>Stock GYE:</strong> {gye ? gye.stockUnits : 1560} bot.</span>
+            <span><strong>Clientes:</strong> {gye ? gye.customersCount : 5}</span>
+          </div>
+        </article>
+
+        <article className="card" style={{ marginBottom: 0, borderTop: '4px solid #a96b16', background: '#faf9f6' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+            <span className="badge badge-ABI" style={{ fontSize: '10px' }}>
+              SUCURSAL AUSTRAL · NUBE DBaaS (CUE / LJA)
+            </span>
+            <code style={{ fontSize: '10.5px', color: '#183a31', fontWeight: 700 }}>Supabase Cloud · :5432 PG18</code>
+          </div>
+          <h3 style={{ fontFamily: "'Playfair Display', Georgia, serif", fontSize: '17px', margin: '0 0 4px', color: '#25251f' }}>
+            Cuenca & Loja — Destilerías del Sur
+          </h3>
+          <p style={{ fontSize: '11.5px', color: '#787970', margin: '0 0 10px' }}>
+            <strong>Especialidad característica:</strong> Destilerías tradicionales del Azuay y Loja (Aguardiente Zhumir, Cristal, Ron San Miguel, Cantaclaro) en Cloud DBaaS.
+          </p>
+          <div style={{ display: 'flex', justifyContent: 'space-between', borderTop: '1px solid #e9e6de', paddingTop: '9px', fontSize: '11.5px' }}>
+            <span><strong>Ventas CUE:</strong> {money(cue ? cue.salesTotal : 2104.5)}</span>
+            <span><strong>Stock CUE:</strong> {cue ? cue.stockUnits : 1499} bot.</span>
+            <span><strong>Clientes:</strong> {cue ? cue.customersCount : 6}</span>
+          </div>
+        </article>
+      </div>
+
       <div className="metric-grid">
-        <article className="metric-card"><div className="metric-icon metric-burgundy"><ArrowUpRight size={19} /></div><span>Ventas registradas ({activeSite === 'QUITO' ? 'Quito :3307' : activeSite === 'GUAYAQUIL' ? 'Guayaquil :3308' : 'Cuenca/Loja :5432'})</span><strong>{money(siteSummary ? siteSummary.salesTotal : grossSales)}</strong><small>{siteSummary ? siteSummary.invoicesCount : state.invoices.length} facturas en esta sede</small></article>
-        <article className="metric-card"><div className="metric-icon metric-green"><Wine size={19} /></div><span>Unidades en bodega ({activeSite === 'QUITO' ? 'Quito :3307' : activeSite === 'GUAYAQUIL' ? 'Costa :3308/:3309' : 'Austral :5432'})</span><strong>{siteSummary ? siteSummary.stockUnits : totalStock}</strong><small>{siteSummary ? siteSummary.productsCount : state.products.length} referencias de licor</small></article>
-        <article className="metric-card"><div className="metric-icon metric-amber"><ArrowDownToLine size={19} /></div><span>{siteSummary ? 'Clientes del Fragmento Regional' : 'Alertas de stock'}</span><strong>{siteSummary ? siteSummary.customersCount : lowStock.length}</strong><small>{siteSummary ? `${siteSummary.suppliersCount} proveedores regionales` : 'Productos en mínimo o agotados'}</small></article>
+        <article className="metric-card"><div className="metric-icon metric-burgundy"><ArrowUpRight size={19} /></div><span>Ventas registradas</span><strong>{money(grossSales)}</strong><small>{state.invoices.length} facturas registradas</small></article>
+        <article className="metric-card"><div className="metric-icon metric-green"><Wine size={19} /></div><span>Unidades en bodega</span><strong>{totalStock}</strong><small>{state.products.length} referencias de licor</small></article>
+        <article className="metric-card"><div className="metric-icon metric-amber"><ArrowDownToLine size={19} /></div><span>Alertas de stock</span><strong>{lowStock.length}</strong><small>Productos en mínimo o agotados</small></article>
         <article className="metric-card"><div className="metric-icon metric-neutral"><Users size={19} /></div><span>Compras por preparar</span><strong>{pendingPurchases ?? '—'}</strong><small>{purchaseLoadError || 'Órdenes ABI registradas'}</small></article>
       </div>
       <div className="dashboard-grid">
@@ -93,12 +172,10 @@ export const Dashboard = () => {
         </section>
       </div>
       <div className="dashboard-grid lower-grid">
-        <section className="card"><div className="section-heading"><div><h2>Movimientos recientes — {activeSite === 'QUITO' ? 'Sede Quito (:3307)' : activeSite === 'GUAYAQUIL' ? 'Sede Guayaquil (:3308)' : 'Nube Cuenca & Loja (:5432)'}</h2><p>Facturas consultadas en vivo desde el nodo de la sede seleccionada</p></div></div>
+        <section className="card"><div className="section-heading"><div><h2>Movimientos recientes</h2><p>Facturas creadas desde el POS</p></div></div>
           <div className="table-scroll"><table><thead><tr><th>Documento</th><th>Cliente</th><th>Fecha</th><th>Total</th><th>Estado</th></tr></thead><tbody>
-            {siteSummary && siteSummary.recentInvoices.length > 0
-              ? siteSummary.recentInvoices.map(inv => <tr key={inv.id}><td>{inv.id}</td><td>{inv.cliente}</td><td>{new Date(inv.fecha).toLocaleDateString('es-EC')}</td><td>{money(Number(inv.total))}</td><td><span className={`badge badge-${inv.estado}`}>{inv.estado}</span></td></tr>)
-              : state.invoices.slice(-5).reverse().map(invoice => <tr key={invoice.id}><td>{invoice.id}</td><td>{state.customers.find(customer => customer.id === invoice.customerId)?.name ?? invoice.customerId}</td><td>{new Date(invoice.date).toLocaleDateString('es-EC')}</td><td>{money(invoice.total)}</td><td><span className={`badge badge-${invoice.status}`}>{invoice.status}</span></td></tr>)}
-            {!state.invoices.length && (!siteSummary || !siteSummary.recentInvoices.length) && <tr><td colSpan={5} className="empty-state">Las ventas que registres aparecerán aquí.</td></tr>}
+            {state.invoices.slice(-5).reverse().map(invoice => <tr key={invoice.id}><td>{invoice.id}</td><td>{state.customers.find(customer => customer.id === invoice.customerId)?.name ?? invoice.customerId}</td><td>{new Date(invoice.date).toLocaleDateString('es-EC')}</td><td>{money(invoice.total)}</td><td><span className={`badge badge-${invoice.status}`}>{invoice.status}</span></td></tr>)}
+            {!state.invoices.length && <tr><td colSpan={5} className="empty-state">Las ventas que registres aparecerán aquí.</td></tr>}
           </tbody></table></div>
         </section>
         <section className="card tax-settings"><div className="section-heading"><div><h2>Configuración de IVA</h2><p>Tasa aplicada a órdenes y facturas</p></div></div>

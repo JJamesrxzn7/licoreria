@@ -37,21 +37,23 @@ PG_PASS = os.getenv("PGPASSWORD", "147852369.MyPost")
 REPLICA_ID = os.getenv("API_REPLICA_ID", "api_lacava_1")
 
 USUARIOS_15_MAP = {
-    "c_jefe": ("rol_jefe", "COMPRAS"),
-    "c_supervisor": ("rol_supervisor", "COMPRAS"),
-    "c_operador": ("rol_operador", "COMPRAS"),
-    "i_jefe": ("rol_jefe", "INVENTARIOS"),
-    "i_supervisor": ("rol_supervisor", "INVENTARIOS"),
-    "i_operador": ("rol_operador", "INVENTARIOS"),
-    "v_jefe": ("rol_jefe", "VENTAS"),
-    "v_supervisor": ("rol_supervisor", "VENTAS"),
-    "v_operador": ("rol_operador", "VENTAS"),
-    "th_jefe": ("rol_jefe", "TALENTO_HUMANO"),
-    "th_supervisor": ("rol_supervisor", "TALENTO_HUMANO"),
-    "th_operador": ("rol_operador", "TALENTO_HUMANO"),
-    "ctbl_jefe": ("rol_jefe", "CONTABILIDAD"),
-    "ctbl_supervisor": ("rol_supervisor", "CONTABILIDAD"),
-    "ctbl_operador": ("rol_operador", "CONTABILIDAD"),
+    "admin": ("rol_jefe", "ADMINISTRACION_GENERAL", "LaCavaAdmin2026*"),
+    "dba": ("rol_jefe", "ARQUITECTURA_Y_DBA", "LaCavaDba2026*"),
+    "c_jefe": ("rol_jefe", "COMPRAS", "ComprasJefe2026*"),
+    "c_supervisor": ("rol_supervisor", "COMPRAS", "ComprasSup2026*"),
+    "c_operador": ("rol_operador", "COMPRAS", "ComprasOpe2026*"),
+    "i_jefe": ("rol_jefe", "INVENTARIOS", "InveJefe2026*"),
+    "i_supervisor": ("rol_supervisor", "INVENTARIOS", "InveSup2026*"),
+    "i_operador": ("rol_operador", "INVENTARIOS", "InveOpe2026*"),
+    "v_jefe": ("rol_jefe", "VENTAS", "VentasJefe2026*"),
+    "v_supervisor": ("rol_supervisor", "VENTAS", "VentasSup2026*"),
+    "v_operador": ("rol_operador", "VENTAS", "VentasOpe2026*"),
+    "th_jefe": ("rol_jefe", "TALENTO_HUMANO", "ThJefe2026*"),
+    "th_supervisor": ("rol_supervisor", "TALENTO_HUMANO", "ThSup2026*"),
+    "th_operador": ("rol_operador", "TALENTO_HUMANO", "ThOpe2026*"),
+    "ctbl_jefe": ("rol_jefe", "CONTABILIDAD", "CtblJefe2026*"),
+    "ctbl_supervisor": ("rol_supervisor", "CONTABILIDAD", "CtblSup2026*"),
+    "ctbl_operador": ("rol_operador", "CONTABILIDAD", "CtblOpe2026*"),
 }
 
 
@@ -269,8 +271,8 @@ def connect_postgres_with_fallback(cfg: dict[str, Any]):
 DBA_PRESETS = {
     "QUITO": [
         {
-            "label": "1. Matriz de 15 Usuarios y 3 Roles RBAC en BD 1 Quito (:3307)",
-            "sql": "SELECT username, rol_bd, modulo_codigo, modulo_nombre, descripcion_cargo, sede_nodo, estado FROM rbac_matriz_15_usuarios ORDER BY modulo_codigo, rol_bd;"
+            "label": "1. Matriz de 17 Usuarios (15 Módulos + DBA + Admin) en BD 1 Quito (:3307)",
+            "sql": "SELECT username, password_plano, rol_bd, rol_aplicacion, modulo_codigo, modulo_nombre, nombre_colaborador, descripcion_cargo, sede_nodo, estado FROM rbac_matriz_15_usuarios ORDER BY modulo_codigo, rol_bd;"
         },
         {
             "label": "2. Operaciones insertadas por Agente 1 (`X-Sede: QUITO`)",
@@ -311,8 +313,8 @@ DBA_PRESETS = {
     ],
     "GUAYAQUIL": [
         {
-            "label": "1. Matriz de 15 Usuarios y 3 Roles RBAC en BD 4 Guayaquil (:3306)",
-            "sql": "SELECT username, rol_bd, modulo_codigo, modulo_nombre, descripcion_cargo, sede_nodo, estado FROM rbac_matriz_15_usuarios ORDER BY modulo_codigo, rol_bd;"
+            "label": "1. Matriz de 17 Usuarios (15 Módulos + DBA + Admin) en BD 4 Guayaquil (:3306)",
+            "sql": "SELECT username, password_plano, rol_bd, rol_aplicacion, modulo_codigo, modulo_nombre, nombre_colaborador, descripcion_cargo, sede_nodo, estado FROM rbac_matriz_15_usuarios ORDER BY modulo_codigo, rol_bd;"
         },
         {
             "label": "2. Operaciones en vivo del Agente 4 (`X-Sede: GUAYAQUIL` :3306)",
@@ -347,8 +349,8 @@ DBA_PRESETS = {
             "sql": "SELECT id_op, sede_header, agente_nombre, usuario_rbac, rol_rbac, modulo, operacion, monto_usd, latencia_wan_ms, fecha_hora FROM operaciones_agentes_cloud ORDER BY id_op DESC LIMIT 15;"
         },
         {
-            "label": "2. Matriz de 15 Usuarios RBAC Replicada en Cuenca Cloud (:5432)",
-            "sql": "SELECT username, rol_bd, modulo_codigo, modulo_nombre, descripcion_cargo, sede_nodo FROM rbac_matriz_15_usuarios ORDER BY modulo_codigo, rol_bd;"
+            "label": "2. Matriz de 17 Usuarios RBAC Replicada en Cuenca Cloud (:5432)",
+            "sql": "SELECT username, password_plano, rol_bd, rol_aplicacion, modulo_codigo, modulo_nombre, nombre_colaborador, descripcion_cargo, sede_nodo FROM rbac_matriz_15_usuarios ORDER BY modulo_codigo, rol_bd;"
         },
         {
             "label": "3. Clientes y Proveedores Australes en Supabase/PostgreSQL (:5432)",
@@ -711,6 +713,7 @@ async def get_dba_global_console(
 class AgentOperationRequest(BaseModel):
     agente: str = Field(default="Agente-IA", description="Nombre del agente transaccional")
     usuario: str = Field(default="v_jefe", description="Uno de los 15 usuarios RBAC")
+    password: str | None = Field(default=None, description="Contraseña del usuario RBAC enviada por el agente")
     modulo: str | None = Field(default=None, description="Módulo C, I, V, TH, Ctbl")
     operacion: str = Field(..., description="Descripción o payload de la operación")
     montoUsd: float = Field(default=0.0, description="Monto asociado en USD")
@@ -734,7 +737,9 @@ def handle_agent_routed_operation(
     cfg = configs[sede_key]
 
     user_clean = payload.usuario.strip().lower()
-    rol_rbac, default_mod = USUARIOS_15_MAP.get(user_clean, ("rol_operador", "VENTAS"))
+    rol_rbac, default_mod, expected_pw = USUARIOS_15_MAP.get(user_clean, ("rol_operador", "VENTAS", ""))
+    if payload.password and expected_pw and payload.password != expected_pw:
+        raise HTTPException(status_code=401, detail=f"Credenciales RBAC inválidas para el usuario '{user_clean}'.")
     modulo_final = (payload.modulo or default_mod).strip().upper()
 
     t0 = time.perf_counter()

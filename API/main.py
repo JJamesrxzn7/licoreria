@@ -5223,7 +5223,7 @@ def configurar_administrador_inicial(payload: InitialAdminSetupInput):
             """
             SELECT id_Rol
             FROM ROLES
-            WHERE LOWER(TRIM(rol_Nombre)) IN ('admin', 'administrador', 'superadministrador')
+            WHERE LOWER(TRIM(rol_Nombre)) IN ('admin', 'administrador', 'superadministrador', 'dba', 'dba_arquitecto')
               AND (ESTADO_ROL = 'ACT' OR ESTADO_ROL IS NULL)
             ORDER BY id_Rol
             LIMIT 1
@@ -5470,7 +5470,7 @@ def require_user_manager(user_id: str = Depends(get_authenticated_user)) -> str:
               AND ur.ESTADO_UxR = 'ACT'
               AND r.ESTADO_ROL = 'ACT'
               AND (
-                  LOWER(r.rol_Nombre) IN ('admin', 'administrador', 'superadministrador')
+                  LOWER(r.rol_Nombre) IN ('admin', 'administrador', 'superadministrador', 'dba', 'dba_arquitecto')
                   OR LOWER(r.rol_Nombre) = 'jefe_talento_humano'
                   OR EXISTS (
                       SELECT 1
@@ -5522,8 +5522,8 @@ def require_administrator(user_id: str = Depends(get_authenticated_user)) -> str
               AND ur.ESTADO_UxR = 'ACT'
               AND r.ESTADO_ROL = 'ACT'
               AND (
-                  r.id_Rol = 'ROL-ADMIN'
-                  OR LOWER(TRIM(r.rol_Nombre)) IN ('admin', 'administrador', 'superadministrador')
+                  r.id_Rol IN ('ROL-ADMIN', 'ROL-ADM', 'ROL-DBA')
+                  OR LOWER(TRIM(r.rol_Nombre)) IN ('admin', 'administrador', 'superadministrador', 'dba', 'dba_arquitecto')
               )
             LIMIT 1
             """,
@@ -5608,6 +5608,8 @@ MODULE_TO_ROUTES_MAP = {
 ALL_FRONTEND_ROUTES = [
     "dashboard", "pos", "sales", "customers", "adjustments",
     "receptions", "deliveries", "pos_orders", "suppliers",
+    "dashboard", "architecture", "pos", "sales", "customers", "adjustments",
+    "receptions", "deliveries", "pos_orders", "suppliers",
     "products", "units", "employees", "payroll", "audit",
     "accounting", "bancos", "cost_centers", "reports", "usuarios"
 ]
@@ -5623,12 +5625,18 @@ def rutas_permitidas(
     role_ids: list[str], role_names: list[str], permissions: list[dict]
 ) -> list[str]:
     permission_ids = [str(permission["id_Permiso"]).strip() for permission in permissions]
-    is_admin = "ROL-ADMIN" in role_ids or any(
+    is_admin = "ROL-ADMIN" in role_ids or "ROL-ADM" in role_ids or any(
         str(role).strip().lower() in {"admin", "administrador", "superadministrador"}
         for role in role_names
     )
     if is_admin:
         return list(ALL_FRONTEND_ROUTES)
+
+    is_dba = "ROL-DBA" in role_ids or any(
+        "dba" in str(role).strip().lower() for role in role_names
+    )
+    if is_dba:
+        return ["dashboard", "architecture", "audit", "usuarios"]
 
     allowed = {"dashboard"}
     for permission in permissions:
