@@ -8,10 +8,24 @@ import { PaginationControls, usePagination } from '../components/Pagination';
 const money = (value: number) => `$${value.toFixed(2)}`;
 
 export const Dashboard = () => {
-  const { state, updateState } = useGlobalStore();
+  const { state, updateState, activeSite } = useGlobalStore();
   const [taxInput, setTaxInput] = useState(String(state.settings.taxRate));
   const [pendingPurchases, setPendingPurchases] = useState<number | null>(null);
   const [purchaseLoadError, setPurchaseLoadError] = useState('');
+  const [siteSummary, setSiteSummary] = useState<{
+    siteId: string;
+    cityBadge: string;
+    greetingTitle: string;
+    greetingSubtitle: string;
+    engineInfo: string;
+    salesTotal: number;
+    invoicesCount: number;
+    stockUnits: number;
+    productsCount: number;
+    customersCount: number;
+    suppliersCount: number;
+    recentInvoices: Array<{ id: string; cliente: string; fecha: string; total: number; estado: string }>;
+  } | null>(null);
   const grossSales = state.invoices.filter(invoice => invoice.status !== 'ANU').reduce((sum, invoice) => sum + invoice.total, 0);
   const lowStock = state.products.filter(product => product.status === 'ACTIVE' && product.stock <= product.minStock);
   const totalStock = state.products.filter(product => product.status === 'ACTIVE').reduce((sum, product) => sum + product.stock, 0);
@@ -24,6 +38,15 @@ export const Dashboard = () => {
       })
       .catch(error => setPurchaseLoadError(error instanceof Error ? error.message : 'No se pudieron cargar las compras.'));
   }, []);
+
+  useEffect(() => {
+    const isGh = typeof window !== 'undefined' && window.location.hostname.endsWith('github.io');
+    const apiBase = (import.meta.env.VITE_API_URL?.trim() || (isGh ? 'http://127.0.0.1:8000' : `http://${window.location.hostname}:8000`)).replace(/\/$/, '');
+    fetch(`${apiBase}/api/arquitectura/sede-resumen/${activeSite}`)
+      .then(res => (res.ok ? res.json() : null))
+      .then(data => { if (data) setSiteSummary(data); })
+      .catch(() => setSiteSummary(null));
+  }, [activeSite]);
 
   const chartDays = useMemo(() => Array.from({ length: 7 }, (_, offset) => {
     const date = new Date();
@@ -43,11 +66,18 @@ export const Dashboard = () => {
 
   return (
     <div>
-      <div className="page-heading"><div><span className="eyebrow">PANEL DE CONTROL</span><h1>Buenos días, equipo</h1><p>Resumen operativo de La Cava en tiempo real.</p></div><span className="demo-badge">Quito, Ecuador</span></div>
+      <div className="page-heading">
+        <div>
+          <span className="eyebrow">PANEL DE CONTROL · {siteSummary ? siteSummary.engineInfo : 'CLÚSTER MULTI-SITIO'}</span>
+          <h1>{siteSummary ? siteSummary.greetingTitle : 'Buenos días, equipo'}</h1>
+          <p>{siteSummary ? siteSummary.greetingSubtitle : 'Resumen operativo de La Cava en tiempo real.'}</p>
+        </div>
+        <span className="demo-badge">{siteSummary ? siteSummary.cityBadge : 'Quito, Ecuador'}</span>
+      </div>
       <div className="metric-grid">
-        <article className="metric-card"><div className="metric-icon metric-burgundy"><ArrowUpRight size={19} /></div><span>Ventas registradas</span><strong>{money(grossSales)}</strong><small>{state.invoices.length} facturas registradas</small></article>
-        <article className="metric-card"><div className="metric-icon metric-green"><Wine size={19} /></div><span>Unidades en bodega</span><strong>{totalStock}</strong><small>{state.products.length} referencias de licor</small></article>
-        <article className="metric-card"><div className="metric-icon metric-amber"><ArrowDownToLine size={19} /></div><span>Alertas de stock</span><strong>{lowStock.length}</strong><small>Productos en mínimo o agotados</small></article>
+        <article className="metric-card"><div className="metric-icon metric-burgundy"><ArrowUpRight size={19} /></div><span>Ventas registradas ({activeSite === 'QUITO' ? 'Quito :3307' : activeSite === 'GUAYAQUIL' ? 'Guayaquil :3308' : 'Cuenca/Loja :5432'})</span><strong>{money(siteSummary ? siteSummary.salesTotal : grossSales)}</strong><small>{siteSummary ? siteSummary.invoicesCount : state.invoices.length} facturas en esta sede</small></article>
+        <article className="metric-card"><div className="metric-icon metric-green"><Wine size={19} /></div><span>Unidades en bodega ({activeSite === 'QUITO' ? 'Quito :3307' : activeSite === 'GUAYAQUIL' ? 'Costa :3308/:3309' : 'Austral :5432'})</span><strong>{siteSummary ? siteSummary.stockUnits : totalStock}</strong><small>{siteSummary ? siteSummary.productsCount : state.products.length} referencias de licor</small></article>
+        <article className="metric-card"><div className="metric-icon metric-amber"><ArrowDownToLine size={19} /></div><span>{siteSummary ? 'Clientes del Fragmento Regional' : 'Alertas de stock'}</span><strong>{siteSummary ? siteSummary.customersCount : lowStock.length}</strong><small>{siteSummary ? `${siteSummary.suppliersCount} proveedores regionales` : 'Productos en mínimo o agotados'}</small></article>
         <article className="metric-card"><div className="metric-icon metric-neutral"><Users size={19} /></div><span>Compras por preparar</span><strong>{pendingPurchases ?? '—'}</strong><small>{purchaseLoadError || 'Órdenes ABI registradas'}</small></article>
       </div>
       <div className="dashboard-grid">
@@ -63,10 +93,12 @@ export const Dashboard = () => {
         </section>
       </div>
       <div className="dashboard-grid lower-grid">
-        <section className="card"><div className="section-heading"><div><h2>Movimientos recientes</h2><p>Facturas creadas desde el POS</p></div></div>
+        <section className="card"><div className="section-heading"><div><h2>Movimientos recientes — {activeSite === 'QUITO' ? 'Sede Quito (:3307)' : activeSite === 'GUAYAQUIL' ? 'Sede Guayaquil (:3308)' : 'Nube Cuenca & Loja (:5432)'}</h2><p>Facturas consultadas en vivo desde el nodo de la sede seleccionada</p></div></div>
           <div className="table-scroll"><table><thead><tr><th>Documento</th><th>Cliente</th><th>Fecha</th><th>Total</th><th>Estado</th></tr></thead><tbody>
-            {state.invoices.slice(-5).reverse().map(invoice => <tr key={invoice.id}><td>{invoice.id}</td><td>{state.customers.find(customer => customer.id === invoice.customerId)?.name ?? invoice.customerId}</td><td>{new Date(invoice.date).toLocaleDateString('es-EC')}</td><td>{money(invoice.total)}</td><td><span className={`badge badge-${invoice.status}`}>{invoice.status}</span></td></tr>)}
-            {!state.invoices.length && <tr><td colSpan={5} className="empty-state">Las ventas que registres aparecerán aquí.</td></tr>}
+            {siteSummary && siteSummary.recentInvoices.length > 0
+              ? siteSummary.recentInvoices.map(inv => <tr key={inv.id}><td>{inv.id}</td><td>{inv.cliente}</td><td>{new Date(inv.fecha).toLocaleDateString('es-EC')}</td><td>{money(Number(inv.total))}</td><td><span className={`badge badge-${inv.estado}`}>{inv.estado}</span></td></tr>)
+              : state.invoices.slice(-5).reverse().map(invoice => <tr key={invoice.id}><td>{invoice.id}</td><td>{state.customers.find(customer => customer.id === invoice.customerId)?.name ?? invoice.customerId}</td><td>{new Date(invoice.date).toLocaleDateString('es-EC')}</td><td>{money(invoice.total)}</td><td><span className={`badge badge-${invoice.status}`}>{invoice.status}</span></td></tr>)}
+            {!state.invoices.length && (!siteSummary || !siteSummary.recentInvoices.length) && <tr><td colSpan={5} className="empty-state">Las ventas que registres aparecerán aquí.</td></tr>}
           </tbody></table></div>
         </section>
         <section className="card tax-settings"><div className="section-heading"><div><h2>Configuración de IVA</h2><p>Tasa aplicada a órdenes y facturas</p></div></div>

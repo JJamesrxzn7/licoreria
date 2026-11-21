@@ -6,10 +6,11 @@ import {
 } from './types';
 
 const configuredApiUrl = import.meta.env.VITE_API_URL?.trim();
+const isGithubPages = typeof window !== 'undefined' && window.location.hostname.endsWith('github.io');
 const API_BASE_URL = (
   configuredApiUrl
     ? (/^https?:\/\//i.test(configuredApiUrl) ? configuredApiUrl : `https://${configuredApiUrl}`)
-    : `http://${window.location.hostname}:8000`
+    : (isGithubPages ? 'http://127.0.0.1:8000' : `http://${window.location.hostname}:8000`)
 ).replace(/\/$/, '');
 
 export interface PurchaseSupplier {

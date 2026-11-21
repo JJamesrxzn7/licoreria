@@ -9,3 +9,6 @@ dist/
 frontend/dist/
 __pycache__/
 API/__pycache__/
+cluster_nodes/
+data/
+API/data/

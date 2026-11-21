@@ -1,0 +1,146 @@
+# ==============================================================================
+# DOCKER COMPOSE — ARQUITECTURA DE BD vs. ARQUITECTURA DE SI (PIZARRA COMPLETA)
+# Licorería La Cava — Topología Multi-Sitio (Quito, Guayaquil, Cuenca/Loja Cloud)
+# ==============================================================================
+# Este archivo materializa el bloque "Contenedor DOCKER" dibujado en la pizarra:
+# - SEDE QUITO (3 Bases de Datos + 5 Módulos C, I, V, TH, Ctbl):
+#   1. quito-mariadb-3307      -> MariaDB 12.3 (:3307) base `licoreriadatabase`
+#   2. quito-nosql-3307        -> Motor Documental JSON (:3307 `quito_nosql_db` + SQLite JSON)
+#   3. quito-postgres-dwh-5432 -> PostgreSQL 18 (:5432) base `quito_otras_dwh`
+# - SEDE GUAYAQUIL (2 Bases de Datos en Puertos Independientes):
+#   4. guayaquil-mariadb-3308  -> MariaDB 12.3 (:3308) base `licoreria_guayaquil`
+#   5. guayaquil-mariadb-3309  -> MariaDB 12.3 (:3309) base `licoreria_guayaquil_bodega`
+# - SEDE NUBE CUENCA / LOJA (Cloud DB):
+#   6. cuenca-loja-cloud-5432  -> PostgreSQL 18 Cloud DBaaS (:5432 `cloud_cuenca_loja` / Supabase)
+# - CAPAS DEL SISTEMA DE INFORMACIÓN (3-Tier SI):
+#   7. api-fastapi-coordinator -> Middleware FastAPI (:8000) & Coordinador 2PC
+#   8. frontend-react-pos      -> Cliente Web React + Consola DBA (:5173)
+# ==============================================================================
+
+services:
+  # ----------------------------------------------------------------------------
+  # SEDE QUITO (UIO) — NODO 1 & NODO 2: MariaDB SQL (C, I, V, TH, Ctbl) + NoSQL JSON
+  # ----------------------------------------------------------------------------
+  quito-mariadb-3307:
+    image: mariadb:11.4
+    container_name: lacava-quito-sql-nosql-3307
+    restart: unless-stopped
+    environment:
+      MARIADB_ROOT_PASSWORD: ${MARIADB_PASSWORD:-1597.MyHql}
+      MARIADB_DATABASE: licoreriadatabase
+    ports:
+      - "3307:3306"
+    volumes:
+      - ./BaseDeDatos_MariaDB:/docker-entrypoint-initdb.d:ro
+    networks:
+      - red_quito_lan
+      - red_wan_nacional
+
+  # ----------------------------------------------------------------------------
+  # SEDE QUITO (UIO) — NODO 3 & SEDE NUBE CUENCA/LOJA — NODO 6: PostgreSQL 18 (:5432)
+  # Contiene `quito_otras_dwh` (DWH Estrella) y `cloud_cuenca_loja` (Mirror Cloud)
+  # ----------------------------------------------------------------------------
+  quito-postgres-5432:
+    image: postgres:17
+    container_name: lacava-quito-dwh-and-cuenca-cloud-5432
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${PGPASSWORD:-147852369.MyPost}
+      POSTGRES_DB: quito_otras_dwh
+    ports:
+      - "5432:5432"
+    networks:
+      - red_quito_lan
+      - red_cloud_cuenca_loja
+      - red_wan_nacional
+
+  # ----------------------------------------------------------------------------
+  # SEDE GUAYAQUIL (GYE) — NODO 4: MariaDB Instancia Ventas & Clientes Costa (:3308)
+  # ----------------------------------------------------------------------------
+  guayaquil-mariadb-3308:
+    image: mariadb:11.4
+    container_name: lacava-guayaquil-sql1-3308
+    restart: unless-stopped
+    environment:
+      MARIADB_ROOT_PASSWORD: ${MARIADB_PASSWORD:-1597.MyHql}
+      MARIADB_DATABASE: licoreria_guayaquil
+    ports:
+      - "3308:3306"
+    networks:
+      - red_guayaquil_lan
+      - red_wan_nacional
+
+  # ----------------------------------------------------------------------------
+  # SEDE GUAYAQUIL (GYE) — NODO 5: MariaDB Instancia Bodega Puerto & Réplica (:3309)
+  # ----------------------------------------------------------------------------
+  guayaquil-mariadb-3309:
+    image: mariadb:11.4
+    container_name: lacava-guayaquil-bodega2-3309
+    restart: unless-stopped
+    environment:
+      MARIADB_ROOT_PASSWORD: ${MARIADB_PASSWORD:-1597.MyHql}
+      MARIADB_DATABASE: licoreria_guayaquil_bodega
+    ports:
+      - "3309:3306"
+    networks:
+      - red_guayaquil_lan
+      - red_wan_nacional
+
+  # ----------------------------------------------------------------------------
+  # CAPA LÓGICA DE NEGOCIO (MIDDLEWARE FASTAPI & COORDINADOR 2PC — PUERTO :8000)
+  # ----------------------------------------------------------------------------
+  api-fastapi:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: lacava-middleware-fastapi-8000
+    restart: unless-stopped
+    environment:
+      MARIADB_HOST: quito-mariadb-3307
+      MARIADB_PORT: 3306
+      MARIADB_USER: root
+      MARIADB_PASSWORD: ${MARIADB_PASSWORD:-1597.MyHql}
+      MARIADB_DATABASE: licoreriadatabase
+      PGPASSWORD: ${PGPASSWORD:-147852369.MyPost}
+      SUPABASE_SCHEMA_HOST: aws-0-us-east-1.pooler.supabase.com
+      SUPABASE_SCHEMA_PORT: 5432
+    ports:
+      - "8000:8000"
+    depends_on:
+      - quito-mariadb-3307
+      - quito-postgres-5432
+      - guayaquil-mariadb-3308
+      - guayaquil-mariadb-3309
+    networks:
+      - red_quito_lan
+      - red_guayaquil_lan
+      - red_cloud_cuenca_loja
+      - red_wan_nacional
+
+  # ----------------------------------------------------------------------------
+  # CAPA DE PRESENTACIÓN (FRONTEND REACT + CONSOLA DBA — PUERTO :5173)
+  # ----------------------------------------------------------------------------
+  frontend-react:
+    image: node:22-alpine
+    container_name: lacava-frontend-react-5173
+    working_dir: /app
+    volumes:
+      - ./frontend:/app
+    command: sh -c "npm install && npm run dev -- --host 0.0.0.0 --port 5173"
+    ports:
+      - "5173:5173"
+    depends_on:
+      - api-fastapi
+    networks:
+      - red_wan_nacional
+
+networks:
+  red_quito_lan:
+    driver: bridge
+  red_guayaquil_lan:
+    driver: bridge
+  red_cloud_cuenca_loja:
+    driver: bridge
+  red_wan_nacional:
+    driver: bridge

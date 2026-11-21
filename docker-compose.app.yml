@@ -1,0 +1,77 @@
+# ==============================================================================
+# DOCKER COMPOSE — TAREA 2.3 DE LA LAPTOP: ESCALADO HORIZONTAL (`docker-compose.app.yml`)
+# Clúster Híbrido "La Cava" (Nodo Guayaquil + App 3 Réplicas + Balanceador Nginx + Cuenca)
+# ==============================================================================
+# Este archivo define la infraestructura Dockerizada de la Laptop (Máquina 2):
+# 1. `db_gye_dwh` (MariaDB Puerto 3309) -> Esquema Estrella (`fact_ventas`, `dim_sede`, `dim_producto`, `dim_tiempo`) para Power BI.
+# 2. `api_lacava` (FastAPI con `replicas: 3`) -> Demuestra Scale-Out horizontal de la capa de aplicación,
+#    conectándose al Pool de 6 BDs (Quito en `IP_TS_QUITO`, Guayaquil Local `:3306`, DWH `:3309`, Cuenca Supabase `:5432`).
+# 3. `nginx_lb` (Puerto `8080`) -> Balanceador de carga Round-Robin que reparte el tráfico entre las 3 réplicas de la API y sirve el Frontend.
+# 4. `frontend_lacava` -> Interfaz Web de "La Cava" + Consola Global del DBA + Mapa de Topología en Vivo.
+# ==============================================================================
+
+services:
+  # ----------------------------------------------------------------------------
+  # BD 5: GUAYAQUIL DWH (MariaDB Esquema Estrella para Power BI - Puerto 3309)
+  # ----------------------------------------------------------------------------
+  db_gye_dwh:
+    image: mariadb:11.4
+    container_name: db_gye_dwh
+    restart: unless-stopped
+    environment:
+      MARIADB_ROOT_PASSWORD: ${MARIADB_PASSWORD:-1597.MyHql}
+      MARIADB_DATABASE: db_gye_dwh
+    ports:
+      - "3309:3306"
+    volumes:
+      - ./data/gye_dwh_3309:/var/lib/mysql
+    networks:
+      - lacava_cluster_net
+
+  # ----------------------------------------------------------------------------
+  # CAPA DE APLICACIÓN CON ESCALADO HORIZONTAL (SCALE-OUT: 3 RÉPLICAS)
+  # ----------------------------------------------------------------------------
+  api_lacava:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    deploy:
+      replicas: 3
+    env_file:
+      - ./API/.env
+    environment:
+      IP_TS_QUITO: ${IP_TS_QUITO:-100.64.0.1}
+      IP_TS_GUAYAQUIL: ${IP_TS_GUAYAQUIL:-100.64.0.2}
+      BD4_GUAYAQUIL_HOST: host.docker.internal
+      BD4_GUAYAQUIL_PORT: 3306
+      BD5_GUAYAQUIL_DWH_HOST: db_gye_dwh
+      BD5_GUAYAQUIL_DWH_PORT: 3306
+    expose:
+      - "8000"
+    depends_on:
+      - db_gye_dwh
+    networks:
+      - lacava_cluster_net
+
+  # ----------------------------------------------------------------------------
+  # BALANCEADOR DE CARGA NGINX (Round-Robin en Puerto 8080 -> 3 Réplicas API)
+  # Nota: La interfaz Frontend "La Cava" está desplegada en GitHub Pages
+  # (https://jjamesrxzn7.github.io/licoreria) y consume este balanceador vía CORS.
+  # ----------------------------------------------------------------------------
+  nginx_lb:
+    image: nginx:1.27-alpine
+    container_name: nginx_lb
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - api_lacava
+    networks:
+      - lacava_cluster_net
+
+networks:
+  lacava_cluster_net:
+    driver: bridge
