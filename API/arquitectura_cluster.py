@@ -1013,9 +1013,18 @@ class DbaQueryRequest(BaseModel):
 async def execute_dba_query(payload: DbaQueryRequest):
     sql_clean = payload.sql.strip()
     upper_sql = sql_clean.upper()
-    for forbidden in ("DROP DATABASE", "DROP SCHEMA", "SHUTDOWN"):
-        if forbidden in upper_sql:
-            raise HTTPException(status_code=403, detail=f"Comando '{forbidden}' bloqueado por seguridad.")
+    # Modo estrictamente Read-Only (Solo Lectura / Diagnóstico) en la terminal del DBA:
+    # No permite INSERT, UPDATE, DELETE, DROP, ALTER, TRUNCATE, CREATE, REPLACE ni GRANT.
+    import re as _re
+    for forbidden in ("INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "TRUNCATE", "CREATE", "REPLACE", "GRANT", "REVOKE", "SHUTDOWN"):
+        if _re.search(rf"\b{forbidden}\b", upper_sql):
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    f"Operación '{forbidden}' bloqueada: La Terminal del DBA es exclusivamente de "
+                    "SOLO LECTURA y diagnóstico (SELECT, SHOW, DESCRIBE, EXPLAIN, MONGO_COLLECTION)."
+                ),
+            )
 
     if payload.nodeId == "global-federated" or upper_sql.startswith("-- GLOBAL"):
         glob = await get_dba_global_console(sede=None, modulo=None, x_sede=None)

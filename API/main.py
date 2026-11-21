@@ -5636,7 +5636,7 @@ def rutas_permitidas(
         "dba" in str(role).strip().lower() for role in role_names
     )
     if is_dba:
-        return ["dashboard", "architecture", "audit", "usuarios"]
+        return ["architecture", "audit"]
 
     allowed = {"dashboard"}
     for permission in permissions:

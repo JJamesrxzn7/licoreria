@@ -2,8 +2,10 @@ import React, { useEffect, useState, useCallback } from 'react';
 import {
   Server, Database, Terminal, Play, RefreshCw, ShieldCheck, AlertTriangle,
   Layers, Cloud, Activity, CheckCircle2, XCircle, HardDrive, Network,
-  Filter, GitCompare
+  Filter, GitCompare, Lock
 } from 'lucide-react';
+import { useAuth } from '../context/AuthContext';
+import { isDbaUser, isSuperAdmin } from '../rolePermissions';
 
 const configuredApiUrl = import.meta.env.VITE_API_URL?.trim();
 const isGithubPages = typeof window !== 'undefined' && window.location.hostname.endsWith('github.io');
@@ -199,6 +201,8 @@ const BRANCH_IDENTITIES = [
 ];
 
 export const ArchitectureConsole: React.FC = () => {
+  const { user } = useAuth();
+  const isStrictDba = isDbaUser(user) && !isSuperAdmin(user);
   const [activeTab, setActiveTab] = useState<'diagram_vs' | 'global_dba' | 'board' | 'dba_prompt' | 'twopc'>('diagram_vs');
   const [topology, setTopology] = useState<TopologyResponse | null>(null);
   const [loadingTopo, setLoadingTopo] = useState(false);
@@ -423,12 +427,12 @@ export const ArchitectureConsole: React.FC = () => {
       {/* PESTAÑAS CON LOS COLORES BORGOÑA Y VERDE BOSQUE DE LA CAVA */}
       <div style={{ display: 'flex', gap: '9px', marginBottom: '20px', flexWrap: 'wrap' }}>
         {[
-          { id: 'diagram_vs', label: '1. Diagrama Maestro: Arquitectura de BD vs. Arquitectura de SI', icon: GitCompare },
-          { id: 'global_dba', label: '2. Consola Global del DBA (6 BDs Unificadas + Agentes IA)', icon: Filter },
-          { id: 'board', label: '3. Identidad por Sucursal & Mapa de 6 Nodos en Vivo', icon: Network },
-          { id: 'dba_prompt', label: '4. Prompt SQL / MongoDB + 17 Usuarios RBAC', icon: Terminal },
-          { id: 'twopc', label: '5. Concurrencia & Simulador 2PC (Preguntas 4 y 5)', icon: ShieldCheck },
-        ].map(tab => {
+          { id: 'diagram_vs', label: '1. Diagrama Maestro: Arquitectura de BD vs. Arquitectura de SI', icon: GitCompare, show: true },
+          { id: 'dba_prompt', label: '2. Terminal Read-Only del DBA (Consultas para las 3 Sucursales / 6 BDs)', icon: Terminal, show: true },
+          { id: 'global_dba', label: '3. Monitor Global Unificado (6 BDs en Paralelo · Solo Lectura)', icon: Filter, show: true },
+          { id: 'board', label: '4. Identidad por Sucursal & Estado de 6 Nodos en Vivo', icon: Network, show: true },
+          { id: 'twopc', label: '5. Simulador de Escritura 2PC (Exclusivo Admin / Arquitecto)', icon: ShieldCheck, show: !isStrictDba },
+        ].filter(t => t.show).map(tab => {
           const Icon = tab.icon;
           const active = activeTab === tab.id;
           return (
@@ -798,15 +802,21 @@ export const ArchitectureConsole: React.FC = () => {
                 <span className="demo-badge">
                   RÉPLICA QUE RESPONDIÓ: {globalData?.apiReplica || 'api_lacava_1'} · {globalData?.totalExecutionTimeMs ?? 0} ms
                 </span>
-                <button
-                  type="button"
-                  className="btn btn-primary"
-                  onClick={() => void triggerAgentsRoundNow()}
-                  disabled={loadingGlobal}
-                >
-                  <Play size={14} />
-                  Disparar Ronda de Agentes IA Ahora
-                </button>
+                {isStrictDba ? (
+                  <span className="badge badge-APR" style={{ gap: '5px', padding: '6px 11px' }}>
+                    <Lock size={12} /> MODO DBA: SOLO LECTURA (INSERT / UPDATE / DELETE BLOQUEADOS)
+                  </span>
+                ) : (
+                  <button
+                    type="button"
+                    className="btn btn-primary"
+                    onClick={() => void triggerAgentsRoundNow()}
+                    disabled={loadingGlobal}
+                  >
+                    <Play size={14} />
+                    Disparar Ronda de Agentes IA Ahora
+                  </button>
+                )}
               </div>
             </div>
 
@@ -1082,12 +1092,15 @@ export const ArchitectureConsole: React.FC = () => {
               <div>
                 <h2 style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                   <Terminal size={19} color="#782c3e" />
-                  Prompt SQL & MongoDB del DBA — 6 BDs y Matriz de 17 Usuarios (`15 Módulos + DBA + Admin`)
+                  Terminal de Diagnóstico Read-Only del DBA — Consultas Multi-Sucursal (Quito, Guayaquil y Cuenca)
                 </h2>
                 <p>
-                  Selecciona cualquiera de las 6 BDs (<code>:3307</code>, <code>:27017</code>, <code>:3308</code>, <code>:3306</code>, <code>:3309</code>, <code>:5432</code>) para consultar en vivo sus tablas, usuarios RBAC, particiones HASH o colecciones MongoDB.
+                  Modo seguro de <strong>SOLO LECTURA</strong>: Permite ejecutar <code>SELECT</code>, <code>SHOW</code>, <code>DESCRIBE</code>, <code>EXPLAIN</code> y <code>MONGO_COLLECTION</code> en las 6 BDs. Comandos <code>INSERT</code>, <code>UPDATE</code>, <code>DELETE</code> y <code>DROP</code> están bloqueados.
                 </p>
               </div>
+              <span className="badge badge-APR" style={{ gap: '5px', padding: '6px 11px' }}>
+                <Lock size={12} /> READ-ONLY TERMINAL
+              </span>
             </div>
 
             <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '14px' }}>
@@ -1116,6 +1129,24 @@ export const ArchitectureConsole: React.FC = () => {
                   </button>
                 );
               })}
+              <button
+                type="button"
+                onClick={() => {
+                  const fedSql = "-- GLOBAL (Consulta Federada Read-Only de las 3 Sucursales: Quito + Guayaquil + Cuenca)\nSELECT id, origen_nodo, sede, modulo, usuario_rbac, rol_rbac, detalle, monto_usd, fecha_hora FROM vista_global_6_bds;";
+                  setSelectedNodeId('global-federated');
+                  setSqlText(fedSql);
+                  void runDbaQuery('global-federated', fedSql);
+                }}
+                className="btn"
+                style={{
+                  background: selectedNodeId === 'global-federated' ? '#782c3e' : '#fbf3f0',
+                  color: selectedNodeId === 'global-federated' ? '#ffffff' : '#782c3e',
+                  border: '1px solid #ead6cf',
+                }}
+              >
+                <Network size={13} />
+                Consultar las 3 Sucursales Unidas (Quito + Guayaquil + Cuenca)
+              </button>
             </div>
 
             {currentNode && currentNode.presets.length > 0 && (

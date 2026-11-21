@@ -129,8 +129,11 @@ const AppContent = () => {
   }
 
   const allowedNavItems = navItems.filter(item => {
+    if (isDba && !isAdministrator) {
+      return item.id === 'architecture' || item.id === 'audit';
+    }
     if (item.id === 'architecture') {
-      return isAdministrator || isDba || user?.allowedRoutes.includes('architecture');
+      return isAdministrator || isDba;
     }
     if (item.id === 'audit') {
       return isAdministrator || isDba;
