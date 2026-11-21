@@ -558,15 +558,24 @@ export const ArchitectureConsole: React.FC = () => {
                       { id: 'quito-otras', x: 'QUITO_PARALELA', title: 'BD 3 · Paralela', sub: 'MariaDB :3308', desc: 'PARTITION BY HASH(id) PARTITIONS 4 (Speed-up)' },
                     ].map(b => {
                       const st = getNodeBadge(b.x);
+                      const isOnline = st.status === 'ONLINE';
                       return (
                         <div
                           key={b.id}
                           onClick={() => handleSelectNodeForDba(b.id)}
-                          style={{ border: '1px solid #e9e6de', borderRadius: '8px', padding: '8px', background: '#faf9f6', cursor: 'pointer' }}
+                          style={{
+                            border: isOnline ? '1px solid #e9e6de' : '2px solid #9a3937',
+                            borderRadius: '8px',
+                            padding: '8px',
+                            background: isOnline ? '#faf9f6' : '#f8e9e8',
+                            cursor: 'pointer',
+                          }}
                         >
                           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                            <strong style={{ fontSize: '11px', color: '#183a31' }}>{b.title}</strong>
-                            <span style={{ fontSize: '9px', fontWeight: 700, color: '#267154' }}>● {st.ms}</span>
+                            <strong style={{ fontSize: '11px', color: isOnline ? '#183a31' : '#9a3937' }}>{b.title}</strong>
+                            <span style={{ fontSize: '9px', fontWeight: 800, color: isOnline ? '#267154' : '#9a3937' }}>
+                              ● {isOnline ? `ONLINE · ${st.ms}` : 'CAÍDA / OFFLINE'}
+                            </span>
                           </div>
                           <div style={{ fontSize: '10.5px', fontWeight: 700, color: '#782c3e', fontFamily: 'monospace', marginTop: '2px' }}>{b.sub}</div>
                           <div style={{ fontSize: '9.5px', color: '#787970', marginTop: '3px' }}>{b.desc}</div>
@@ -590,15 +599,24 @@ export const ArchitectureConsole: React.FC = () => {
                       { id: 'guayaquil-replica', x: 'GUAYAQUIL_DWH', title: 'BD 5 · DWH Estrella (OLAP)', sub: 'MariaDB :3309', desc: 'db_gye_dwh (fact_ventas, dim_sede, dim_producto, dim_tiempo)' },
                     ].map(b => {
                       const st = getNodeBadge(b.x);
+                      const isOnline = st.status === 'ONLINE';
                       return (
                         <div
                           key={b.id}
                           onClick={() => handleSelectNodeForDba(b.id)}
-                          style={{ border: '1px solid #e9e6de', borderRadius: '8px', padding: '9px', background: '#faf9f6', cursor: 'pointer' }}
+                          style={{
+                            border: isOnline ? '1px solid #e9e6de' : '2px solid #9a3937',
+                            borderRadius: '8px',
+                            padding: '9px',
+                            background: isOnline ? '#faf9f6' : '#f8e9e8',
+                            cursor: 'pointer',
+                          }}
                         >
                           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                            <strong style={{ fontSize: '11.5px', color: '#183a31' }}>{b.title}</strong>
-                            <span style={{ fontSize: '9.5px', fontWeight: 700, color: '#267154' }}>● {st.ms}</span>
+                            <strong style={{ fontSize: '11.5px', color: isOnline ? '#183a31' : '#9a3937' }}>{b.title}</strong>
+                            <span style={{ fontSize: '9.5px', fontWeight: 800, color: isOnline ? '#267154' : '#9a3937' }}>
+                              ● {isOnline ? `ONLINE · ${st.ms}` : 'CAÍDA / OFFLINE'}
+                            </span>
                           </div>
                           <div style={{ fontSize: '10.5px', fontWeight: 700, color: '#782c3e', fontFamily: 'monospace', marginTop: '2px' }}>{b.sub}</div>
                           <div style={{ fontSize: '10px', color: '#787970', marginTop: '3px' }}>{b.desc}</div>
@@ -1005,10 +1023,10 @@ export const ArchitectureConsole: React.FC = () => {
                   <div
                     key={node.id}
                     style={{
-                      border: '1px solid #e9e6de',
+                      border: node.status === 'ONLINE' ? '1px solid #e9e6de' : '2px solid #9a3937',
                       borderRadius: '10px',
                       padding: '16px',
-                      background: '#faf9f6',
+                      background: node.status === 'ONLINE' ? '#faf9f6' : '#fdf3f2',
                       display: 'flex',
                       flexDirection: 'column',
                       justifyContent: 'space-between',
@@ -1065,6 +1083,11 @@ export const ArchitectureConsole: React.FC = () => {
                       <div style={{ marginTop: '8px', fontSize: '10.5px', color: '#575950', background: '#f2efe9', padding: '7px 9px', borderRadius: '6px', fontFamily: 'monospace' }}>
                         {node.heidiSqlHint}
                       </div>
+                      {node.status === 'OFFLINE' && (
+                        <div style={{ marginTop: '8px', fontSize: '11px', color: '#9a3937', background: '#f8e9e8', border: '1px solid #e2b4b1', padding: '7px 9px', borderRadius: '6px', fontWeight: 600 }}>
+                          ⚠️ NODO CAÍDO / TÚNEL TAILSCALE INACCESIBLE: {node.error || 'La máquina física está apagada o en suspensión.'}
+                        </div>
+                      )}
                     </div>
 
                     <button

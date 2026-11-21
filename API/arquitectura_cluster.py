@@ -133,13 +133,13 @@ def get_cluster_6dbs_config() -> dict[str, dict[str, Any]]:
             "engine": "MariaDB 12.3 (SQL OLTP Local)",
             "engineType": "mariadb",
             "role": "Base operacional de 'La Cava' en Guayaquil + 15 Usuarios RBAC (C, I, V, TH, Ctbl)",
-            "host": os.getenv("BD4_GUAYAQUIL_HOST", "127.0.0.1"),
+            "host": os.getenv("BD4_GUAYAQUIL_HOST", ip_gye),
             "fallbackHost": "127.0.0.1",
             "port": int(os.getenv("BD4_GUAYAQUIL_PORT", "3306")),
             "database": os.getenv("BD4_GUAYAQUIL_DATABASE", "licoreriadatabase"),
             "user": os.getenv("BD4_GUAYAQUIL_USER", "root"),
             "password": os.getenv("BD4_GUAYAQUIL_PASSWORD", MARIADB_PASS),
-            "heidiSqlHint": "HeidiSQL -> Host: 127.0.0.1 | Puerto: 3306 | BD: licoreriadatabase",
+            "heidiSqlHint": f"HeidiSQL -> Host: {ip_gye} | Puerto: 3306 | BD: licoreriadatabase",
         },
         "GUAYAQUIL_DWH": {
             "bdId": "BD 5",
@@ -153,13 +153,13 @@ def get_cluster_6dbs_config() -> dict[str, dict[str, Any]]:
             "engine": "MariaDB 12.3 (OLAP / Esquema Estrella)",
             "engineType": "mariadb",
             "role": "Data Warehouse Estrella (`fact_ventas`, `dim_sede`, `dim_producto`, `dim_tiempo`) para Power BI",
-            "host": os.getenv("BD5_GUAYAQUIL_DWH_HOST", "127.0.0.1"),
+            "host": os.getenv("BD5_GUAYAQUIL_DWH_HOST", ip_gye),
             "fallbackHost": "127.0.0.1",
             "port": int(os.getenv("BD5_GUAYAQUIL_DWH_PORT", "3309")),
             "database": os.getenv("BD5_GUAYAQUIL_DWH_DATABASE", "db_gye_dwh"),
             "user": os.getenv("BD5_GUAYAQUIL_DWH_USER", "root"),
             "password": os.getenv("BD5_GUAYAQUIL_DWH_PASSWORD", MARIADB_PASS),
-            "heidiSqlHint": "Power BI / HeidiSQL -> Host: 127.0.0.1 | Puerto: 3309 | BD: db_gye_dwh",
+            "heidiSqlHint": f"Power BI / HeidiSQL -> Host: {ip_gye} | Puerto: 3309 | BD: db_gye_dwh",
         },
         "CUENCA": {
             "bdId": "BD 6",
@@ -173,13 +173,13 @@ def get_cluster_6dbs_config() -> dict[str, dict[str, Any]]:
             "engine": "PostgreSQL 18 / Supabase DBaaS",
             "engineType": "postgresql",
             "role": "Nodo Cloud administrado (DBaaS) para Sucursal Austral Cuenca + Latencia WAN",
-            "host": os.getenv("BD6_CUENCA_HOST", "127.0.0.1"),
+            "host": os.getenv("SUPABASE_SCHEMA_HOST", "aws-0-us-east-1.pooler.supabase.com"),
             "fallbackHost": "127.0.0.1",
             "port": int(os.getenv("BD6_CUENCA_PORT", "5432")),
             "database": os.getenv("BD6_CUENCA_DATABASE", "cloud_cuenca_loja"),
             "user": os.getenv("BD6_CUENCA_USER", "postgres"),
             "password": os.getenv("BD6_CUENCA_PASSWORD", PG_PASS),
-            "heidiSqlHint": "Power BI / pgAdmin -> Host: 127.0.0.1:5432 (Mirror Supabase us-east-1) | BD: cloud_cuenca_loja",
+            "heidiSqlHint": "Power BI / pgAdmin -> aws-0-us-east-1.pooler.supabase.com:5432 (Supabase Cloud)",
         },
     }
 
@@ -226,45 +226,28 @@ def serialize_value(val: Any) -> Any:
 
 
 def connect_mariadb_with_fallback(cfg: dict[str, Any]):
-    try:
-        return mysql.connector.connect(
-            host=cfg["host"],
-            port=cfg["port"],
-            user=cfg["user"],
-            password=cfg["password"],
-            database=cfg["database"],
-            connection_timeout=1,
-            autocommit=True,
-        ), cfg["host"]
-    except Exception:
-        if cfg["host"] != cfg["fallbackHost"]:
-            return mysql.connector.connect(
-                host=cfg["fallbackHost"],
-                port=cfg["port"],
-                user=cfg["user"],
-                password=cfg["password"],
-                database=cfg["database"],
-                connection_timeout=2,
-                autocommit=True,
-            ), cfg["fallbackHost"]
-        raise
+    # Si el nodo pertenece a la PC de Escritorio (QUITO: 100.77.220.102), NO ocultamos su caída:
+    # si la PC de Escritorio se apaga, entra en suspensión o se cae el túnel Tailscale,
+    # falla directamente para que la interfaz web muestre esos 3 nodos en ROJO (OFFLINE).
+    return mysql.connector.connect(
+        host=cfg["host"],
+        port=cfg["port"],
+        user=cfg["user"],
+        password=cfg["password"],
+        database=cfg["database"],
+        connection_timeout=2,
+        autocommit=True,
+    ), cfg["host"]
 
 
 def connect_mongo_with_fallback(cfg: dict[str, Any]):
-    try:
-        cli = MongoClient(f"mongodb://{cfg['host']}:{cfg['port']}/", serverSelectionTimeoutMS=1000, connectTimeoutMS=1000)
-        cli.admin.command("ping")
-        return cli, cfg["host"]
-    except Exception:
-        if cfg["host"] != cfg["fallbackHost"]:
-            cli = MongoClient(f"mongodb://{cfg['fallbackHost']}:{cfg['port']}/", serverSelectionTimeoutMS=2000)
-            cli.admin.command("ping")
-            return cli, cfg["fallbackHost"]
-        raise
+    cli = MongoClient(f"mongodb://{cfg['host']}:{cfg['port']}/", serverSelectionTimeoutMS=2000, connectTimeoutMS=2000)
+    cli.admin.command("ping")
+    return cli, cfg["host"]
 
 
 def connect_postgres_with_fallback(cfg: dict[str, Any]):
-    dsn = f"host={cfg['host']} port={cfg['port']} dbname={cfg['database']} user={cfg['user']} password={cfg['password']} connect_timeout=3"
+    dsn = f"host={cfg['fallbackHost']} port={cfg['port']} dbname={cfg['database']} user={cfg['user']} password={cfg['password']} connect_timeout=3"
     return psycopg.connect(dsn, autocommit=True), cfg["host"]
 
 
