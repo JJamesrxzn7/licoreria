@@ -211,6 +211,11 @@ def resolve_sede_key(key_or_header: str) -> str:
     return alias_map.get(clean, "GUAYAQUIL")
 
 
+def public_cfg(cfg: dict[str, Any]) -> dict[str, Any]:
+    """Copia de la configuración del nodo SIN la contraseña (nunca se envía al navegador)."""
+    return {k: v for k, v in cfg.items() if k != "password"}
+
+
 def serialize_value(val: Any) -> Any:
     if val is None:
         return None
@@ -227,16 +232,16 @@ def serialize_value(val: Any) -> Any:
 
 def connect_mariadb_with_fallback(cfg: dict[str, Any]):
     # Si el nodo pertenece a la PC de Escritorio (QUITO: 100.77.220.102), NO ocultamos su caída:
-    # si la PC de Escritorio se apaga, entra en suspensión o se cae el túnel Tailscale,
-    # falla directamente para que la interfaz web muestre esos 3 nodos en ROJO (OFFLINE).
+    # use_pure=True evita bloqueos de DNS inverso en el conector C de Windows sobre Tailscale.
     return mysql.connector.connect(
         host=cfg["host"],
         port=cfg["port"],
         user=cfg["user"],
         password=cfg["password"],
         database=cfg["database"],
-        connection_timeout=2,
+        connection_timeout=3,
         autocommit=True,
+        use_pure=True,
     ), cfg["host"]
 
 
@@ -379,7 +384,7 @@ def inspect_single_bd_sync(sede_key: str) -> dict[str, Any]:
             conn.close()
             latency_ms = round((time.perf_counter() - t0) * 1000, 2)
             return {
-                **cfg,
+                **public_cfg(cfg),
                 "activeHost": active_host,
                 "status": "ONLINE",
                 "pingMs": latency_ms,
@@ -403,7 +408,7 @@ def inspect_single_bd_sync(sede_key: str) -> dict[str, Any]:
             cli.close()
             latency_ms = round((time.perf_counter() - t0) * 1000, 2)
             return {
-                **cfg,
+                **public_cfg(cfg),
                 "activeHost": active_host,
                 "status": "ONLINE",
                 "pingMs": latency_ms,
@@ -432,7 +437,7 @@ def inspect_single_bd_sync(sede_key: str) -> dict[str, Any]:
             conn.close()
             latency_ms = round((time.perf_counter() - t0) * 1000, 2)
             return {
-                **cfg,
+                **public_cfg(cfg),
                 "activeHost": active_host,
                 "status": "ONLINE",
                 "pingMs": latency_ms,
@@ -450,7 +455,7 @@ def inspect_single_bd_sync(sede_key: str) -> dict[str, Any]:
     except Exception as exc:
         latency_ms = round((time.perf_counter() - t0) * 1000, 2)
         return {
-            **cfg,
+            **public_cfg(cfg),
             "activeHost": cfg["host"],
             "status": "OFFLINE",
             "pingMs": latency_ms,
@@ -467,7 +472,7 @@ def inspect_single_bd_sync(sede_key: str) -> dict[str, Any]:
         }
 
 
-def fetch_global_records_from_bd_sync(sede_key: str) -> dict[str, Any]:
+def fetch_global_records_from_bd_sync(sede_key: str, limit: int = 8) -> dict[str, Any]:
     """Extrae registros unificados de cada una de las 6 BDs con el campo obligatorio `origen_nodo`."""
     configs = get_cluster_6dbs_config()
     cfg = configs[sede_key]
@@ -481,8 +486,8 @@ def fetch_global_records_from_bd_sync(sede_key: str) -> dict[str, Any]:
                 SELECT id_op, sede_header, agente_nombre, usuario_rbac, rol_rbac, modulo,
                        operacion, monto_usd, replica_api, fecha_hora
                 FROM operaciones_agentes_ia
-                ORDER BY id_op DESC LIMIT 8
-            """)
+                ORDER BY id_op DESC LIMIT %s
+            """, (int(limit),))
             for r in cur.fetchall():
                 records.append({
                     "id": f"{cfg['bdId']}-OP-{r['id_op']}",
@@ -503,10 +508,10 @@ def fetch_global_records_from_bd_sync(sede_key: str) -> dict[str, Any]:
         elif sede_key == "QUITO_NOSQL":
             cli, active_host = connect_mongo_with_fallback(cfg)
             db = cli[cfg["database"]]
-            docs = list(db["eventos_agentes"].find().sort("_id", -1).limit(5)) + list(
-                db["logs_auditoria"].find().sort("_id", -1).limit(5)
+            docs = list(db["eventos_agentes"].find().sort("_id", -1).limit(limit)) + list(
+                db["logs_auditoria"].find().sort("_id", -1).limit(limit)
             )
-            for idx, d in enumerate(docs[:8], start=1):
+            for idx, d in enumerate(docs[: limit * 2], start=1):
                 records.append({
                     "id": str(d.get("evento_id") or f"BD2-MONGO-{idx}"),
                     "origen_nodo": f"BD 2 · QUITO_NOSQL ({active_host}:{cfg['port']})",
@@ -528,8 +533,8 @@ def fetch_global_records_from_bd_sync(sede_key: str) -> dict[str, Any]:
             cur.execute("""
                 SELECT id, usuario_rbac, rol_rbac, modulo, codigo_referencia, monto_usd, particion_hash, fecha_registro
                 FROM historico_transacciones
-                ORDER BY id DESC LIMIT 8
-            """)
+                ORDER BY id DESC LIMIT %s
+            """, (int(limit),))
             for r in cur.fetchall():
                 records.append({
                     "id": f"BD3-HASH-{r['id']}",
@@ -555,8 +560,8 @@ def fetch_global_records_from_bd_sync(sede_key: str) -> dict[str, Any]:
                        f.cantidad_botellas, f.total_venta_usd, f.etl_lote, f.fecha_carga_etl
                 FROM fact_ventas f
                 LEFT JOIN dim_producto p ON f.id_producto = p.id_producto
-                ORDER BY f.id_fact DESC LIMIT 8
-            """)
+                ORDER BY f.id_fact DESC LIMIT %s
+            """, (int(limit),))
             for r in cur.fetchall():
                 records.append({
                     "id": f"BD5-DWH-{r['id_fact']}",
@@ -580,8 +585,8 @@ def fetch_global_records_from_bd_sync(sede_key: str) -> dict[str, Any]:
                 cur.execute("""
                     SELECT id_op, usuario_rbac, rol_rbac, modulo, operacion, monto_usd, latencia_wan_ms, fecha_hora
                     FROM operaciones_agentes_cloud
-                    ORDER BY id_op DESC LIMIT 8
-                """)
+                    ORDER BY id_op DESC LIMIT %s
+                """, (int(limit),))
                 for r in cur.fetchall():
                     records.append({
                         "id": f"BD6-CLOUD-{r[0]}",
@@ -703,6 +708,51 @@ class AgentOperationRequest(BaseModel):
     extraJson: dict[str, Any] | None = Field(default=None, description="Payload adicional JSON para NoSQL o ETL")
 
 
+def _impactar_modulo_quito(cur, modulo: str, short_hex: str, usuario: str, payload: "AgentOperationRequest",
+                           sub: float, iva: float, tot: float) -> dict[str, Any]:
+    """Inserta en la tabla de negocio del módulo usando el esquema propio de BD 1 Quito."""
+    if modulo == "VENTAS":
+        cur.execute("SELECT id_cliente FROM clientes ORDER BY RAND() LIMIT 1")
+        row = cur.fetchone()
+        if not row:
+            return {"tabla": "facturas", "accion": "INSERT", "id": None, "ok": False, "error": "BD 1 no tiene clientes"}
+        num = f"AGF-Q-{short_hex}"
+        cur.execute(
+            "INSERT INTO facturas (numero_factura, id_cliente, sede, subtotal, iva, total, usuario_rbac) "
+            "VALUES (%s, %s, 'QUITO', %s, %s, %s, %s)",
+            (num, row[0], sub, iva, tot, usuario),
+        )
+        return {"tabla": "facturas", "accion": "INSERT", "id": num, "ok": True}
+    if modulo == "COMPRAS":
+        cur.execute("SELECT id_proveedor FROM proveedores ORDER BY RAND() LIMIT 1")
+        row = cur.fetchone()
+        if not row:
+            return {"tabla": "compras", "accion": "INSERT", "id": None, "ok": False, "error": "BD 1 no tiene proveedores"}
+        num = f"AGC-Q-{short_hex}"
+        cur.execute(
+            "INSERT INTO compras (numero_orden, id_proveedor, sede, estado, subtotal, impuesto, total, usuario_rbac) "
+            "VALUES (%s, %s, 'QUITO', 'APROBADA', %s, %s, %s, %s)",
+            (num, row[0], sub, iva, tot, usuario),
+        )
+        return {"tabla": "compras", "accion": "INSERT", "id": num, "ok": True}
+    if modulo == "CONTABILIDAD":
+        num = f"AGA-Q-{short_hex}"
+        cur.execute(
+            "INSERT INTO asientos (codigo_asiento, sede, cuenta_debe, cuenta_haber, monto, concepto, usuario_rbac) "
+            "VALUES (%s, 'QUITO', '1.1.01 Caja General', '4.1.01 Ventas Licores', %s, %s, %s)",
+            (num, tot, f"[{payload.agente}] {payload.operacion}"[:200], usuario),
+        )
+        return {"tabla": "asientos", "accion": "INSERT", "id": num, "ok": True}
+    if modulo == "INVENTARIOS":
+        cur.execute("SELECT id_producto FROM productos ORDER BY RAND() LIMIT 1")
+        row = cur.fetchone()
+        if row:
+            cur.execute("UPDATE productos SET stock_actual = stock_actual + 2 WHERE id_producto = %s", (row[0],))
+            return {"tabla": "productos", "accion": "UPDATE stock +2", "id": row[0], "ok": True}
+        return {"tabla": "productos", "accion": "UPDATE", "id": None, "ok": False, "error": "BD 1 no tiene productos"}
+    return {"tabla": "empleados", "accion": "SOLO BITÁCORA (no modifica nómina)", "id": None, "ok": True}
+
+
 @router.post("/api/agentes/operacion")
 @router.post("/api/dba/operacion")
 def handle_agent_routed_operation(
@@ -726,6 +776,7 @@ def handle_agent_routed_operation(
     modulo_final = (payload.modulo or default_mod).strip().upper()
 
     t0 = time.perf_counter()
+    impacto: list[dict[str, Any]] = []
     if sede_key in ("QUITO", "GUAYAQUIL"):
         conn, active_host = connect_mariadb_with_fallback(cfg)
         cur = conn.cursor()
@@ -734,11 +785,69 @@ def handle_agent_routed_operation(
             "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
             (sede_key, payload.agente, user_clean, rol_rbac, modulo_final, payload.operacion, payload.montoUsd, REPLICA_ID),
         )
-        cur.execute(
-            "UPDATE rbac_matriz_15_usuarios SET ultima_actividad = CURRENT_TIMESTAMP WHERE username = %s",
-            (user_clean,),
-        )
         op_id = cur.lastrowid
+
+        impacto.append({"tabla": "operaciones_agentes_ia", "accion": "INSERT", "id": op_id, "ok": True})
+
+        # Además impacta la tabla de negocio del módulo dentro de ESTA BD (BD 1 o BD 4).
+        # Los IDs llevan prefijo AGF-/AGC-/AGA- para poder rastrear qué filas creó cada agente.
+        sede_tag = sede_key[:1]
+        short_hex = uuid4().hex[:8].upper()
+        sub = round(float(payload.montoUsd or 120.0), 2)
+        iva = round(sub * 0.15, 2)
+        tot = round(sub + iva, 2)
+        try:
+            if sede_key == "QUITO":
+                # BD 1 (PC Escritorio) tiene su propio esquema OLTP normalizado (ids enteros + FKs).
+                impacto.append(_impactar_modulo_quito(cur, modulo_final, short_hex, user_clean, payload, sub, iva, tot))
+            elif modulo_final == "VENTAS":
+                cur.execute("SELECT id_Cliente FROM clientes ORDER BY RAND() LIMIT 1")
+                cli_row = cur.fetchone()
+                cli_id = cli_row[0] if cli_row else "CLI-GYE-01"
+                fac_id = f"AGF-{sede_tag}-{short_hex}"
+                cur.execute(
+                    "INSERT INTO facturas (id_Factura, id_Cliente, fac_Descripcion, fac_Fecha, fac_Subtotal, fac_IVA, fac_Total, ESTADO_FAC) "
+                    "VALUES (%s, %s, %s, NOW(), %s, %s, %s, 'APR')",
+                    (fac_id, cli_id, f"[{payload.agente}] {payload.operacion}"[:160], sub, iva, tot),
+                )
+                impacto.append({"tabla": "facturas", "accion": "INSERT", "id": fac_id, "ok": True})
+            elif modulo_final == "COMPRAS":
+                cur.execute("SELECT id_Proveedor FROM proveedores ORDER BY RAND() LIMIT 1")
+                prv_row = cur.fetchone()
+                prv_id = prv_row[0] if prv_row else "PRV-GYE-01"
+                oc_id = f"AGC-{sede_tag}-{short_hex}"
+                cur.execute(
+                    "INSERT INTO compras (id_Compra, id_Proveedor, oc_Fecha, oc_Subtotal, oc_IVA, oc_Total, ESTADO_OC) "
+                    "VALUES (%s, %s, NOW(), %s, %s, %s, 'APR')",
+                    (oc_id, prv_id, sub, iva, tot),
+                )
+                impacto.append({"tabla": "compras", "accion": "INSERT", "id": oc_id, "ok": True})
+            elif modulo_final == "CONTABILIDAD":
+                asi_id = f"AGA-{sede_tag}-{short_hex}"
+                cur.execute(
+                    "INSERT INTO asientos (id_Asiento, asi_Descripcion, asi_Total_Debe, asi_Total_Haber, asi_FechaHora, ESTADO_ASI) "
+                    "VALUES (%s, %s, %s, %s, NOW(), 'APR')",
+                    (asi_id, f"[{payload.agente} · {user_clean}] {payload.operacion}"[:180], tot, tot),
+                )
+                impacto.append({"tabla": "asientos", "accion": "INSERT", "id": asi_id, "ok": True})
+            elif modulo_final == "INVENTARIOS":
+                cur.execute("SELECT id_Producto FROM productos ORDER BY RAND() LIMIT 1")
+                prod_row = cur.fetchone()
+                if prod_row:
+                    cur.execute("UPDATE productos SET pro_Saldo_Final = COALESCE(pro_Saldo_Final, 40) + 2 WHERE id_Producto = %s", (prod_row[0],))
+                    impacto.append({"tabla": "productos", "accion": "UPDATE stock +2", "id": prod_row[0], "ok": True})
+            elif modulo_final == "TALENTO_HUMANO":
+                impacto.append({"tabla": "empleados", "accion": "SOLO BITÁCORA (no modifica nómina)", "id": None, "ok": True})
+        except Exception as exc:
+            impacto.append({"tabla": modulo_final.lower(), "accion": "INSERT", "id": None, "ok": False, "error": str(exc)[:200]})
+
+        try:
+            cur.execute(
+                "UPDATE rbac_matriz_15_usuarios SET ultima_actividad = CURRENT_TIMESTAMP WHERE username = %s",
+                (user_clean,),
+            )
+        except Exception:
+            pass
         cur.close()
         conn.close()
 
@@ -756,10 +865,12 @@ def handle_agent_routed_operation(
             "detalle": payload.extraJson or {"monto_usd": payload.montoUsd, "replica": REPLICA_ID},
             "timestamp": datetime.now().isoformat(),
         }
-        db["eventos_agentes"].insert_one(doc)
+        db["eventos_agentes"].insert_one(dict(doc))
         db["logs_auditoria"].insert_one({**doc, "accion": "LOG_AGENTE_NOSQL"})
         cli.close()
         op_id = doc["evento_id"]
+        impacto.append({"tabla": "eventos_agentes (colección)", "accion": "insertOne", "id": op_id, "ok": True})
+        impacto.append({"tabla": "logs_auditoria (colección)", "accion": "insertOne", "id": op_id, "ok": True})
 
     elif sede_key == "QUITO_PARALELA":
         conn, active_host = connect_mariadb_with_fallback(cfg)
@@ -771,29 +882,28 @@ def handle_agent_routed_operation(
             ("QUITO_PARALELA", user_clean, rol_rbac, modulo_final, ref, payload.montoUsd or 125.50),
         )
         op_id = cur.lastrowid
+        cur.execute("SELECT particion_hash FROM historico_transacciones WHERE id = %s", (op_id,))
+        part_row = cur.fetchone()
         cur.close()
         conn.close()
+        impacto.append({
+            "tabla": f"historico_transacciones (partición p{part_row[0] if part_row else '?'})",
+            "accion": "INSERT",
+            "id": op_id,
+            "ok": True,
+        })
 
     elif sede_key == "GUAYAQUIL_DWH":
-        conn, active_host = connect_mariadb_with_fallback(cfg)
-        cur = conn.cursor()
-        lote = f"ETL-{datetime.now().strftime('%H%M%S')}"
-        botellas = max(6, int((payload.montoUsd or 180.0) / 15.0))
-        sub = round(payload.montoUsd or 180.0, 2)
-        iva = round(sub * 0.15, 2)
-        tot = round(sub + iva, 2)
-        cur.execute(
-            "INSERT INTO fact_ventas (id_sede, id_producto, id_tiempo, usuario_rbac, rol_rbac, cantidad_botellas, subtotal_usd, iva_usd, total_venta_usd, etl_lote) "
-            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
-            ("GUAYAQUIL", "PRO-001", "T-2026-11", user_clean, rol_rbac, botellas, sub, iva, tot, lote),
-        )
-        op_id = cur.lastrowid
-        cur.close()
-        conn.close()
+        etl = run_mini_etl_to_dwh()
+        op_id = etl["lote"]
+        impacto.extend(etl["fuentes"])
 
     else:  # CUENCA
         conn, active_host = connect_postgres_with_fallback(cfg)
         latency_wan = round((time.perf_counter() - t0) * 1000 + 12.0, 2)
+        sub = round(float(payload.montoUsd or 160.0), 2)
+        iva = round(sub * 0.15, 2)
+        tot = round(sub + iva, 2)
         with conn.cursor() as cur:
             cur.execute(
                 "INSERT INTO operaciones_agentes_cloud (sede_header, agente_nombre, usuario_rbac, rol_rbac, modulo, operacion, monto_usd, latencia_wan_ms) "
@@ -801,6 +911,18 @@ def handle_agent_routed_operation(
                 ("CUENCA", payload.agente, user_clean, rol_rbac, modulo_final, payload.operacion, payload.montoUsd, latency_wan),
             )
             op_id = cur.fetchone()[0]
+            impacto.append({"tabla": "operaciones_agentes_cloud", "accion": "INSERT", "id": op_id, "ok": True})
+            if modulo_final == "VENTAS":
+                fac_c_id = f"FAC-C{uuid4().hex[:5].upper()}"
+                try:
+                    cur.execute(
+                        "INSERT INTO frag_austral_facturas (id_factura, id_cliente, sucursal, fac_fecha, fac_subtotal, fac_iva, fac_total, estado) "
+                        "VALUES (%s, 'CLI-C01', 'CUENCA', NOW(), %s, %s, %s, 'APR') ON CONFLICT DO NOTHING",
+                        (fac_c_id, sub, iva, tot),
+                    )
+                    impacto.append({"tabla": "frag_austral_facturas", "accion": "INSERT", "id": fac_c_id, "ok": True})
+                except Exception as exc:
+                    impacto.append({"tabla": "frag_austral_facturas", "accion": "INSERT", "id": None, "ok": False, "error": str(exc)[:200]})
         conn.close()
 
     elapsed_ms = round((time.perf_counter() - t0) * 1000, 2)
@@ -814,6 +936,7 @@ def handle_agent_routed_operation(
         "rolRbac": rol_rbac,
         "modulo": modulo_final,
         "operationId": op_id,
+        "impacto": impacto,
         "apiReplica": REPLICA_ID,
         "latencyMs": elapsed_ms,
         "timestamp": datetime.now().isoformat(),
@@ -823,6 +946,87 @@ def handle_agent_routed_operation(
 # ==============================================================================
 # ENDPOINTS DE COMPATIBILIDAD CON LA INTERFAZ WEB (/api/arquitectura/...)
 # ==============================================================================
+
+@router.get("/api/powerbi/estrella")
+def get_powerbi_star_schema_dataset():
+    """
+    Endpoint OLAP listo para Power BI Desktop (Obtener datos -> Web -> http://127.0.0.1:8000/api/powerbi/estrella)
+    y para el Dashboard Gerencial en la interfaz web.
+    Devuelve la tabla de hechos desnormalizada con sus 3 dimensiones (`dim_sede`, `dim_producto`, `dim_tiempo`)
+    desde BD 5 (`db_gye_dwh` en MariaDB :3309).
+    """
+    configs = get_cluster_6dbs_config()
+    conn, active_host = connect_mariadb_with_fallback(configs["GUAYAQUIL_DWH"])
+    cur = conn.cursor(dictionary=True)
+
+    cur.execute("""
+        SELECT
+            f.id_fact,
+            f.id_sede,
+            COALESCE(s.nombre_sede, f.id_sede) AS nombre_sede,
+            COALESCE(s.ciudad, 'Guayaquil') AS ciudad,
+            COALESCE(s.region, 'Costa') AS region,
+            COALESCE(s.maquina_fisica, 'Laptop (100.123.81.4)') AS maquina_fisica,
+            f.id_producto,
+            COALESCE(p.nombre_producto, 'Whisky Johnnie Walker Black 12Y') AS nombre_producto,
+            COALESCE(p.categoria, 'Whisky') AS categoria,
+            COALESCE(p.marca, 'Johnnie Walker') AS marca,
+            f.id_tiempo,
+            COALESCE(t.nombre_mes, 'Noviembre') AS mes,
+            COALESCE(t.trimestre, 'Q4-2026') AS trimestre,
+            f.usuario_rbac,
+            f.rol_rbac,
+            f.cantidad_botellas,
+            f.subtotal_usd,
+            f.iva_usd,
+            f.total_venta_usd,
+            f.etl_lote,
+            f.fecha_carga_etl
+        FROM fact_ventas f
+        LEFT JOIN dim_sede s ON f.id_sede = s.id_sede
+        LEFT JOIN dim_producto p ON f.id_producto = p.id_producto
+        LEFT JOIN dim_tiempo t ON f.id_tiempo = t.id_tiempo
+        ORDER BY f.id_fact DESC
+        LIMIT 100
+    """)
+    facts = [{k: serialize_value(v) for k, v in r.items()} for r in cur.fetchall()]
+
+    cur.execute("""
+        SELECT
+            f.id_sede AS sede,
+            COUNT(*) AS lotes_etl,
+            COALESCE(SUM(f.cantidad_botellas), 0) AS botellas,
+            COALESCE(SUM(f.total_venta_usd), 0) AS total_usd
+        FROM fact_ventas f
+        GROUP BY f.id_sede
+        ORDER BY total_usd DESC
+    """)
+    by_sede = [{k: serialize_value(v) for k, v in r.items()} for r in cur.fetchall()]
+
+    cur.execute("""
+        SELECT
+            COALESCE(p.categoria, 'Licores') AS categoria,
+            COALESCE(SUM(f.cantidad_botellas), 0) AS botellas,
+            COALESCE(SUM(f.total_venta_usd), 0) AS total_usd
+        FROM fact_ventas f
+        LEFT JOIN dim_producto p ON f.id_producto = p.id_producto
+        GROUP BY COALESCE(p.categoria, 'Licores')
+        ORDER BY total_usd DESC
+    """)
+    by_categoria = [{k: serialize_value(v) for k, v in r.items()} for r in cur.fetchall()]
+
+    cur.close()
+    conn.close()
+    return {
+        "sourceDatabase": "BD 5 · db_gye_dwh (MariaDB :3309)",
+        "host": active_host,
+        "port": 3309,
+        "totalFacts": len(facts),
+        "kpisBySede": by_sede,
+        "kpisByCategoria": by_categoria,
+        "starSchemaFacts": facts,
+    }
+
 
 @router.get("/api/arquitectura/topologia")
 async def get_cluster_topology():
@@ -1316,3 +1520,423 @@ def execute_two_phase_commit_demo(payload: TwoPhaseCommitRequest):
         "summary": summary_msg,
         "steps": steps,
     }
+
+
+# ==============================================================================
+# MINI-ETL REAL (Agente 5): OLTP (BD 1, BD 4, BD 6) -> ESQUEMA ESTRELLA (BD 5)
+# ==============================================================================
+
+MESES_ES = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio",
+            "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"]
+
+ETL_FUENTES = {
+    # fuente -> (clave de config, consulta de extracción incremental por marca de agua)
+    "QUITO": ("QUITO", "SELECT id_op, usuario_rbac, rol_rbac, monto_usd, fecha_hora FROM operaciones_agentes_ia "
+                       "WHERE modulo = 'VENTAS' AND id_op > %s ORDER BY id_op LIMIT 300"),
+    "GUAYAQUIL": ("GUAYAQUIL", "SELECT id_op, usuario_rbac, rol_rbac, monto_usd, fecha_hora FROM operaciones_agentes_ia "
+                               "WHERE modulo = 'VENTAS' AND id_op > %s ORDER BY id_op LIMIT 300"),
+    "CUENCA": ("CUENCA", "SELECT id_op, usuario_rbac, rol_rbac, monto_usd, fecha_hora FROM operaciones_agentes_cloud "
+                         "WHERE modulo = 'VENTAS' AND id_op > %s ORDER BY id_op LIMIT 300"),
+}
+
+
+def _extract_ventas(fuente: str, watermark: int) -> list[tuple]:
+    configs = get_cluster_6dbs_config()
+    key, sql = ETL_FUENTES[fuente]
+    cfg = configs[key]
+    if cfg["engineType"] == "postgresql":
+        conn, _ = connect_postgres_with_fallback(cfg)
+        with conn.cursor() as cur:
+            cur.execute(sql, (watermark,))
+            rows = cur.fetchall()
+        conn.close()
+        return rows
+    conn, _ = connect_mariadb_with_fallback(cfg)
+    cur = conn.cursor()
+    cur.execute(sql, (watermark,))
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    return rows
+
+
+def run_mini_etl_to_dwh() -> dict[str, Any]:
+    """
+    ETL incremental real:
+      E: lee las ventas NUEVAS (id_op > marca de agua) registradas por los agentes en BD 1, BD 4 y BD 6.
+      T: asigna producto (dim_producto), calcula botellas = monto / precio, IVA 15 % y clave de tiempo T-AAAA-MM.
+      L: inserta en fact_ventas (BD 5) y avanza la marca de agua en `etl_control` en la MISMA transacción.
+    """
+    configs = get_cluster_6dbs_config()
+    lote = f"ETL-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+    conn, _ = connect_mariadb_with_fallback(configs["GUAYAQUIL_DWH"])
+    conn.autocommit = False
+    cur = conn.cursor()
+    cur.execute(
+        "CREATE TABLE IF NOT EXISTS etl_control ("
+        " fuente VARCHAR(20) PRIMARY KEY,"
+        " ultimo_id BIGINT NOT NULL DEFAULT 0,"
+        " filas_cargadas BIGINT NOT NULL DEFAULT 0,"
+        " ultima_corrida DATETIME NULL,"
+        " ultimo_lote VARCHAR(40) NULL)"
+    )
+    cur.execute("SELECT id_producto, precio_unitario FROM dim_producto ORDER BY id_producto")
+    productos = [(r[0], float(r[1] or 10.0)) for r in cur.fetchall()] or [("PRO-001", 42.5)]
+    conn.commit()
+
+    fuentes = []
+    total = 0
+    for fuente in ETL_FUENTES:
+        cur.execute("SELECT ultimo_id FROM etl_control WHERE fuente = %s", (fuente,))
+        row = cur.fetchone()
+        watermark = int(row[0]) if row else 0
+        try:
+            rows = _extract_ventas(fuente, watermark)
+        except Exception as exc:
+            fuentes.append({"tabla": f"ETL {fuente} -> fact_ventas", "accion": "EXTRACT", "id": None, "ok": False,
+                            "error": f"Nodo no disponible: {str(exc)[:150]}"})
+            continue
+        cargadas = 0
+        nuevo_wm = watermark
+        try:
+            for id_op, usuario, rol, monto, fecha in rows:
+                nuevo_wm = max(nuevo_wm, int(id_op))
+                monto_f = float(monto or 0)
+                if monto_f <= 0:
+                    continue
+                fecha = fecha if isinstance(fecha, datetime) else datetime.now()
+                id_tiempo = f"T-{fecha.year}-{fecha.month:02d}"
+                cur.execute(
+                    "INSERT IGNORE INTO dim_tiempo (id_tiempo, fecha, anio, mes, nombre_mes, trimestre) VALUES (%s, %s, %s, %s, %s, %s)",
+                    (id_tiempo, date(fecha.year, fecha.month, 1), fecha.year, fecha.month,
+                     MESES_ES[fecha.month - 1], f"Q{(fecha.month - 1) // 3 + 1}-{fecha.year}"),
+                )
+                id_prod, precio = productos[int(id_op) % len(productos)]
+                botellas = max(1, round(monto_f / precio))
+                sub = round(monto_f, 2)
+                iva = round(sub * 0.15, 2)
+                cur.execute(
+                    "INSERT INTO fact_ventas (id_sede, id_producto, id_tiempo, usuario_rbac, rol_rbac, cantidad_botellas, "
+                    "subtotal_usd, iva_usd, total_venta_usd, etl_lote, fecha_carga_etl) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                    (fuente, id_prod, id_tiempo, usuario, rol, botellas, sub, iva, round(sub + iva, 2), lote, fecha.replace(tzinfo=None)),
+                )
+                cargadas += 1
+            cur.execute(
+                "INSERT INTO etl_control (fuente, ultimo_id, filas_cargadas, ultima_corrida, ultimo_lote) VALUES (%s, %s, %s, NOW(), %s) "
+                "ON DUPLICATE KEY UPDATE ultimo_id = VALUES(ultimo_id), filas_cargadas = filas_cargadas + VALUES(filas_cargadas), "
+                "ultima_corrida = NOW(), ultimo_lote = VALUES(ultimo_lote)",
+                (fuente, nuevo_wm, cargadas, lote),
+            )
+            conn.commit()
+            total += cargadas
+            fuentes.append({"tabla": f"ETL {fuente} -> fact_ventas", "accion": f"{len(rows)} ventas leídas · {cargadas} hechos cargados",
+                            "id": f"marca de agua {watermark} -> {nuevo_wm}", "ok": True})
+        except Exception as exc:
+            conn.rollback()
+            fuentes.append({"tabla": f"ETL {fuente} -> fact_ventas", "accion": "LOAD (ROLLBACK)", "id": None, "ok": False, "error": str(exc)[:200]})
+    cur.close()
+    conn.close()
+    return {"lote": lote, "hechosCargados": total, "fuentes": fuentes}
+
+
+# ==============================================================================
+# LOS 6 AGENTES IA (1 POR BASE DE DATOS): ACTIVIDAD EN VIVO + EJECUCIÓN MANUAL
+# ==============================================================================
+
+AGENTES_IA: dict[int, dict[str, Any]] = {
+    1: {"codigo": "AG 1", "prefijo": "Agente-1", "nombre": "Agente-1-Quito-OLTP", "sede": "QUITO",
+        "script": "agentes_quito.py", "maquina": "PC Escritorio (Quito)",
+        "operacion": "Transacción OLTP en módulo {modulo} autenticada por {usuario}"},
+    2: {"codigo": "AG 2", "prefijo": "Agente-2", "nombre": "Agente-2-Quito-MongoDB", "sede": "QUITO_NOSQL",
+        "script": "agentes_quito.py", "maquina": "PC Escritorio (Quito)",
+        "operacion": "Log JSON de telemetría y alerta de stock bajo en Quito"},
+    3: {"codigo": "AG 3", "prefijo": "Agente-3", "nombre": "Agente-3-Quito-Paralela-Hash", "sede": "QUITO_PARALELA",
+        "script": "agentes_quito.py", "maquina": "PC Escritorio (Quito)",
+        "operacion": "Inserción histórica en PARTITION BY HASH(id) PARTITIONS 4"},
+    4: {"codigo": "AG 4", "prefijo": "Agente-4", "nombre": "Agente-4-Guayaquil-OLTP", "sede": "GUAYAQUIL",
+        "script": "agentes_gye_cuenca.py", "maquina": "Laptop (Guayaquil)",
+        "operacion": "Transacción OLTP en módulo {modulo} autenticada por {usuario}"},
+    5: {"codigo": "AG 5", "prefijo": "Agente-5", "nombre": "Agente-5-Guayaquil-ETL-DWH", "sede": "GUAYAQUIL_DWH",
+        "script": "agentes_gye_cuenca.py", "maquina": "Laptop (Guayaquil)",
+        "operacion": "Mini-ETL OLTP -> Esquema Estrella BD 5"},
+    6: {"codigo": "AG 6", "prefijo": "Agente-6", "nombre": "Agente-6-Cuenca-Supabase-Cloud", "sede": "CUENCA",
+        "script": "agentes_gye_cuenca.py", "maquina": "Laptop -> Nube Supabase",
+        "operacion": "Transacción austral en Supabase DBaaS ({modulo})"},
+}
+
+ESTADO_ACTIVO_SEGUNDOS = 150  # los agentes corren cada 60 s; > 2.5 min sin actividad = INACTIVO
+
+
+def _rows_as_dicts(cur) -> list[dict[str, Any]]:
+    cols = [c[0] if isinstance(c, tuple) else c.name for c in cur.description]
+    return [{k: serialize_value(v) for k, v in zip(cols, r)} for r in cur.fetchall()]
+
+
+def get_agent_activity_sync(agent_num: int, limit: int = 15) -> dict[str, Any]:
+    ag = AGENTES_IA[agent_num]
+    configs = get_cluster_6dbs_config()
+    cfg = configs[ag["sede"]]
+    like = f"{ag['prefijo']}%"
+    t0 = time.perf_counter()
+    base = {
+        "agentId": f"agente-{agent_num}",
+        **{k: v for k, v in ag.items() if k != "operacion"},
+        "bdId": cfg["bdId"],
+        "nodeId": cfg["id"],
+        "baseDatos": cfg["database"],
+        "puerto": cfg["port"],
+        "motor": cfg["engine"],
+    }
+    try:
+        impacto_gui: list[dict[str, Any]] = []
+        por_modulo: list[dict[str, Any]] = []
+        if agent_num in (1, 4):
+            conn, _ = connect_mariadb_with_fallback(cfg)
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT COUNT(*), TIMESTAMPDIFF(SECOND, MAX(fecha_hora), NOW()) FROM operaciones_agentes_ia WHERE agente_nombre LIKE %s",
+                (like,),
+            )
+            total, secs = cur.fetchone()
+            cur.execute(
+                "SELECT id_op, fecha_hora, usuario_rbac, rol_rbac, modulo, operacion, monto_usd, replica_api "
+                "FROM operaciones_agentes_ia WHERE agente_nombre LIKE %s ORDER BY id_op DESC LIMIT %s",
+                (like, limit),
+            )
+            rows = _rows_as_dicts(cur)
+            tag = ag["sede"][:1]
+            cols = ("numero_factura", "numero_orden", "codigo_asiento") if agent_num == 1 else ("id_Factura", "id_Compra", "id_Asiento")
+            for tabla, sql in (
+                ("facturas", f"SELECT COUNT(*) FROM facturas WHERE {cols[0]} LIKE 'AGF-{tag}-%'"),
+                ("compras", f"SELECT COUNT(*) FROM compras WHERE {cols[1]} LIKE 'AGC-{tag}-%'"),
+                ("asientos", f"SELECT COUNT(*) FROM asientos WHERE {cols[2]} LIKE 'AGA-{tag}-%'"),
+            ):
+                cur.execute(sql)
+                impacto_gui.append({"tabla": tabla, "filas": int(cur.fetchone()[0])})
+            cur.execute(
+                "SELECT modulo, COUNT(*) FROM operaciones_agentes_ia WHERE agente_nombre LIKE %s GROUP BY modulo ORDER BY modulo",
+                (like,),
+            )
+            por_modulo = [{"modulo": m, "operaciones": int(c)} for m, c in cur.fetchall()]
+            cur.close()
+            conn.close()
+        elif agent_num == 2:
+            cli, _ = connect_mongo_with_fallback(cfg)
+            col = cli[cfg["database"]]["eventos_agentes"]
+            filtro = {"agente": {"$regex": f"^{ag['prefijo']}"}}
+            total = col.count_documents(filtro)
+            docs = list(col.find(filtro).sort("_id", -1).limit(limit))
+            cli.close()
+            rows = [
+                {
+                    "evento_id": d.get("evento_id"),
+                    "timestamp": str(d.get("timestamp", "")),
+                    "usuario_rbac": d.get("usuario_rbac"),
+                    "modulo": d.get("modulo"),
+                    "mensaje": d.get("mensaje"),
+                    "documento_json": json.dumps(d.get("detalle", {}), ensure_ascii=False, default=str),
+                }
+                for d in docs
+            ]
+            secs = None
+            if docs and docs[0].get("timestamp"):
+                try:
+                    secs = int((datetime.now() - datetime.fromisoformat(str(docs[0]["timestamp"]))).total_seconds())
+                except ValueError:
+                    secs = None
+            impacto_gui.append({"tabla": "eventos_agentes + logs_auditoria (colecciones)", "filas": total})
+        elif agent_num == 3:
+            conn, _ = connect_mariadb_with_fallback(cfg)
+            cur = conn.cursor()
+            cur.execute("SELECT COUNT(*), TIMESTAMPDIFF(SECOND, MAX(fecha_registro), NOW()) FROM historico_transacciones")
+            total, secs = cur.fetchone()
+            cur.execute(
+                "SELECT id, fecha_registro, usuario_rbac, rol_rbac, modulo, codigo_referencia, monto_usd, "
+                "CONCAT('p', particion_hash) AS particion FROM historico_transacciones ORDER BY id DESC LIMIT %s",
+                (limit,),
+            )
+            rows = _rows_as_dicts(cur)
+            cur.execute("SELECT CONCAT('p', particion_hash), COUNT(*) FROM historico_transacciones GROUP BY particion_hash ORDER BY 1")
+            impacto_gui = [{"tabla": f"historico_transacciones · partición {p}", "filas": int(c)} for p, c in cur.fetchall()]
+            cur.close()
+            conn.close()
+        elif agent_num == 5:
+            conn, _ = connect_mariadb_with_fallback(cfg)
+            cur = conn.cursor()
+            cur.execute("SELECT COUNT(*), TIMESTAMPDIFF(SECOND, MAX(fecha_carga_etl), NOW()) FROM fact_ventas")
+            total, secs_fact = cur.fetchone()
+            secs = secs_fact
+            try:
+                cur.execute("SELECT TIMESTAMPDIFF(SECOND, MAX(ultima_corrida), NOW()) FROM etl_control")
+                secs = cur.fetchone()[0]
+                cur.execute("SELECT fuente, ultimo_id, filas_cargadas, ultima_corrida, ultimo_lote FROM etl_control ORDER BY fuente")
+                impacto_gui = [
+                    {"tabla": f"fact_ventas ← {f} (marca de agua id_op {wm})", "filas": int(n),
+                     "ultimaCorrida": serialize_value(uc), "ultimoLote": lt}
+                    for f, wm, n, uc, lt in cur.fetchall()
+                ]
+            except Exception:
+                secs = secs_fact
+            cur.execute(
+                "SELECT f.id_fact, f.fecha_carga_etl, f.etl_lote, f.id_sede, p.nombre_producto, f.cantidad_botellas, "
+                "f.total_venta_usd, f.usuario_rbac "
+                "FROM fact_ventas f LEFT JOIN dim_producto p ON p.id_producto = f.id_producto ORDER BY f.id_fact DESC LIMIT %s",
+                (limit,),
+            )
+            rows = _rows_as_dicts(cur)
+            cur.close()
+            conn.close()
+        else:  # 6 CUENCA
+            conn, _ = connect_postgres_with_fallback(cfg)
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT COUNT(*), EXTRACT(EPOCH FROM (now() - MAX(fecha_hora)))::int FROM operaciones_agentes_cloud "
+                    "WHERE agente_nombre LIKE %s",
+                    (like,),
+                )
+                total, secs = cur.fetchone()
+                cur.execute(
+                    "SELECT id_op, fecha_hora, usuario_rbac, rol_rbac, modulo, operacion, monto_usd, latencia_wan_ms "
+                    "FROM operaciones_agentes_cloud WHERE agente_nombre LIKE %s ORDER BY id_op DESC LIMIT %s",
+                    (like, limit),
+                )
+                rows = _rows_as_dicts(cur)
+                cur.execute("SELECT COUNT(*) FROM frag_austral_facturas")
+                impacto_gui.append({"tabla": "frag_austral_facturas", "filas": int(cur.fetchone()[0])})
+                cur.execute(
+                    "SELECT modulo, COUNT(*) FROM operaciones_agentes_cloud WHERE agente_nombre LIKE %s GROUP BY modulo ORDER BY modulo",
+                    (like,),
+                )
+                por_modulo = [{"modulo": m, "operaciones": int(c)} for m, c in cur.fetchall()]
+            conn.close()
+
+        secs_int = int(secs) if secs is not None else None
+        return {
+            **base,
+            "nodoOnline": True,
+            "estado": "ACTIVO" if secs_int is not None and secs_int <= ESTADO_ACTIVO_SEGUNDOS else "INACTIVO",
+            "segundosDesdeUltima": secs_int,
+            "totalRegistros": int(total or 0),
+            "porModulo": por_modulo,
+            "impactoTablas": impacto_gui,
+            "ultimos": rows,
+            "latencyMs": round((time.perf_counter() - t0) * 1000, 2),
+        }
+    except Exception as exc:
+        return {
+            **base,
+            "nodoOnline": False,
+            "estado": "SIN CONEXIÓN",
+            "segundosDesdeUltima": None,
+            "totalRegistros": 0,
+            "porModulo": [],
+            "impactoTablas": [],
+            "ultimos": [],
+            "error": str(exc)[:250],
+            "latencyMs": round((time.perf_counter() - t0) * 1000, 2),
+        }
+
+
+def _agent_num(agente_id: str) -> int:
+    digits = "".join(ch for ch in agente_id if ch.isdigit())
+    num = int(digits) if digits else 0
+    if num not in AGENTES_IA:
+        raise HTTPException(status_code=404, detail="Agente no encontrado (use 1..6).")
+    return num
+
+
+@router.get("/api/agentes/estado")
+async def get_all_agents_status():
+    """Resumen de los 6 agentes (ACTIVO/INACTIVO, total de registros, segundos desde la última operación)."""
+    results = await asyncio.gather(*(asyncio.to_thread(get_agent_activity_sync, n, 1) for n in AGENTES_IA))
+    return {"timestamp": datetime.now().isoformat(), "apiReplica": REPLICA_ID, "agentes": results}
+
+
+@router.get("/api/agentes/{agente_id}/actividad")
+def get_agent_activity(agente_id: str, limit: int = Query(default=15, ge=1, le=100)):
+    """Qué está insertando un agente: últimas filas en su BD, conteo por módulo y tablas impactadas."""
+    return get_agent_activity_sync(_agent_num(agente_id), limit)
+
+
+@router.post("/api/agentes/{agente_id}/ejecutar")
+def run_agent_now(agente_id: str, request: Request):
+    """Ejecuta UNA operación del agente ahora mismo (lo mismo que hace su script cada 60 s)."""
+    import random as _random
+
+    num = _agent_num(agente_id)
+    ag = AGENTES_IA[num]
+    operativos = [(u, v) for u, v in USUARIOS_15_MAP.items() if u not in ("admin", "dba")]
+    if num == 5:
+        operativos = [(u, v) for u, v in operativos if v[1] in ("VENTAS", "CONTABILIDAD")]
+    usuario, (_rol, modulo, password) = _random.choice(operativos)
+    payload = AgentOperationRequest(
+        agente=ag["nombre"],
+        usuario=usuario,
+        password=password,
+        modulo="VENTAS" if num == 5 else modulo,
+        operacion=f"[Manual GUI] {ag['operacion'].format(modulo=modulo, usuario=usuario)}",
+        montoUsd=0.0 if num == 2 else round(_random.uniform(95.0, 1500.0), 2),
+        extraJson={"alerta": "STOCK_BAJO", "origen": "GUI", "usuario": usuario} if num == 2 else None,
+    )
+    return handle_agent_routed_operation(payload, request, x_sede=ag["sede"])
+
+
+# ==============================================================================
+# POWER BI: TABLAS PLANAS LISTAS PARA "OBTENER DATOS -> WEB" (Power Query M)
+# ==============================================================================
+
+POWERBI_DIMENSIONES = {"dim_sede", "dim_producto", "dim_tiempo"}
+
+
+def _dwh_select(sql: str) -> list[dict[str, Any]]:
+    configs = get_cluster_6dbs_config()
+    conn, _ = connect_mariadb_with_fallback(configs["GUAYAQUIL_DWH"])
+    cur = conn.cursor()
+    cur.execute(sql)
+    rows = _rows_as_dicts(cur)
+    cur.close()
+    conn.close()
+    return rows
+
+
+@router.get("/api/powerbi/fact_ventas")
+def powerbi_fact_ventas():
+    """Tabla de hechos completa de BD 5 (sin joins: Power BI arma las relaciones del esquema estrella)."""
+    return _dwh_select(
+        "SELECT id_fact, id_sede, id_producto, id_tiempo, usuario_rbac, rol_rbac, cantidad_botellas, "
+        "subtotal_usd, iva_usd, total_venta_usd, etl_lote, fecha_carga_etl FROM fact_ventas ORDER BY id_fact"
+    )
+
+
+@router.get("/api/powerbi/dim/{tabla}")
+def powerbi_dimension(tabla: str):
+    if tabla not in POWERBI_DIMENSIONES:
+        raise HTTPException(status_code=404, detail=f"Dimensión no válida. Use: {sorted(POWERBI_DIMENSIONES)}")
+    return _dwh_select(f"SELECT * FROM {tabla}")
+
+
+@router.get("/api/powerbi/operaciones_6bds")
+async def powerbi_operaciones_6bds(limit: int = Query(default=200, ge=1, le=2000)):
+    """Operaciones de los 6 agentes unificadas desde las 6 BDs (SQL + NoSQL + Cloud) con `origen_nodo`."""
+    keys = ["QUITO", "QUITO_NOSQL", "QUITO_PARALELA", "GUAYAQUIL", "GUAYAQUIL_DWH", "CUENCA"]
+    results = await asyncio.gather(*(asyncio.to_thread(fetch_global_records_from_bd_sync, k, limit) for k in keys))
+    data = []
+    for r in results:
+        data.extend(r["records"])
+    return data
+
+
+@router.get("/api/powerbi/salud_nodos")
+async def powerbi_salud_nodos():
+    """Estado y latencia de las 6 BDs como tabla plana (para un semáforo en Power BI)."""
+    keys = ["QUITO", "QUITO_NOSQL", "QUITO_PARALELA", "GUAYAQUIL", "GUAYAQUIL_DWH", "CUENCA"]
+    nodes = await asyncio.gather(*(asyncio.to_thread(inspect_single_bd_sync, k) for k in keys))
+    return [
+        {
+            "bd": n["bdId"], "sede": n["xSede"], "maquina": n["machine"], "motor": n["engine"],
+            "puerto": n["port"], "estado": n["status"], "latencia_ms": n["latencyMs"],
+            "tablas": n["tablesCount"], "tamano_kb": n["sizeKb"], "medido_en": datetime.now().isoformat(),
+        }
+        for n in nodes
+    ]

@@ -164,6 +164,16 @@ interface TwoPcResult {
   steps: TwoPcStep[];
 }
 
+interface PowerBiDataset {
+  sourceDatabase: string;
+  host: string;
+  port: number;
+  totalFacts: number;
+  kpisBySede: Array<{ sede: string; lotes_etl: number; botellas: number; total_usd: number }>;
+  kpisByCategoria: Array<{ categoria: string; botellas: number; total_usd: number }>;
+  starSchemaFacts: Array<Record<string, string | number>>;
+}
+
 type InteractiveElementId =
   | 'quito-sql'
   | 'quito-nosql'
@@ -171,11 +181,170 @@ type InteractiveElementId =
   | 'guayaquil-sql'
   | 'guayaquil-replica'
   | 'cuenca-cloud'
+  | 'agente-1'
+  | 'agente-2'
+  | 'agente-3'
+  | 'agente-4'
+  | 'agente-5'
+  | 'agente-6'
   | 'api-gateway'
   | 'gui-frontend'
-  | 'agentes-quito'
-  | 'agentes-gye'
   | 'power-bi';
+
+type AgentId = 'agente-1' | 'agente-2' | 'agente-3' | 'agente-4' | 'agente-5' | 'agente-6';
+
+interface AgentActivity {
+  agentId: string;
+  codigo: string;
+  nombre: string;
+  sede: string;
+  script: string;
+  maquina: string;
+  bdId: string;
+  nodeId: string;
+  baseDatos: string;
+  puerto: number;
+  motor: string;
+  nodoOnline: boolean;
+  estado: string;
+  segundosDesdeUltima: number | null;
+  totalRegistros: number;
+  porModulo: Array<{ modulo: string; operaciones: number }>;
+  impactoTablas: Array<{ tabla: string; filas: number; ultimaCorrida?: string; ultimoLote?: string }>;
+  ultimos: Array<Record<string, string | number | null>>;
+  error?: string;
+  latencyMs: number;
+}
+
+interface AgentRunResult {
+  routedTo: string;
+  modulo: string;
+  usuarioRbac: string;
+  rolRbac: string;
+  apiReplica: string;
+  latencyMs: number;
+  impacto: Array<{ tabla: string; accion: string; id: string | number | null; ok: boolean; error?: string }>;
+}
+
+const AGENT_DETAILS: Record<
+  AgentId,
+  {
+    code: string;
+    short: string;
+    name: string;
+    script: string;
+    headerXSede: string;
+    targetDbId: InteractiveElementId;
+    targetDbName: string;
+    whatItDoes: string;
+    whereToSeeIt: string;
+    credentialsUsed: string;
+    accent: string;
+  }
+> = {
+  'agente-1': {
+    code: 'AG 1',
+    short: 'OLTP Quito',
+    name: 'Agente 1 — Transaccional OLTP Quito',
+    script: 'agentes_quito.py (corre en la PC de Escritorio)',
+    headerXSede: 'QUITO',
+    targetDbId: 'quito-sql',
+    targetDbName: 'BD 1 · MariaDB Quito (:3307)',
+    whatItDoes:
+      'Cada 60 s elige uno de los 15 usuarios RBAC y un módulo al azar, y hace POST /api/agentes/operacion con X-Sede: QUITO. La API guarda la operación en `operaciones_agentes_ia` y además escribe en la tabla de negocio del módulo: VENTAS → `facturas`, COMPRAS → `compras`, CONTABILIDAD → `asientos`, INVENTARIOS → +2 de stock en `productos`. TALENTO HUMANO solo queda en la bitácora.',
+    whereToSeeIt:
+      'No escribe en la interfaz: escribe en BD 1. Lo ves aquí (tabla de abajo), en la pestaña 4 "Monitor Global" y en la Terminal DBA sobre BD 1. Las filas que crea llevan prefijo AGF-Q-, AGC-Q- y AGA-Q-.',
+    credentialsUsed: 'Rota entre los 15 usuarios operativos (c_*, i_*, v_*, th_*, ctbl_*) con su contraseña real',
+    accent: '#782c3e',
+  },
+  'agente-2': {
+    code: 'AG 2',
+    short: 'NoSQL JSON',
+    name: 'Agente 2 — Documentos NoSQL y alertas JSON',
+    script: 'agentes_quito.py (corre en la PC de Escritorio)',
+    headerXSede: 'QUITO_NOSQL',
+    targetDbId: 'quito-nosql',
+    targetDbName: 'BD 2 · MongoDB Quito (:27017)',
+    whatItDoes:
+      'Cada 60 s envía un documento JSON sin esquema fijo (alerta STOCK_BAJO, usuario, ciclo). La API lo inserta en las colecciones `eventos_agentes` y `logs_auditoria` de MongoDB.',
+    whereToSeeIt:
+      'Lo ves aquí (columna documento_json), en el Monitor Global y en la Terminal DBA → BD 2 → MONGO_COLLECTION:eventos_agentes.',
+    credentialsUsed: 'Rota entre los 15 usuarios operativos',
+    accent: '#782c3e',
+  },
+  'agente-3': {
+    code: 'AG 3',
+    short: 'Lotes HASH',
+    name: 'Agente 3 — Speed-up paralelo (PARTITION BY HASH)',
+    script: 'agentes_quito.py (corre en la PC de Escritorio)',
+    headerXSede: 'QUITO_PARALELA',
+    targetDbId: 'quito-otras',
+    targetDbName: 'BD 3 · MariaDB Paralela Quito (:3308)',
+    whatItDoes:
+      'Cada 60 s inserta una transacción histórica en `historico_transacciones`. El motor calcula MOD(id, 4) y guarda la fila en una de las 4 particiones físicas (p0..p3): así se demuestra speed-up dentro del motor.',
+    whereToSeeIt:
+      'Lo ves aquí (columna particion y el conteo por partición) y en la Terminal DBA → BD 3 → "Distribución real de registros por partición".',
+    credentialsUsed: 'Rota entre los 15 usuarios operativos',
+    accent: '#782c3e',
+  },
+  'agente-4': {
+    code: 'AG 4',
+    short: 'OLTP GYE',
+    name: 'Agente 4 — Transaccional OLTP Guayaquil',
+    script: 'agentes_gye_cuenca.py (corre en la Laptop)',
+    headerXSede: 'GUAYAQUIL',
+    targetDbId: 'guayaquil-sql',
+    targetDbName: 'BD 4 · MariaDB Guayaquil (:3306)',
+    whatItDoes:
+      'Igual que el Agente 1 pero contra BD 4: cada 60 s un usuario RBAC al azar registra una operación en `operaciones_agentes_ia` y la API la replica en `facturas`, `compras`, `asientos` o el stock de `productos` según el módulo.',
+    whereToSeeIt:
+      'Lo ves aquí, en el Monitor Global y en la Terminal DBA sobre BD 4. Las filas que crea llevan prefijo AGF-G-, AGC-G- y AGA-G-.',
+    credentialsUsed: 'Rota entre los 15 usuarios operativos con su contraseña real',
+    accent: '#183a31',
+  },
+  'agente-5': {
+    code: 'AG 5',
+    short: 'Mini-ETL',
+    name: 'Agente 5 — Mini-ETL hacia el esquema estrella',
+    script: 'agentes_gye_cuenca.py (corre en la Laptop)',
+    headerXSede: 'GUAYAQUIL_DWH',
+    targetDbId: 'guayaquil-replica',
+    targetDbName: 'BD 5 · MariaDB DWH (:3309)',
+    whatItDoes:
+      'Cada 60 s ejecuta un ETL incremental real: EXTRAE las ventas nuevas de BD 1, BD 4 y BD 6 (id_op > marca de agua guardada en `etl_control`), las TRANSFORMA (producto, botellas = monto / precio, IVA 15 %, mes) y las CARGA en `fact_ventas`. Si un nodo está caído, lo salta y lo recupera en la siguiente corrida.',
+    whereToSeeIt:
+      'Lo ves aquí (lotes ETL y marcas de agua), en la pestaña 2 "Power BI" y en Power BI Desktop, que lee `fact_ventas` + `dim_*`.',
+    credentialsUsed: 'Usuarios de Ventas y Contabilidad (v_*, ctbl_*)',
+    accent: '#183a31',
+  },
+  'agente-6': {
+    code: 'AG 6',
+    short: 'Cloud WAN',
+    name: 'Agente 6 — Transacciones en la nube (Cuenca)',
+    script: 'agentes_gye_cuenca.py (corre en la Laptop)',
+    headerXSede: 'CUENCA',
+    targetDbId: 'cuenca-cloud',
+    targetDbName: 'BD 6 · PostgreSQL Supabase (:5432)',
+    whatItDoes:
+      'Cada 60 s inserta una operación en `operaciones_agentes_cloud` de Supabase y mide la latencia WAN (latencia_wan_ms). Si el módulo es VENTAS, además crea una factura en `frag_austral_facturas`.',
+    whereToSeeIt:
+      'Lo ves aquí, en el Monitor Global y en la Terminal DBA sobre BD 6. Compara su latencia con la de los nodos por Tailscale.',
+    credentialsUsed: '15 usuarios RBAC replicados en Cuenca Cloud',
+    accent: '#a96b16',
+  },
+};
+
+const AGENT_IDS = Object.keys(AGENT_DETAILS) as AgentId[];
+
+const isAgentId = (id: string): id is AgentId => id in AGENT_DETAILS;
+
+const formatAgo = (secs: number | null | undefined): string => {
+  if (secs === null || secs === undefined) return 'sin datos';
+  if (secs < 0) return 'ahora';
+  if (secs < 60) return `hace ${secs} s`;
+  if (secs < 3600) return `hace ${Math.round(secs / 60)} min`;
+  return `hace ${Math.round(secs / 3600)} h`;
+};
 
 const BRANCH_IDENTITIES = [
   {
@@ -187,7 +356,7 @@ const BRANCH_IDENTITIES = [
     emblem: '🍷 Cava Gran Reserva & Centro Financiero Matriz',
     specialty: 'Whisky Single Malt Escocés 12Y/18Y, Vinos Gran Reserva de Altura y Consolidación Contable Nacional.',
     databases: '3 Bases de Datos: BD 1 MariaDB OLTP (:3307) · BD 2 MongoDB NoSQL (:27017) · BD 3 MariaDB Paralela HASH (:3308)',
-    agents: 'Agente 1 (X-Sede: QUITO) · Agente 2 (X-Sede: QUITO_NOSQL) · Agente 3 (X-Sede: QUITO_PARALELA)',
+    agents: 'Agente 1 (BD 1) · Agente 2 (BD 2) · Agente 3 (BD 3)',
   },
   {
     code: 'GYE',
@@ -198,7 +367,7 @@ const BRANCH_IDENTITIES = [
     emblem: '⚓ Hub Logístico Puerto Marítimo & Data Warehouse BI',
     specialty: 'Importación de Contenedores SENAE, Distribución Cervecería Nacional, Rones Añejos y Cubo Estrella Power BI.',
     databases: '2 Bases de Datos: BD 4 MariaDB Local OLTP (:3306) · BD 5 MariaDB DWH Estrella (:3309)',
-    agents: 'Agente 4 (X-Sede: GUAYAQUIL) · Agente 5 Mini-ETL (X-Sede: GUAYAQUIL_DWH) + Nginx LB & 3 Réplicas API',
+    agents: 'Agente 4 (BD 4) · Agente 5 Mini-ETL (BD 5) + Nginx LB & 3 Réplicas API',
   },
   {
     code: 'CUE',
@@ -209,14 +378,14 @@ const BRANCH_IDENTITIES = [
     emblem: '🏔️ Destilerías Tradicionales del Sur (Azuay & Loja)',
     specialty: 'Productores y Destilerías Australes: Aguardiente Zhumir (Azende), Cristal (EASA), Ron San Miguel y Cantaclaro.',
     databases: '1 Base de Datos Cloud: BD 6 PostgreSQL 18 / Supabase DBaaS (:5432 cloud_cuenca_loja)',
-    agents: 'Agente 6 (X-Sede: CUENCA) · Medición de Latencia WAN en Tiempo Real y Certificados TLS',
+    agents: 'Agente 6 (BD 6) · Medición de Latencia WAN en Tiempo Real',
   },
 ];
 
 export const ArchitectureConsole: React.FC = () => {
   const { user } = useAuth();
   const isStrictDba = isDbaUser(user) && !isSuperAdmin(user);
-  const [activeTab, setActiveTab] = useState<'diagram_vs' | 'global_dba' | 'board' | 'dba_prompt' | 'twopc'>('diagram_vs');
+  const [activeTab, setActiveTab] = useState<'diagram_vs' | 'powerbi_tab' | 'global_dba' | 'board' | 'dba_prompt' | 'twopc'>('diagram_vs');
   const [topology, setTopology] = useState<TopologyResponse | null>(null);
   const [loadingTopo, setLoadingTopo] = useState(false);
 
@@ -228,6 +397,9 @@ export const ArchitectureConsole: React.FC = () => {
   const [filterSede, setFilterSede] = useState<string>('TODAS');
   const [filterModulo, setFilterModulo] = useState<string>('TODOS');
   const [loadingGlobal, setLoadingGlobal] = useState<boolean>(false);
+
+  // Power BI Star Schema state
+  const [powerBiData, setPowerBiData] = useState<PowerBiDataset | null>(null);
 
   // Prompt SQL DBA state
   const [selectedNodeId, setSelectedNodeId] = useState<string>('cuenca-cloud');
@@ -247,6 +419,41 @@ export const ArchitectureConsole: React.FC = () => {
   const [twoPcResult, setTwoPcResult] = useState<TwoPcResult | null>(null);
   const [runningTwoPc, setRunningTwoPc] = useState<boolean>(false);
 
+  // 6 Agentes IA (1 por BD): estado resumido + actividad del agente seleccionado
+  const [agentStatus, setAgentStatus] = useState<Partial<Record<AgentId, AgentActivity>>>({});
+  const [agentActivity, setAgentActivity] = useState<AgentActivity | null>(null);
+  const [agentRun, setAgentRun] = useState<AgentRunResult | null>(null);
+  const [agentRunError, setAgentRunError] = useState<string>('');
+  const [runningAgent, setRunningAgent] = useState<boolean>(false);
+
+  const fetchAgentStatus = useCallback(async () => {
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/agentes/estado`);
+      if (res.ok) {
+        const data: { agentes: AgentActivity[] } = await res.json();
+        const map: Partial<Record<AgentId, AgentActivity>> = {};
+        data.agentes.forEach(a => {
+          if (isAgentId(a.agentId)) map[a.agentId] = a;
+        });
+        setAgentStatus(map);
+      }
+    } catch {
+      // API no disponible momentáneamente
+    }
+  }, []);
+
+  const fetchAgentActivity = useCallback(async (agentId: AgentId) => {
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/agentes/${agentId}/actividad?limit=15`);
+      if (res.ok) {
+        const data: AgentActivity = await res.json();
+        setAgentActivity(data);
+      }
+    } catch {
+      // API no disponible momentáneamente
+    }
+  }, []);
+
   const fetchTopology = useCallback(async () => {
     setLoadingTopo(true);
     try {
@@ -259,6 +466,18 @@ export const ArchitectureConsole: React.FC = () => {
       // Ignore transient errors
     } finally {
       setLoadingTopo(false);
+    }
+  }, []);
+
+  const fetchPowerBiStar = useCallback(async () => {
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/powerbi/estrella`);
+      if (res.ok) {
+        const data: PowerBiDataset = await res.json();
+        setPowerBiData(data);
+      }
+    } catch {
+      // Ignore
     }
   }, []);
 
@@ -325,14 +544,31 @@ export const ArchitectureConsole: React.FC = () => {
   useEffect(() => {
     void fetchTopology();
     void fetchGlobalDbaConsole('TODAS', 'TODOS');
+    void fetchPowerBiStar();
     void runDbaQuery('cuenca-cloud', "SELECT id_op, sede_header, agente_nombre, usuario_rbac, rol_rbac, modulo, operacion, monto_usd, latencia_wan_ms, fecha_hora FROM operaciones_agentes_cloud ORDER BY id_op DESC LIMIT 10;");
-  }, [fetchTopology, fetchGlobalDbaConsole, runDbaQuery]);
+  }, [fetchTopology, fetchGlobalDbaConsole, fetchPowerBiStar, runDbaQuery]);
 
   useEffect(() => {
     if (selectedNodeId && selectedNodeId !== 'global-federated') {
       void fetchNodeLogs(selectedNodeId);
     }
   }, [selectedNodeId, fetchNodeLogs]);
+
+  // Estado de los 6 agentes (punto verde/ámbar en cada tarjeta) cada 15 s mientras se ve el diagrama
+  useEffect(() => {
+    if (activeTab !== 'diagram_vs') return undefined;
+    void fetchAgentStatus();
+    const t = window.setInterval(() => void fetchAgentStatus(), 15000);
+    return () => window.clearInterval(t);
+  }, [activeTab, fetchAgentStatus]);
+
+  // Actividad del agente seleccionado cada 10 s
+  useEffect(() => {
+    if (activeTab !== 'diagram_vs' || !isAgentId(focusedElement)) return undefined;
+    const id = focusedElement;
+    const t = window.setInterval(() => void fetchAgentActivity(id), 10000);
+    return () => window.clearInterval(t);
+  }, [activeTab, focusedElement, fetchAgentActivity]);
 
   const handleClickDiagramNode = (elemId: InteractiveElementId) => {
     setFocusedElement(elemId);
@@ -346,6 +582,13 @@ export const ArchitectureConsole: React.FC = () => {
       } else {
         void fetchNodeLogs(elemId);
       }
+    } else if (isAgentId(elemId)) {
+      setAgentActivity(null);
+      setAgentRun(null);
+      setAgentRunError('');
+      void fetchAgentActivity(elemId);
+    } else if (elemId === 'power-bi') {
+      void fetchPowerBiStar();
     }
   };
 
@@ -364,22 +607,17 @@ export const ArchitectureConsole: React.FC = () => {
   const triggerAgentsRoundNow = async () => {
     setLoadingGlobal(true);
     try {
-      const operations = [
-        { sede: 'GUAYAQUIL', agente: 'Agente-4-GYE', usuario: 'v_jefe', password: 'VentasJefe2026*', modulo: 'VENTAS', operacion: 'Venta corporativa POS Guayaquil (:3306)', montoUsd: 495.5 },
-        { sede: 'GUAYAQUIL_DWH', agente: 'Agente-5-DWH', usuario: 'ctbl_supervisor', password: 'CtblSup2026*', modulo: 'VENTAS', operacion: 'Mini-ETL consolidación hacia Esquema Estrella BD 5 (:3309)', montoUsd: 1420.0 },
-        { sede: 'CUENCA', agente: 'Agente-6-Cuenca', usuario: 'i_operador', password: 'InveOpe2026*', modulo: 'INVENTARIOS', operacion: 'Transacción WAN Supabase Cloud Cuenca (:5432)', montoUsd: 380.0 },
-      ];
+      // Una operación de cada uno de los 6 agentes (el 5 va al final para que el ETL recoja las ventas nuevas).
       await Promise.all(
-        operations.map(op =>
-          fetch(`${API_BASE_URL}/api/agentes/operacion`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'X-Sede': op.sede },
-            body: JSON.stringify(op),
-          })
+        AGENT_IDS.filter(id => id !== 'agente-5').map(id =>
+          fetch(`${API_BASE_URL}/api/agentes/${id}/ejecutar`, { method: 'POST' }).catch(() => null)
         )
       );
+      await fetch(`${API_BASE_URL}/api/agentes/agente-5/ejecutar`, { method: 'POST' }).catch(() => null);
       await fetchGlobalDbaConsole(filterSede, filterModulo);
       await fetchTopology();
+      await fetchPowerBiStar();
+      await fetchAgentStatus();
     } finally {
       setLoadingGlobal(false);
     }
@@ -413,20 +651,26 @@ export const ArchitectureConsole: React.FC = () => {
 
   const currentNode = topology?.nodes.find(n => n.id === selectedNodeId);
   const focusedDbNode = topology?.nodes.find(n => n.id === focusedElement);
-
+  const focusedAgentId: AgentId | null = isAgentId(focusedElement) ? focusedElement : null;
+  const focusedAgent = focusedAgentId ? AGENT_DETAILS[focusedAgentId] : null;
   const findNode = (id: string) => topology?.nodes.find(n => n.id === id);
 
-  // Renderizador de cada cajita "BD" del boceto del usuario
-  const renderDbSquare = (nodeId: InteractiveElementId, shortCode: string, subtitle: string) => {
+  // ---------- Piezas del lienzo: caja de BD, tarjeta de Agente (separada) y bloque de sede ----------
+  const COL_W = 108;
+  const COL_GAP = 14;
+
+  const renderDbBox = (nodeId: InteractiveElementId, bdLabel: string, roleShort: string, portStr: string) => {
     const n = findNode(nodeId);
     const isOnline = !n || n.status === 'ONLINE';
-    const isFocused = focusedElement === nodeId;
+    const isDbFocused = focusedElement === nodeId;
     return (
       <button
         key={nodeId}
         type="button"
         onClick={() => handleClickDiagramNode(nodeId)}
+        title={n ? `${n.name} — ${n.status}` : bdLabel}
         style={{
+          width: `${COL_W}px`,
           display: 'flex',
           flexDirection: 'column',
           alignItems: 'center',
@@ -434,65 +678,135 @@ export const ArchitectureConsole: React.FC = () => {
           background: 'transparent',
           border: 'none',
           cursor: 'pointer',
-          padding: '4px',
-          transition: 'transform 0.15s ease',
-          transform: isFocused ? 'scale(1.06)' : 'scale(1)',
+          padding: 0,
         }}
       >
         <div
           style={{
             width: '86px',
-            height: '82px',
+            height: '80px',
             borderRadius: '16px',
-            border: isFocused
-              ? '3px solid #782c3e'
-              : isOnline
-              ? '2.5px solid #183a31'
-              : '2.5px solid #9a3937',
-            background: isFocused
-              ? '#fbf3f0'
-              : isOnline
-              ? '#ffffff'
-              : '#f8e9e8',
-            boxShadow: isFocused
-              ? '0 8px 22px rgba(120,44,62,0.22)'
-              : '0 4px 12px rgba(24,58,49,0.08)',
+            border: isDbFocused ? '3px solid #782c3e' : isOnline ? '2px solid #25251f' : '2.5px solid #9a3937',
+            background: isDbFocused ? '#fbf3f0' : isOnline ? '#ffffff' : '#f8e9e8',
+            boxShadow: isDbFocused ? '0 8px 20px rgba(120,44,62,0.22)' : '0 3px 10px rgba(0,0,0,0.06)',
             display: 'flex',
             flexDirection: 'column',
             alignItems: 'center',
             justifyContent: 'center',
             position: 'relative',
+            transition: 'all 0.15s ease',
           }}
         >
-          {/* Punto de estado en vivo */}
           <span
             style={{
-              position: 'absolute',
-              top: '7px',
-              right: '7px',
-              width: '9px',
-              height: '9px',
-              borderRadius: '50%',
+              position: 'absolute', top: '7px', right: '7px', width: '9px', height: '9px', borderRadius: '50%',
               background: isOnline ? '#267154' : '#9a3937',
-              boxShadow: isOnline ? '0 0 0 3px rgba(38,113,84,0.2)' : '0 0 0 3px rgba(154,57,55,0.2)',
             }}
           />
-          <Database size={22} color={isFocused ? '#782c3e' : isOnline ? '#183a31' : '#9a3937'} />
-          <strong style={{ fontSize: '11px', color: '#25251f', marginTop: '3px' }}>{shortCode}</strong>
-          <code style={{ fontSize: '9.5px', color: '#782c3e', fontWeight: 700 }}>
-            :{n?.actualPort || subtitle}
-          </code>
+          <Database size={21} color={isOnline ? '#183a31' : '#9a3937'} />
+          <strong style={{ fontSize: '11.5px', color: '#25251f', marginTop: '3px' }}>{bdLabel}</strong>
+          <code style={{ fontSize: '9.5px', color: '#782c3e', fontWeight: 700 }}>:{n?.actualPort || portStr}</code>
         </div>
-        <div style={{ textAlign: 'center' }}>
-          <div style={{ fontFamily: "'Playfair Display', Georgia, serif", fontWeight: 700, fontSize: '13px', color: '#25251f' }}>
-            BD ({shortCode})
-          </div>
-          <div style={{ fontSize: '9.5px', color: isOnline ? '#267154' : '#9a3937', fontWeight: 700 }}>
-            {isOnline ? `${n?.latencyMs ?? 12} ms` : 'OFFLINE'}
-          </div>
-        </div>
+        <span style={{ fontSize: '12px', fontWeight: 700, color: '#25251f' }}>{roleShort}</span>
+        <span style={{ fontSize: '10px', fontWeight: 700, color: isOnline ? '#267154' : '#9a3937' }}>
+          {n ? (isOnline ? `${n.latencyMs} ms` : 'OFFLINE') : '…'}
+        </span>
       </button>
     );
+  };
+
+  const renderAgentCard = (agentId: AgentId) => {
+    const ag = AGENT_DETAILS[agentId];
+    const st = agentStatus[agentId];
+    const focused = focusedElement === agentId;
+    const color = !st ? '#9e9d95' : st.estado === 'ACTIVO' ? '#267154' : st.estado === 'INACTIVO' ? '#a96b16' : '#9a3937';
+    return (
+      <div key={agentId} style={{ width: `${COL_W}px`, display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+        {/* conector punteado: el agente escribe en la BD de arriba (vía API + X-Sede) */}
+        <div style={{ width: '2px', height: '20px', background: `repeating-linear-gradient(to bottom, ${ag.accent} 0, ${ag.accent} 4px, transparent 4px, transparent 7px)` }} />
+        <button
+          type="button"
+          onClick={() => handleClickDiagramNode(agentId)}
+          title={`${ag.name}: clic para ver qué está insertando`}
+          style={{
+            width: '100%',
+            padding: '7px 6px',
+            borderRadius: '12px',
+            border: focused ? `2px solid ${ag.accent}` : '1.5px solid #d9d6cc',
+            background: focused ? ag.accent : '#ffffff',
+            color: focused ? '#ffffff' : '#25251f',
+            boxShadow: focused ? `0 6px 16px ${ag.accent}40` : '0 2px 6px rgba(0,0,0,0.05)',
+            cursor: 'pointer',
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            gap: '2px',
+            transition: 'all 0.15s ease',
+          }}
+        >
+          <span style={{ display: 'flex', alignItems: 'center', gap: '5px', fontSize: '12px', fontWeight: 800 }}>
+            <Bot size={14} color={focused ? '#ffffff' : ag.accent} />
+            {ag.code}
+            <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: color, boxShadow: `0 0 0 2px ${focused ? '#ffffff55' : color + '33'}` }} />
+          </span>
+          <span style={{ fontSize: '10.5px', fontWeight: 600, opacity: 0.9 }}>{ag.short}</span>
+          <span style={{ fontSize: '9.5px', opacity: 0.85 }}>
+            {st ? (st.nodoOnline ? formatAgo(st.segundosDesdeUltima) : 'sin conexión') : '…'}
+          </span>
+        </button>
+      </div>
+    );
+  };
+
+  type SiteDb = [InteractiveElementId, AgentId, string, string, string];
+
+  const renderSite = (opts: {
+    label: string;
+    sub: string;
+    accent: string;
+    bg: string;
+    border: string;
+    dbs: SiteDb[];
+  }) => {
+    const cols = `repeat(${opts.dbs.length}, ${COL_W}px)`;
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+        {/* RECUADRO DE LA MÁQUINA: SOLO CONTIENE SUS BASES DE DATOS */}
+        <div style={{ border: `2px solid ${opts.accent}`, borderRadius: '16px', background: opts.bg, padding: '10px 14px 12px', boxShadow: '0 6px 18px rgba(0,0,0,0.05)' }}>
+          <div style={{ textAlign: 'center', marginBottom: '10px' }}>
+            <div style={{ fontSize: '10.5px', fontWeight: 800, color: opts.accent, letterSpacing: '.06em' }}>{opts.label}</div>
+            <div style={{ fontSize: '9.5px', color: '#787970', fontFamily: 'monospace' }}>{opts.sub}</div>
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: cols, gap: `${COL_GAP}px`, justifyItems: 'center' }}>
+            {opts.dbs.map(([nodeId, , bd, role, port]) => renderDbBox(nodeId, bd, role, port))}
+          </div>
+        </div>
+        {/* CARRIL DE AGENTES: FUERA DEL RECUADRO, UNO DEBAJO DE CADA BD */}
+        <div style={{ display: 'grid', gridTemplateColumns: cols, gap: `${COL_GAP}px`, justifyItems: 'center', padding: '0 16px' }}>
+          {opts.dbs.map(([, agentId]) => renderAgentCard(agentId))}
+        </div>
+      </div>
+    );
+  };
+
+  const runSingleAgent = async (agentId: AgentId) => {
+    setRunningAgent(true);
+    setAgentRunError('');
+    setAgentRun(null);
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/agentes/${agentId}/ejecutar`, { method: 'POST' });
+      const body = await res.json();
+      if (!res.ok) {
+        setAgentRunError(body?.detail || 'La API rechazó la operación.');
+      } else {
+        setAgentRun(body);
+      }
+      await Promise.all([fetchAgentActivity(agentId), fetchAgentStatus()]);
+    } catch (err) {
+      setAgentRunError(err instanceof Error ? err.message : 'Error de red.');
+    } finally {
+      setRunningAgent(false);
+    }
   };
 
   return (
@@ -501,11 +815,11 @@ export const ArchitectureConsole: React.FC = () => {
       <div className="page-heading">
         <div>
           <span className="eyebrow">
-            TOPOLOGÍA INTERACTIVA EN VIVO · TÚNEL VPN TAILSCALE · 3 RÉPLICAS API ({globalData?.apiReplica || topology?.apiReplica || 'api_lacava_1'})
+            TOPOLOGÍA INTERACTIVA EN VIVO · TÚNEL VPN TAILSCALE · 6 BDs + 6 AGENTES IA ({globalData?.apiReplica || topology?.apiReplica || 'api_lacava_1'})
           </span>
-          <h1>Mapa Visual del Clúster Híbrido "La Cava"</h1>
+          <h1>Diagrama en Vivo del Clúster Híbrido "La Cava"</h1>
           <p>
-            Haz clic en cualquiera de las <strong>6 Bases de Datos (BD)</strong>, en los <strong>Agentes IA</strong>, en el <strong>API Gateway</strong> o en la <strong>GUI</strong> del diagrama para inspeccionar su flujo, tablas y consultas en vivo.
+            Haz clic en cualquiera de las <strong>6 BDs</strong>, en cualquiera de los <strong>6 Agentes IA (`AG 1..AG 6`)</strong>, en la <strong>API</strong> o en la <strong>GUI</strong> para ver abajo qué datos está ingresando y consultar sus tablas en vivo.
           </p>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
@@ -518,6 +832,7 @@ export const ArchitectureConsole: React.FC = () => {
             onClick={() => {
               void fetchTopology();
               void fetchGlobalDbaConsole();
+              void fetchPowerBiStar();
             }}
             disabled={loadingTopo || loadingGlobal}
           >
@@ -530,11 +845,12 @@ export const ArchitectureConsole: React.FC = () => {
       {/* PESTAÑAS CON LOS COLORES BORGOÑA Y VERDE BOSQUE DE LA CAVA */}
       <div style={{ display: 'flex', gap: '9px', marginBottom: '20px', flexWrap: 'wrap' }}>
         {[
-          { id: 'diagram_vs', label: '1. Diagrama Interactivo en Vivo (6 BDs + Túnel Tailscale + Agentes + API + GUI)', icon: GitCompare, show: true },
-          { id: 'dba_prompt', label: '2. Terminal Read-Only del DBA (Consultas para las 3 Sucursales / 6 BDs)', icon: Terminal, show: true },
-          { id: 'global_dba', label: '3. Monitor Global Unificado (6 BDs en Paralelo · Solo Lectura)', icon: Filter, show: true },
-          { id: 'board', label: '4. Identidad por Sucursal & Tarjetas de Nodos', icon: Network, show: true },
-          { id: 'twopc', label: '5. Simulador de Escritura 2PC (Exclusivo Admin / Arquitecto)', icon: ShieldCheck, show: !isStrictDba },
+          { id: 'diagram_vs', label: '1. Diagrama Interactivo (6 BDs + 6 Agentes IA + Túnel Tailscale + API + GUI)', icon: GitCompare, show: true },
+          { id: 'powerbi_tab', label: '2. Dashboard OLAP & Configuración Power BI (BD 5 Estrella :3309)', icon: BarChart3, show: true },
+          { id: 'dba_prompt', label: '3. Terminal Read-Only del DBA (Consultas 3 Sucursales / 6 BDs)', icon: Terminal, show: true },
+          { id: 'global_dba', label: '4. Monitor Global Unificado (6 BDs en Paralelo)', icon: Filter, show: true },
+          { id: 'board', label: '5. Identidad por Sucursal & Tarjetas de Nodos', icon: Network, show: true },
+          { id: 'twopc', label: '6. Simulador 2PC (Exclusivo Admin / Arquitecto)', icon: ShieldCheck, show: !isStrictDba },
         ].filter(t => t.show).map(tab => {
           const Icon = tab.icon;
           const active = activeTab === tab.id;
@@ -558,413 +874,194 @@ export const ArchitectureConsole: React.FC = () => {
         })}
       </div>
 
-      {/* ==================== TAB 1: DIAGRAMA VISUAL INTERACTIVO (EXACTAMENTE COMO EL BOCETO) ==================== */}
+      {/* ==================== TAB 1: DIAGRAMA VISUAL LIMPIO Y CUADRADO (EXACTAMENTE COMO EL BOCETO) ==================== */}
       {activeTab === 'diagram_vs' && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '18px' }}>
-          <section className="card" style={{ padding: '22px', position: 'relative', overflow: 'hidden' }}>
-            <div className="section-heading" style={{ marginBottom: '12px' }}>
+          <section className="card" style={{ padding: '22px' }}>
+            <div className="section-heading" style={{ marginBottom: '14px' }}>
               <div>
                 <h2 style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '18px' }}>
                   <Network size={20} color="#782c3e" />
-                  Arquitectura en Vivo: Quito (3 BDs) · Guayaquil (2 BDs) · Cuenca (1 BD) ↔ Túnel Tailscale ↔ API ↔ GUI
+                  Flujo en Vivo: 3 BDs Quito (Izq) · 2 BDs Guayaquil (Arriba) · 1 BD Cuenca (Der) ↔ Túnel Tailscale ↔ API ↔ GUI
                 </h2>
                 <p>
-                  <strong>Interactivo:</strong> Haz clic sobre cualquier bloque (<strong>BD 1..6</strong>, <strong>Agentes IA</strong>, <strong>API</strong> o <strong>GUI</strong>) para abrir abajo su inspector en vivo con todos sus datos, logs y terminal Read-Only.
+                  Cada Base de Datos tiene su propio <strong>Agente IA independiente (`AG 1` a `AG 6`)</strong> justo debajo. Haz clic en cualquier <strong>BD</strong> o en cualquier <strong>Agente (`AG 1..6`)</strong> para ver exactamente qué está ingresando.
                 </p>
               </div>
-              <span className="demo-badge">HAZ CLIC EN CUALQUIER NODO DEL DIAGRAMA</span>
+              <span className="demo-badge">1 AGENTE IA POR CADA BASE DE DATOS</span>
             </div>
 
-            {/* ==================== LIENZO GRÁFICO CON LÍNEAS SVG DEL TÚNEL TAILSCALE ==================== */}
-            <div
-              style={{
-                position: 'relative',
-                width: '100%',
-                minHeight: '590px',
-                background: 'radial-gradient(circle at 50% 52%, #ffffff 0%, #f6f4ef 100%)',
-                border: '1.5px solid #dfded7',
-                borderRadius: '16px',
-                padding: '18px',
-                overflowX: 'auto',
-              }}
-            >
-              <div style={{ position: 'relative', minWidth: '940px', height: '550px', margin: '0 auto' }}>
-                {/* LÍNEAS DE CONEXIÓN SVG (TÚNEL TAILSCALE WIREGUARD + ENRUTAMIENTO X-SEDE) */}
-                <svg
-                  viewBox="0 0 1000 550"
-                  style={{
-                    position: 'absolute',
-                    inset: 0,
-                    width: '100%',
-                    height: '100%',
-                    pointerEvents: 'none',
-                    zIndex: 1,
-                  }}
-                >
-                  <defs>
-                    <marker id="arrow-wine" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto">
-                      <path d="M0,0 L8,4 L0,8 Z" fill="#782c3e" />
-                    </marker>
-                    <marker id="arrow-green" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto">
-                      <path d="M0,0 L8,4 L0,8 Z" fill="#183a31" />
-                    </marker>
-                    <marker id="arrow-gold" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto">
-                      <path d="M0,0 L8,4 L0,8 Z" fill="#a96b16" />
-                    </marker>
-                  </defs>
+            {/* ==================== LIENZO: SEDES (SOLO BDs) + CARRIL DE AGENTES APARTE + API + GUI ==================== */}
+            <div style={{ overflowX: 'auto' }}>
+              <div
+                style={{
+                  minWidth: '980px',
+                  background: 'radial-gradient(circle at 50% 45%, #ffffff 0%, #f6f4ef 100%)',
+                  border: '1.5px solid #dfded7',
+                  borderRadius: '16px',
+                  padding: '22px 20px 18px',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  alignItems: 'center',
+                  gap: '6px',
+                }}
+              >
+                {/* FILA SUPERIOR: LAPTOP GUAYAQUIL */}
+                {renderSite({
+                  label: '💻 LAPTOP — SEDE GUAYAQUIL',
+                  sub: `${findNode('guayaquil-sql')?.machine || 'Laptop (100.123.81.4)'} · 2 BDs`,
+                  accent: '#183a31',
+                  bg: '#f4f9f6',
+                  border: '#cde0d3',
+                  dbs: [
+                    ['guayaquil-sql', 'agente-4', 'BD 4', 'OLTP', '3306'],
+                    ['guayaquil-replica', 'agente-5', 'BD 5', 'DWH', '3309'],
+                  ],
+                })}
 
-                  {/* Halo del Túnel Tailscale */}
-                  <ellipse cx="500" cy="310" rx="235" ry="62" fill="rgba(24,58,49,0.04)" stroke="#cbd5cb" strokeDasharray="6 4" strokeWidth="1.5" />
-                  <text x="500" y="259" textAnchor="middle" fill="#183a31" fontSize="10" fontWeight="800" letterSpacing="1.5">
-                    🔒 MALLA VPN TAILSCALE (100.77.220.102 ◄── WireGuard 7ms ──► 100.123.81.4)
-                  </text>
+                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', margin: '2px 0' }}>
+                  <div style={{ width: '2.5px', height: '18px', background: 'repeating-linear-gradient(to bottom, #183a31 0, #183a31 5px, transparent 5px, transparent 9px)' }} />
+                  <span style={{ fontSize: '9.5px', fontWeight: 700, color: '#183a31', background: '#eff5f1', padding: '2px 8px', borderRadius: '8px' }}>
+                    ▼ X-Sede: GUAYAQUIL · GUAYAQUIL_DWH (local)
+                  </span>
+                </div>
 
-                  {/* Línea: Quito (3 BDs a la izquierda) <---> API Central */}
-                  <path
-                    d="M 315 235 C 375 260, 400 310, 415 340"
-                    fill="none"
-                    stroke="#782c3e"
-                    strokeWidth="2.8"
-                    strokeDasharray="7 4"
-                    markerEnd="url(#arrow-wine)"
-                  />
-                  <rect x="295" y="274" width="138" height="20" rx="10" fill="#fbf3f0" stroke="#ead6cf" />
-                  <text x="364" y="287" textAnchor="middle" fill="#782c3e" fontSize="9.5" fontWeight="700">
-                    Tailscale :3307/:27017/:3308
-                  </text>
-
-                  {/* Línea: Agentes Quito ---> API Central */}
-                  <path
-                    d="M 225 365 C 310 380, 360 365, 412 355"
-                    fill="none"
-                    stroke="#782c3e"
-                    strokeWidth="2"
-                    markerEnd="url(#arrow-wine)"
-                  />
-                  <text x="320" y="390" textAnchor="middle" fill="#782c3e" fontSize="9" fontWeight="700">
-                    X-Sede: QUITO / NOSQL / PARALELA
-                  </text>
-
-                  {/* Línea: Guayaquil (2 BDs arriba) <---> API Central */}
-                  <path
-                    d="M 500 175 L 500 295"
-                    fill="none"
-                    stroke="#183a31"
-                    strokeWidth="2.8"
-                    strokeDasharray="7 4"
-                    markerEnd="url(#arrow-green)"
-                  />
-                  <rect x="424" y="212" width="152" height="20" rx="10" fill="#eff5f1" stroke="#cde0d3" />
-                  <text x="500" y="225" textAnchor="middle" fill="#183a31" fontSize="9.5" fontWeight="700">
-                    Tailscale 100.123.81.4 (:3306/:3309)
-                  </text>
-
-                  {/* Línea: Cuenca (1 BD a la derecha) <---> API Central */}
-                  <path
-                    d="M 760 250 C 690 280, 635 315, 588 340"
-                    fill="none"
-                    stroke="#a96b16"
-                    strokeWidth="2.8"
-                    strokeDasharray="7 4"
-                    markerEnd="url(#arrow-gold)"
-                  />
-                  <rect x="615" y="274" width="142" height="20" rx="10" fill="#fbf4e6" stroke="#ead8b8" />
-                  <text x="686" y="287" textAnchor="middle" fill="#a96b16" fontSize="9.5" fontWeight="700">
-                    TLS WAN Supabase :5432
-                  </text>
-
-                  {/* Línea: Agentes Guayaquil/Cuenca ---> API Central */}
-                  <path
-                    d="M 765 375 C 690 385, 640 370, 588 358"
-                    fill="none"
-                    stroke="#183a31"
-                    strokeWidth="2"
-                    markerEnd="url(#arrow-green)"
-                  />
-                  <text x="685" y="394" textAnchor="middle" fill="#183a31" fontSize="9" fontWeight="700">
-                    X-Sede: GUAYAQUIL / DWH / CUENCA
-                  </text>
-
-                  {/* Línea: API Central <---> GUI (Abajo) */}
-                  <path
-                    d="M 500 402 L 500 456"
-                    fill="none"
-                    stroke="#183a31"
-                    strokeWidth="3"
-                    markerEnd="url(#arrow-green)"
-                  />
-                  <text x="568" y="435" textAnchor="middle" fill="#575950" fontSize="9.5" fontWeight="700">
-                    HTTPS / CORS JSON
-                  </text>
-                </svg>
-
-                {/* ==================== 1. GRUPO IZQUIERDO: QUITO (3 BDs + 3 AGENTES IA EN PC ESCRITORIO) ==================== */}
+                {/* FILA CENTRAL: QUITO ── TAILSCALE ── API ── TLS WAN ── CUENCA */}
                 <div
                   style={{
-                    position: 'absolute',
-                    left: '14px',
-                    top: '95px',
-                    width: '310px',
-                    zIndex: 2,
-                    background: 'rgba(255,255,255,0.94)',
-                    border: '2px solid #782c3e',
-                    borderRadius: '14px',
-                    padding: '12px',
-                    boxShadow: '0 8px 24px rgba(120,44,62,0.08)',
+                    width: '100%',
+                    display: 'grid',
+                    gridTemplateColumns: 'auto minmax(110px, 1fr) auto minmax(110px, 1fr) auto',
+                    alignItems: 'center',
+                    gap: '8px',
                   }}
                 >
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
-                    <span style={{ fontSize: '10px', fontWeight: 800, color: '#782c3e', letterSpacing: '.08em' }}>
-                      🖥️ PC ESCRITORIO (`JERXMY-01`)
+                  {renderSite({
+                    label: '🖥️ PC ESCRITORIO — SEDE QUITO',
+                    sub: `${findNode('quito-sql')?.machine || 'PC Escritorio (100.77.220.102)'} · 3 BDs`,
+                    accent: '#782c3e',
+                    bg: '#fcf6f4',
+                    border: '#ead6cf',
+                    dbs: [
+                      ['quito-sql', 'agente-1', 'BD 1', 'SQL OLTP', '3307'],
+                      ['quito-nosql', 'agente-2', 'BD 2', 'NoSQL', '27017'],
+                      ['quito-otras', 'agente-3', 'BD 3', 'Hash', '3308'],
+                    ],
+                  })}
+
+                  <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+                    <span style={{ fontSize: '9px', fontWeight: 800, color: '#782c3e', background: '#fbf3f0', padding: '3px 8px', borderRadius: '999px', border: '1px solid #ead6cf', marginBottom: '4px', whiteSpace: 'nowrap' }}>
+                      🔒 Túnel Tailscale
                     </span>
-                    <code style={{ fontSize: '10px', background: '#fbf3f0', color: '#782c3e', padding: '2px 6px', borderRadius: '6px', fontWeight: 700 }}>
-                      100.77.220.102
-                    </code>
-                  </div>
-                  <div style={{ fontWeight: 700, fontSize: '13px', color: '#25251f', marginBottom: '10px', fontFamily: "'Playfair Display', Georgia, serif" }}>
-                    Sede Quito — 3 Bases de Datos
+                    <div style={{ width: '100%', height: '3px', background: 'repeating-linear-gradient(to right, #782c3e 0, #782c3e 6px, transparent 6px, transparent 10px)' }} />
+                    <span style={{ fontSize: '8.5px', color: '#575950', fontWeight: 700, marginTop: '4px', textAlign: 'center' }}>
+                      :3307 · :27017 · :3308
+                    </span>
                   </div>
 
-                  {/* LAS 3 CAJITAS BD DE LA IZQUIERDA (COMO EN EL DIBUJO) */}
-                  <div style={{ display: 'flex', justifyContent: 'space-around', alignItems: 'flex-start' }}>
-                    {renderDbSquare('quito-sql', 'BD 1 SQL', '3307')}
-                    {renderDbSquare('quito-nosql', 'BD 2 NoSQL', '27017')}
-                    {renderDbSquare('quito-otras', 'BD 3 Hash', '3308')}
-                  </div>
-
-                  {/* REFERENCIA DEL AGENTE AL LADO EN LA MISMA MÁQUINA DE ESCRITORIO */}
                   <button
                     type="button"
-                    onClick={() => handleClickDiagramNode('agentes-quito')}
+                    onClick={() => handleClickDiagramNode('api-gateway')}
                     style={{
-                      marginTop: '10px',
-                      width: '100%',
-                      padding: '8px 10px',
-                      borderRadius: '10px',
-                      border: focusedElement === 'agentes-quito' ? '2px solid #782c3e' : '1px dashed #782c3e',
-                      background: focusedElement === 'agentes-quito' ? '#fbf3f0' : '#faf9f6',
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'space-between',
+                      width: '196px',
+                      padding: '14px 12px',
+                      borderRadius: '20px',
+                      border: focusedElement === 'api-gateway' ? '3px solid #782c3e' : '2.5px solid #183a31',
+                      background: focusedElement === 'api-gateway' ? '#183a31' : '#ffffff',
+                      color: focusedElement === 'api-gateway' ? '#ffffff' : '#25251f',
+                      boxShadow: '0 12px 28px rgba(24,58,49,0.16)',
                       cursor: 'pointer',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      alignItems: 'center',
+                      gap: '3px',
                     }}
                   >
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '7px', textAlign: 'left' }}>
-                      <Bot size={17} color="#782c3e" />
-                      <div>
-                        <strong style={{ fontSize: '11px', color: '#782c3e', display: 'block' }}>
-                          3 Agentes IA Quito (`agentes_quito.py`)
-                        </strong>
-                        <span style={{ fontSize: '9.5px', color: '#787970' }}>
-                          Agente 1 (OLTP) · Agente 2 (Mongo) · Agente 3 (Hash)
-                        </span>
-                      </div>
-                    </div>
-                    <span className="badge badge-APR" style={{ fontSize: '8.5px' }}>ACTIVOS 60s</span>
+                    <span style={{ display: 'flex', alignItems: 'center', gap: '7px' }}>
+                      <Cpu size={21} color={focusedElement === 'api-gateway' ? '#e7c6a8' : '#782c3e'} />
+                      <span style={{ fontFamily: "'Playfair Display', Georgia, serif", fontSize: '22px', fontWeight: 700 }}>API</span>
+                    </span>
+                    <span style={{ fontSize: '10.5px', fontWeight: 700 }}>Balanceador :8000 / :8080</span>
+                    <span style={{ fontSize: '9.5px', opacity: 0.9 }}>3 réplicas · enruta por X-Sede</span>
+                    <span style={{ fontSize: '8.5px', fontFamily: 'monospace', background: 'rgba(120,44,62,0.12)', padding: '2px 8px', borderRadius: '6px', marginTop: '2px' }}>
+                      respondió: {globalData?.apiReplica || topology?.apiReplica || '…'}
+                    </span>
+                  </button>
+
+                  <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+                    <span style={{ fontSize: '9px', fontWeight: 800, color: '#a96b16', background: '#fbf4e6', padding: '3px 8px', borderRadius: '999px', border: '1px solid #ead8b8', marginBottom: '4px', whiteSpace: 'nowrap' }}>
+                      ☁️ TLS WAN Internet
+                    </span>
+                    <div style={{ width: '100%', height: '3px', background: 'repeating-linear-gradient(to right, #a96b16 0, #a96b16 6px, transparent 6px, transparent 10px)' }} />
+                    <span style={{ fontSize: '8.5px', color: '#575950', fontWeight: 700, marginTop: '4px' }}>X-Sede: CUENCA · :5432</span>
+                  </div>
+
+                  {renderSite({
+                    label: '☁️ NUBE — SEDE CUENCA',
+                    sub: 'Supabase DBaaS · 1 BD',
+                    accent: '#a96b16',
+                    bg: '#fdf8ee',
+                    border: '#ead8b8',
+                    dbs: [['cuenca-cloud', 'agente-6', 'BD 6', 'Cloud', '5432']],
+                  })}
+                </div>
+
+                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', margin: '4px 0' }}>
+                  <div style={{ width: '2.5px', height: '18px', background: '#183a31' }} />
+                  <span style={{ fontSize: '9px', fontWeight: 700, color: '#575950' }}>▼ HTTPS / JSON ▼</span>
+                </div>
+
+                {/* FILA INFERIOR: GUI + POWER BI */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: '20px', flexWrap: 'wrap', justifyContent: 'center' }}>
+                  <button
+                    type="button"
+                    onClick={() => handleClickDiagramNode('gui-frontend')}
+                    style={{
+                      width: '170px', padding: '11px 14px', borderRadius: '18px',
+                      border: focusedElement === 'gui-frontend' ? '3px solid #782c3e' : '2.5px solid #25251f',
+                      background: focusedElement === 'gui-frontend' ? '#782c3e' : '#ffffff',
+                      color: focusedElement === 'gui-frontend' ? '#ffffff' : '#25251f',
+                      boxShadow: '0 8px 20px rgba(0,0,0,0.08)', cursor: 'pointer',
+                      display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '2px',
+                    }}
+                  >
+                    <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                      <Globe size={18} color={focusedElement === 'gui-frontend' ? '#fff' : '#183a31'} />
+                      <span style={{ fontFamily: "'Playfair Display', Georgia, serif", fontSize: '20px', fontWeight: 700 }}>GUI</span>
+                    </span>
+                    <span style={{ fontSize: '10px', fontWeight: 600 }}>React · solo LEE las 6 BDs</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => handleClickDiagramNode('power-bi')}
+                    style={{
+                      width: '185px', padding: '11px 14px', borderRadius: '18px',
+                      border: focusedElement === 'power-bi' ? '3px solid #a96b16' : '2px dashed #a96b16',
+                      background: focusedElement === 'power-bi' ? '#fbf4e6' : '#ffffff',
+                      color: '#25251f', boxShadow: '0 8px 20px rgba(169,107,22,0.08)', cursor: 'pointer',
+                      display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '2px',
+                    }}
+                  >
+                    <span style={{ display: 'flex', alignItems: 'center', gap: '6px', color: '#a96b16' }}>
+                      <BarChart3 size={18} />
+                      <span style={{ fontFamily: "'Playfair Display', Georgia, serif", fontSize: '18px', fontWeight: 700 }}>Power BI</span>
+                    </span>
+                    <span style={{ fontSize: '10px', fontWeight: 600, color: '#575950' }}>Lee BD 5 (:3309) vía API</span>
                   </button>
                 </div>
 
-                {/* ==================== 2. GRUPO SUPERIOR CENTRAL: GUAYAQUIL (2 BDs EN LAPTOP) ==================== */}
-                <div
-                  style={{
-                    position: 'absolute',
-                    left: '375px',
-                    top: '8px',
-                    width: '250px',
-                    zIndex: 2,
-                    background: 'rgba(255,255,255,0.94)',
-                    border: '2px solid #183a31',
-                    borderRadius: '14px',
-                    padding: '10px 12px',
-                    boxShadow: '0 8px 24px rgba(24,58,49,0.08)',
-                  }}
-                >
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
-                    <span style={{ fontSize: '9.5px', fontWeight: 800, color: '#183a31', letterSpacing: '.06em' }}>
-                      💻 LAPTOP (`DESKTOP-6JDT8Q0`)
-                    </span>
-                    <code style={{ fontSize: '9.5px', background: '#eff5f1', color: '#183a31', padding: '2px 6px', borderRadius: '6px', fontWeight: 700 }}>
-                      100.123.81.4
-                    </code>
-                  </div>
-                  <div style={{ fontWeight: 700, fontSize: '12.5px', color: '#25251f', marginBottom: '6px', textAlign: 'center', fontFamily: "'Playfair Display', Georgia, serif" }}>
-                    Sede Guayaquil — 2 BDs
-                  </div>
-
-                  {/* LAS 2 CAJITAS BD DE ARRIBA (COMO EN EL DIBUJO) */}
-                  <div style={{ display: 'flex', justifyContent: 'center', gap: '18px' }}>
-                    {renderDbSquare('guayaquil-sql', 'BD 4 OLTP', '3306')}
-                    {renderDbSquare('guayaquil-replica', 'BD 5 DWH', '3309')}
-                  </div>
+                {/* LEYENDA */}
+                <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap', justifyContent: 'center', marginTop: '10px', fontSize: '10.5px', color: '#575950' }}>
+                  <span><span style={{ display: 'inline-block', width: 8, height: 8, borderRadius: '50%', background: '#267154', marginRight: 5 }} />Agente activo (operó hace &lt; 2.5 min)</span>
+                  <span><span style={{ display: 'inline-block', width: 8, height: 8, borderRadius: '50%', background: '#a96b16', marginRight: 5 }} />Agente detenido</span>
+                  <span><span style={{ display: 'inline-block', width: 8, height: 8, borderRadius: '50%', background: '#9a3937', marginRight: 5 }} />BD sin conexión</span>
+                  <span>┆ línea punteada = el agente escribe en esa BD (envía HTTP a la API con su X-Sede)</span>
                 </div>
-
-                {/* ==================== 3. GRUPO DERECHO: CUENCA (1 BD SOLA EN LA NUBE + AGENTES LAPTOP/BI) ==================== */}
-                <div
-                  style={{
-                    position: 'absolute',
-                    right: '18px',
-                    top: '110px',
-                    width: '255px',
-                    zIndex: 2,
-                    background: 'rgba(255,255,255,0.94)',
-                    border: '2px solid #a96b16',
-                    borderRadius: '14px',
-                    padding: '12px',
-                    boxShadow: '0 8px 24px rgba(169,107,22,0.08)',
-                    display: 'flex',
-                    flexDirection: 'column',
-                    alignItems: 'center',
-                  }}
-                >
-                  <div style={{ width: '100%', display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
-                    <span style={{ fontSize: '10px', fontWeight: 800, color: '#a96b16' }}>
-                      ☁️ NUBE SUPABASE DBaaS
-                    </span>
-                    <code style={{ fontSize: '9.5px', background: '#fbf4e6', color: '#a96b16', padding: '2px 6px', borderRadius: '6px', fontWeight: 700 }}>
-                      us-east-1
-                    </code>
-                  </div>
-                  <div style={{ fontWeight: 700, fontSize: '13px', color: '#25251f', marginBottom: '8px', fontFamily: "'Playfair Display', Georgia, serif" }}>
-                    Sede Cuenca & Loja — 1 BD Cloud
-                  </div>
-
-                  {/* LA CAJITA BD SOLA A LA DERECHA (COMO EN EL DIBUJO) */}
-                  {renderDbSquare('cuenca-cloud', 'BD 6 Cloud', '5432')}
-
-                  {/* REFERENCIA DE AGENTES GUAYAQUIL/CUENCA Y POWER BI */}
-                  <div style={{ width: '100%', display: 'flex', flexDirection: 'column', gap: '6px', marginTop: '8px' }}>
-                    <button
-                      type="button"
-                      onClick={() => handleClickDiagramNode('agentes-gye')}
-                      style={{
-                        width: '100%',
-                        padding: '7px 9px',
-                        borderRadius: '9px',
-                        border: focusedElement === 'agentes-gye' ? '2px solid #183a31' : '1px dashed #183a31',
-                        background: focusedElement === 'agentes-gye' ? '#eff5f1' : '#faf9f6',
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'space-between',
-                        cursor: 'pointer',
-                      }}
-                    >
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '6px', textAlign: 'left' }}>
-                        <Bot size={15} color="#183a31" />
-                        <div>
-                          <strong style={{ fontSize: '10.5px', color: '#183a31', display: 'block' }}>
-                            3 Agentes Laptop (`agentes_gye_cuenca.py`)
-                          </strong>
-                          <span style={{ fontSize: '9px', color: '#787970' }}>
-                            Agente 4 (GYE) · Agente 5 (ETL) · Agente 6 (Cuenca)
-                          </span>
-                        </div>
-                      </div>
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => handleClickDiagramNode('power-bi')}
-                      style={{
-                        width: '100%',
-                        padding: '6px 9px',
-                        borderRadius: '9px',
-                        border: focusedElement === 'power-bi' ? '2px solid #a96b16' : '1px solid #ead8b8',
-                        background: focusedElement === 'power-bi' ? '#fbf4e6' : '#ffffff',
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'space-between',
-                        cursor: 'pointer',
-                      }}
-                    >
-                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', fontSize: '10.5px', fontWeight: 700, color: '#a96b16' }}>
-                        <BarChart3 size={14} /> Power BI Desktop (OLAP :3309 & :5432)
-                      </span>
-                      <span style={{ fontSize: '9px', color: '#787970' }}>Ver conexión</span>
-                    </button>
-                  </div>
-                </div>
-
-                {/* ==================== 4. BLOQUE CENTRAL: API (NGINX LB + 3 RÉPLICAS) ==================== */}
-                <button
-                  type="button"
-                  onClick={() => handleClickDiagramNode('api-gateway')}
-                  style={{
-                    position: 'absolute',
-                    left: '412px',
-                    top: '296px',
-                    width: '176px',
-                    height: '104px',
-                    zIndex: 3,
-                    borderRadius: '20px',
-                    border: focusedElement === 'api-gateway' ? '3px solid #782c3e' : '2.5px solid #183a31',
-                    background: focusedElement === 'api-gateway' ? '#183a31' : '#ffffff',
-                    color: focusedElement === 'api-gateway' ? '#ffffff' : '#25251f',
-                    boxShadow: '0 12px 28px rgba(24,58,49,0.16)',
-                    cursor: 'pointer',
-                    display: 'flex',
-                    flexDirection: 'column',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    padding: '10px',
-                  }}
-                >
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                    <Cpu size={20} color={focusedElement === 'api-gateway' ? '#e7c6a8' : '#782c3e'} />
-                    <span style={{ fontFamily: "'Playfair Display', Georgia, serif", fontSize: '20px', fontWeight: 700 }}>
-                      API
-                    </span>
-                  </div>
-                  <div style={{ fontSize: '10px', fontWeight: 700, marginTop: '2px', color: focusedElement === 'api-gateway' ? '#e7c6a8' : '#782c3e' }}>
-                    Nginx LB :8000 / :8080
-                  </div>
-                  <div style={{ fontSize: '9px', marginTop: '3px', opacity: 0.9 }}>
-                    3 Réplicas (`api_lacava_1..3`)
-                  </div>
-                  <div style={{ fontSize: '8.5px', marginTop: '2px', fontFamily: 'monospace', background: 'rgba(120,44,62,0.12)', padding: '2px 6px', borderRadius: '6px' }}>
-                    Pool 6 BDs · Header X-Sede
-                  </div>
-                </button>
-
-                {/* ==================== 5. BLOQUE INFERIOR: GUI (FRONTEND GITHUB PAGES) ==================== */}
-                <button
-                  type="button"
-                  onClick={() => handleClickDiagramNode('gui-frontend')}
-                  style={{
-                    position: 'absolute',
-                    left: '430px',
-                    top: '458px',
-                    width: '140px',
-                    height: '72px',
-                    zIndex: 3,
-                    borderRadius: '16px',
-                    border: focusedElement === 'gui-frontend' ? '3px solid #782c3e' : '2.5px solid #25251f',
-                    background: focusedElement === 'gui-frontend' ? '#782c3e' : '#ffffff',
-                    color: focusedElement === 'gui-frontend' ? '#ffffff' : '#25251f',
-                    boxShadow: '0 8px 20px rgba(0,0,0,0.1)',
-                    cursor: 'pointer',
-                    display: 'flex',
-                    flexDirection: 'column',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                  }}
-                >
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                    <Globe size={17} color={focusedElement === 'gui-frontend' ? '#fff' : '#183a31'} />
-                    <span style={{ fontFamily: "'Playfair Display', Georgia, serif", fontSize: '18px', fontWeight: 700 }}>
-                      GUI
-                    </span>
-                  </div>
-                  <div style={{ fontSize: '9.5px', fontWeight: 600 }}>
-                    GitHub Pages · React 18
-                  </div>
-                  <div style={{ fontSize: '8.5px', opacity: 0.85 }}>
-                    17 Usuarios RBAC
-                  </div>
-                </button>
               </div>
             </div>
 
-            {/* ==================== PANEL INSPECTOR DINÁMICO DEL ELEMENTO CLICADO EN EL DIAGRAMA ==================== */}
+            {/* ==================== PANEL INSPECTOR DINÁMICO DEL ELEMENTO CLICADO ==================== */}
             <div
               style={{
                 marginTop: '18px',
@@ -974,7 +1071,141 @@ export const ArchitectureConsole: React.FC = () => {
                 padding: '18px 20px',
               }}
             >
-              {/* CASO A: EL USUARIO HIZO CLIC EN UNA DE LAS 6 BASES DE DATOS (EJ. BD 6 CUENCA SOLA A LA DERECHA) */}
+              {/* CASO 1: CLIC EN UNO DE LOS 6 AGENTES IA → ACTIVIDAD EN VIVO */}
+              {focusedAgent && focusedAgentId && (
+                <div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '10px', borderBottom: '1px solid #e9e6de', paddingBottom: '12px', marginBottom: '12px' }}>
+                    <div>
+                      <span style={{ fontSize: '10px', fontWeight: 800, color: focusedAgent.accent, letterSpacing: '.12em' }}>
+                        🤖 AGENTE IA · SE ACTUALIZA CADA 10 s
+                      </span>
+                      <h3 style={{ margin: '3px 0 0', fontSize: '19px', fontFamily: "'Playfair Display', Georgia, serif", color: '#183a31' }}>
+                        {focusedAgent.name}
+                      </h3>
+                      <p style={{ margin: '3px 0 0', fontSize: '12px', color: '#575950' }}>
+                        Escribe en <strong>{focusedAgent.targetDbName}</strong> · <code>{focusedAgent.script}</code>
+                      </p>
+                    </div>
+                    <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
+                      <span
+                        className={`badge ${agentActivity?.estado === 'ACTIVO' ? 'badge-APR' : 'badge-ERR'}`}
+                        style={{ fontSize: '11px', padding: '5px 11px' }}
+                      >
+                        {agentActivity ? `${agentActivity.estado} · última operación ${formatAgo(agentActivity.segundosDesdeUltima)}` : 'Cargando…'}
+                      </span>
+                      <span className="demo-badge">X-Sede: {focusedAgent.headerXSede}</span>
+                      {!isStrictDba && (
+                        <button
+                          type="button"
+                          className="btn btn-primary"
+                          disabled={runningAgent}
+                          onClick={() => void runSingleAgent(focusedAgentId)}
+                        >
+                          <Play size={14} />
+                          {runningAgent ? 'Ejecutando…' : 'Ejecutar 1 operación ahora'}
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="grid-2" style={{ marginBottom: '12px' }}>
+                    <div style={{ background: '#ffffff', border: '1px solid #e9e6de', borderRadius: '10px', padding: '12px' }}>
+                      <strong style={{ color: '#782c3e', fontSize: '12.5px', display: 'block', marginBottom: '4px' }}>¿Qué inserta?</strong>
+                      <p style={{ fontSize: '12px', color: '#25251f', margin: 0, lineHeight: 1.55 }}>{focusedAgent.whatItDoes}</p>
+                    </div>
+                    <div style={{ background: '#ffffff', border: '1px solid #e9e6de', borderRadius: '10px', padding: '12px' }}>
+                      <strong style={{ color: '#183a31', fontSize: '12.5px', display: 'block', marginBottom: '4px' }}>¿Dónde se ve?</strong>
+                      <p style={{ fontSize: '12px', color: '#25251f', margin: '0 0 6px', lineHeight: 1.55 }}>{focusedAgent.whereToSeeIt}</p>
+                      <div style={{ fontSize: '11.5px', color: '#575950' }}><strong>Credenciales:</strong> {focusedAgent.credentialsUsed}</div>
+                    </div>
+                  </div>
+
+                  {agentRunError && (
+                    <div style={{ padding: '10px', background: '#f8e9e8', border: '1px solid #e2b4b1', borderRadius: '7px', color: '#9a3937', fontSize: '12px', marginBottom: '10px' }}>
+                      {agentRunError}
+                    </div>
+                  )}
+
+                  {agentRun && (
+                    <div style={{ background: '#eff5f1', border: '1px solid #cde0d3', borderRadius: '10px', padding: '10px 12px', marginBottom: '12px', fontSize: '12px' }}>
+                      <strong style={{ color: '#183a31' }}>
+                        Operación ejecutada → {agentRun.routedTo} · {agentRun.modulo} · usuario <code>{agentRun.usuarioRbac}</code> · réplica {agentRun.apiReplica} · {agentRun.latencyMs} ms
+                      </strong>
+                      <ul style={{ margin: '6px 0 0', paddingLeft: '18px' }}>
+                        {agentRun.impacto.map((i, idx) => (
+                          <li key={idx} style={{ color: i.ok ? '#25251f' : '#9a3937' }}>
+                            {i.ok ? '✔' : '✖'} <code>{i.tabla}</code> — {i.accion}{i.id !== null && i.id !== undefined ? ` (${i.id})` : ''}{i.error ? ` — ${i.error}` : ''}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+
+                  {agentActivity?.error && (
+                    <div style={{ padding: '10px', background: '#f8e9e8', border: '1px solid #e2b4b1', borderRadius: '7px', color: '#9a3937', fontSize: '12px', marginBottom: '10px' }}>
+                      <strong>No se pudo leer {agentActivity.bdId}:</strong> {agentActivity.error}
+                    </div>
+                  )}
+
+                  {agentActivity && !agentActivity.error && (
+                    <>
+                      <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '12px' }}>
+                        <div style={{ background: '#fff', border: '1px solid #e9e6de', borderRadius: '8px', padding: '8px 12px' }}>
+                          <small style={{ color: '#787970', display: 'block', fontSize: '10px' }}>REGISTROS TOTALES</small>
+                          <strong style={{ fontSize: '16px', color: '#183a31' }}>{agentActivity.totalRegistros.toLocaleString('es-EC')}</strong>
+                        </div>
+                        {agentActivity.impactoTablas.map(t => (
+                          <div key={t.tabla} style={{ background: '#fff', border: '1px solid #e9e6de', borderRadius: '8px', padding: '8px 12px' }}>
+                            <small style={{ color: '#787970', display: 'block', fontSize: '10px' }}>{t.tabla}</small>
+                            <strong style={{ fontSize: '16px', color: '#782c3e' }}>{t.filas.toLocaleString('es-EC')}</strong>
+                            {t.ultimoLote && <small style={{ display: 'block', fontSize: '10px', color: '#787970' }}>último lote {t.ultimoLote}</small>}
+                          </div>
+                        ))}
+                        {agentActivity.porModulo.map(m => (
+                          <div key={m.modulo} style={{ background: '#faf9f6', border: '1px dashed #d9d6cc', borderRadius: '8px', padding: '8px 12px' }}>
+                            <small style={{ color: '#787970', display: 'block', fontSize: '10px' }}>{m.modulo}</small>
+                            <strong style={{ fontSize: '14px' }}>{m.operaciones}</strong>
+                          </div>
+                        ))}
+                      </div>
+
+                      <div style={{ background: '#ffffff', border: '1px solid #e9e6de', borderRadius: '10px', padding: '12px' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                          <strong style={{ fontSize: '12.5px', color: '#183a31' }}>
+                            Últimas filas que {focusedAgent.code} dejó en {agentActivity.bdId} ({agentActivity.baseDatos}):
+                          </strong>
+                          <span style={{ fontSize: '11px', color: '#267154', fontWeight: 700 }}>
+                            {agentActivity.ultimos.length} filas · {agentActivity.latencyMs} ms
+                          </span>
+                        </div>
+                        <div className="table-scroll" style={{ maxHeight: '280px' }}>
+                          <table>
+                            <thead>
+                              <tr>{Object.keys(agentActivity.ultimos[0] || {}).map(c => <th key={c}>{c}</th>)}</tr>
+                            </thead>
+                            <tbody>
+                              {agentActivity.ultimos.map((r, ri) => (
+                                <tr key={ri}>
+                                  {Object.values(r).map((v, ci) => (
+                                    <td key={ci} style={{ whiteSpace: 'normal', maxWidth: '340px' }}>
+                                      {v === null ? '—' : /^\d{4}-\d{2}-\d{2}T/.test(String(v)) ? String(v).replace('T', ' ').slice(0, 19) : String(v)}
+                                    </td>
+                                  ))}
+                                </tr>
+                              ))}
+                              {agentActivity.ultimos.length === 0 && (
+                                <tr><td className="empty-state">Este agente todavía no ha insertado nada.</td></tr>
+                              )}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    </>
+                  )}
+                </div>
+              )}
+
+              {/* CASO 2: EL USUARIO HIZO CLIC EN UNA DE LAS 6 BASES DE DATOS */}
               {focusedDbNode && (
                 <div>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px', borderBottom: '1px solid #e9e6de', paddingBottom: '12px', marginBottom: '14px' }}>
@@ -997,7 +1228,6 @@ export const ArchitectureConsole: React.FC = () => {
                     </div>
                   </div>
 
-                  {/* FICHA TÉCNICA COMPLETA DE LA BD SELECCIONADA */}
                   <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(175px, 1fr))', gap: '10px', marginBottom: '14px' }}>
                     <div style={{ background: '#fff', padding: '10px 12px', borderRadius: '8px', border: '1px solid #e9e6de' }}>
                       <small style={{ color: '#787970', display: 'block', fontSize: '10px' }}>MOTOR DE BASE DE DATOS</small>
@@ -1017,7 +1247,6 @@ export const ArchitectureConsole: React.FC = () => {
                     </div>
                   </div>
 
-                  {/* CONSULTAS RÁPIDAS Y TERMINAL READ-ONLY EMBEBIDA PARA ESTE NODO */}
                   <div style={{ background: '#ffffff', border: '1px solid #e9e6de', borderRadius: '10px', padding: '14px' }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px', marginBottom: '10px' }}>
                       <strong style={{ fontSize: '12.5px', color: '#183a31', display: 'flex', alignItems: 'center', gap: '6px' }}>
@@ -1093,7 +1322,7 @@ export const ArchitectureConsole: React.FC = () => {
                 </div>
               )}
 
-              {/* CASO B: EL USUARIO HIZO CLIC EN EL BLOQUE CENTRAL "API" */}
+              {/* CASO 3: EL USUARIO HIZO CLIC EN API */}
               {focusedElement === 'api-gateway' && (
                 <div>
                   <span style={{ fontSize: '10px', fontWeight: 800, color: '#782c3e', letterSpacing: '.12em' }}>
@@ -1103,7 +1332,7 @@ export const ArchitectureConsole: React.FC = () => {
                     API Gateway: Balanceador Nginx Round-Robin (:8000 / :8080) + 3 Réplicas FastAPI (`api_lacava_1..3`)
                   </h3>
                   <p style={{ fontSize: '12.5px', color: '#575950', marginBottom: '12px' }}>
-                    Vive en la <strong>Laptop (`100.123.81.4`)</strong>. Recibe todas las peticiones de la <strong>GUI (GitHub Pages)</strong> y de los <strong>6 Agentes IA</strong>, inspecciona el header obligatorio <code>X-Sede</code> (<code>QUITO</code>, <code>QUITO_NOSQL</code>, <code>QUITO_PARALELA</code>, <code>GUAYAQUIL</code>, <code>GUAYAQUIL_DWH</code>, <code>CUENCA</code>) y enruta la conexión por el túnel Tailscale hacia el motor correspondiente.
+                    Vive en la <strong>Laptop (`100.123.81.4`)</strong>. Recibe todas las peticiones de la <strong>GUI (GitHub Pages)</strong> y de los <strong>6 Agentes IA (`AG 1..AG 6`)</strong>, lee el header obligatorio <code>X-Sede</code> y enruta la conexión por el túnel Tailscale hacia la Base de Datos correspondiente.
                   </p>
                   <div className="grid-3">
                     {[
@@ -1123,7 +1352,7 @@ export const ArchitectureConsole: React.FC = () => {
                 </div>
               )}
 
-              {/* CASO C: EL USUARIO HIZO CLIC EN EL BLOQUE INFERIOR "GUI" */}
+              {/* CASO 4: EL USUARIO HIZO CLIC EN GUI */}
               {focusedElement === 'gui-frontend' && (
                 <div>
                   <span style={{ fontSize: '10px', fontWeight: 800, color: '#782c3e', letterSpacing: '.12em' }}>
@@ -1132,9 +1361,6 @@ export const ArchitectureConsole: React.FC = () => {
                   <h3 style={{ margin: '4px 0 8px', fontSize: '19px', fontFamily: "'Playfair Display', Georgia, serif", color: '#183a31' }}>
                     GUI — Interfaz Web "La Cava" (React 18 + TypeScript en GitHub Pages)
                   </h3>
-                  <p style={{ fontSize: '12.5px', color: '#575950', marginBottom: '12px' }}>
-                    Desplegada en <code>https://jjamesrxzn7.github.io/licoreria/</code> (ahorrando levantar un servidor de frontend adicional). Adapta dinámicamente el menú lateral y las acciones permitidas según cuál de los <strong>17 Usuarios RBAC</strong> inicia sesión:
-                  </p>
                   <div className="grid-3">
                     <div style={{ background: '#fff', border: '1px solid #e9e6de', borderRadius: '9px', padding: '12px' }}>
                       <strong style={{ color: '#782c3e' }}>1. Rol `dba` (`LaCavaDba2026*`)</strong>
@@ -1158,69 +1384,39 @@ export const ArchitectureConsole: React.FC = () => {
                 </div>
               )}
 
-              {/* CASO D: EL USUARIO HIZO CLIC EN LOS AGENTES IA DE QUITO O GUAYAQUIL */}
-              {(focusedElement === 'agentes-quito' || focusedElement === 'agentes-gye') && (
-                <div>
-                  <span style={{ fontSize: '10px', fontWeight: 800, color: '#782c3e', letterSpacing: '.12em' }}>
-                    INSPECTOR EN VIVO DE AGENTES IA TRANSACCIONALES (EJECUCIÓN CADA 60 SEGUNDOS)
-                  </span>
-                  <h3 style={{ margin: '4px 0 8px', fontSize: '19px', fontFamily: "'Playfair Display', Georgia, serif", color: '#183a31' }}>
-                    {focusedElement === 'agentes-quito'
-                      ? '🤖 3 Agentes IA en PC de Escritorio (`agentes_quito.py` · 100.77.220.102 → 100.123.81.4:8000)'
-                      : '🤖 3 Agentes IA en Laptop (`agentes_gye_cuenca.py` · 100.123.81.4 → :8000)'}
-                  </h3>
-                  <div className="grid-3" style={{ marginBottom: '12px' }}>
-                    {(focusedElement === 'agentes-quito'
-                      ? [
-                          { name: 'Agente 1 (`X-Sede: QUITO`)', target: 'BD 1 MariaDB (:3307)', desc: 'Rota entre los 15 usuarios RBAC con su contraseña real e inserta operaciones en los 5 módulos de Quito.' },
-                          { name: 'Agente 2 (`X-Sede: QUITO_NOSQL`)', target: 'BD 2 MongoDB (:27017)', desc: 'Envía documentos JSON de telemetría y alertas de stock bajo a `eventos_agentes` y `logs_auditoria`.' },
-                          { name: 'Agente 3 (`X-Sede: QUITO_PARALELA`)', target: 'BD 3 MariaDB Hash (:3308)', desc: 'Inserta lotes históricos en `historico_transacciones` (`PARTITION BY HASH(id) PARTITIONS 4`).' },
-                        ]
-                      : [
-                          { name: 'Agente 4 (`X-Sede: GUAYAQUIL`)', target: 'BD 4 MariaDB Local (:3306)', desc: 'Simula operaciones de los 5 módulos en Guayaquil autenticándose con los 15 usuarios RBAC.' },
-                          { name: 'Agente 5 (`X-Sede: GUAYAQUIL_DWH`)', target: 'BD 5 Estrella DWH (:3309)', desc: 'Ejecuta un Mini-ETL cada minuto consolidando ventas hacia `fact_ventas` para Power BI.' },
-                          { name: 'Agente 6 (`X-Sede: CUENCA`)', target: 'BD 6 Supabase Cloud (:5432)', desc: 'Inserta transacciones australes en Cuenca Cloud y mide la latencia WAN en milisegundos.' },
-                        ]
-                    ).map(ag => (
-                      <div key={ag.name} style={{ background: '#fff', border: '1px solid #e9e6de', borderRadius: '9px', padding: '12px' }}>
-                        <strong style={{ color: '#183a31', fontSize: '12.5px' }}>{ag.name}</strong>
-                        <div style={{ fontSize: '11px', color: '#782c3e', fontWeight: 700, marginTop: '2px' }}>Destino: {ag.target}</div>
-                        <p style={{ fontSize: '11px', color: '#575950', margin: '5px 0 0' }}>{ag.desc}</p>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {/* CASO E: EL USUARIO HIZO CLIC EN POWER BI */}
+              {/* CASO 5: EL USUARIO HIZO CLIC EN POWER BI */}
               {focusedElement === 'power-bi' && (
                 <div>
-                  <span style={{ fontSize: '10px', fontWeight: 800, color: '#a96b16', letterSpacing: '.12em' }}>
-                    CONEXIÓN GERENCIAL OLAP & BUSINESS INTELLIGENCE
-                  </span>
-                  <h3 style={{ margin: '4px 0 8px', fontSize: '19px', fontFamily: "'Playfair Display', Georgia, serif", color: '#183a31' }}>
-                    📊 Power BI Desktop conectado a BD 5 Estrella (:3309), BD 6 Cuenca (:5432) y API Global
-                  </h3>
-                  <div className="grid-3">
-                    <div style={{ background: '#fff', border: '1px solid #e9e6de', borderRadius: '9px', padding: '12px' }}>
-                      <strong style={{ color: '#183a31' }}>1. Esquema Estrella (`db_gye_dwh`)</strong>
-                      <p style={{ fontSize: '11.5px', color: '#575950', margin: '4px 0 0' }}>
-                        Servidor MySQL/MariaDB: <code>100.123.81.4:3309</code> | Tablas: <code>fact_ventas</code>, <code>dim_sede</code>, <code>dim_producto</code>, <code>dim_tiempo</code>.
-                      </p>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px', marginBottom: '10px' }}>
+                    <div>
+                      <span style={{ fontSize: '10px', fontWeight: 800, color: '#a96b16', letterSpacing: '.12em' }}>
+                        CUBO OLAP ESTRELLA EN VIVO · BD 5 (`db_gye_dwh` :3309) ALIMENTADO POR AGENTE 5
+                      </span>
+                      <h3 style={{ margin: '3px 0 0', fontSize: '19px', fontFamily: "'Playfair Display', Georgia, serif", color: '#183a31' }}>
+                        📊 Vista Previa Power BI & Conexión Directa (`http://127.0.0.1:8000/api/powerbi/estrella`)
+                      </h3>
                     </div>
-                    <div style={{ background: '#fff', border: '1px solid #e9e6de', borderRadius: '9px', padding: '12px' }}>
-                      <strong style={{ color: '#a96b16' }}>2. Nodo Cloud Cuenca (`cloud_cuenca_loja`)</strong>
-                      <p style={{ fontSize: '11.5px', color: '#575950', margin: '4px 0 0' }}>
-                        Servidor PostgreSQL: <code>100.123.81.4:5432</code> / Supabase Pooler | Tablas: <code>operaciones_agentes_cloud</code>, <code>frag_austral_facturas</code>.
-                      </p>
-                    </div>
-                    <div style={{ background: '#fff', border: '1px solid #e9e6de', borderRadius: '9px', padding: '12px' }}>
-                      <strong style={{ color: '#782c3e' }}>3. Endpoint Web JSON Unificado</strong>
-                      <p style={{ fontSize: '11.5px', color: '#575950', margin: '4px 0 0' }}>
-                        Conector Web de Power BI apuntando a <code>http://100.123.81.4:8000/api/dba/global</code> (6 BDs en paralelo).
-                      </p>
-                    </div>
+                    <button
+                      type="button"
+                      className="btn btn-primary"
+                      onClick={() => setActiveTab('powerbi_tab')}
+                    >
+                      Abrir Dashboard OLAP & Guía Power BI Completa
+                    </button>
                   </div>
+                  {powerBiData && (
+                    <div className="grid-3">
+                      {powerBiData.kpisBySede.map(k => (
+                        <div key={k.sede} style={{ background: '#fff', border: '1px solid #e9e6de', borderRadius: '9px', padding: '12px' }}>
+                          <strong style={{ color: '#183a31' }}>Sede {k.sede} (Esquema Estrella)</strong>
+                          <div style={{ fontSize: '18px', fontWeight: 800, color: '#782c3e', marginTop: '4px' }}>
+                            ${Number(k.total_usd || 0).toLocaleString('en-US', { minimumFractionDigits: 2 })} USD
+                          </div>
+                          <small style={{ color: '#787970' }}>{k.botellas} botellas · {k.lotes_etl} lotes ETL cargados por AG 5</small>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
               )}
             </div>
@@ -1228,7 +1424,116 @@ export const ArchitectureConsole: React.FC = () => {
         </div>
       )}
 
-      {/* ==================== TAB 2: CONSOLA GLOBAL DEL DBA (TAREA 2.2 Y 2.3) ==================== */}
+      {/* ==================== TAB 2: DASHBOARD OLAP & CONFIGURACIÓN POWER BI DESKTOP ==================== */}
+      {activeTab === 'powerbi_tab' && (
+        <div>
+          <section className="card">
+            <div className="section-heading">
+              <div>
+                <h2 style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <BarChart3 size={20} color="#a96b16" />
+                  Dashboard Gerencial OLAP (Esquema Estrella BD 5 `:3309`) & Conector Power BI Desktop
+                </h2>
+                <p>
+                  El <strong>Agente 5 (`AG 5`)</strong> consolida ventas cada 60 segundos hacia <code>db_gye_dwh</code> (<code>fact_ventas</code>, <code>dim_sede</code>, <code>dim_producto</code>, <code>dim_tiempo</code>). Aquí tienes el cubo renderizado en vivo y los 2 métodos para abrirlo en <strong>Power BI Desktop</strong> en 15 segundos.
+                </p>
+              </div>
+              <span className="demo-badge">{powerBiData?.totalFacts ?? 0} HECHOS EN ESQUEMA ESTRELLA</span>
+            </div>
+
+            {powerBiData && (
+              <>
+                <div className="grid-3" style={{ marginBottom: '16px' }}>
+                  {powerBiData.kpisBySede.map(s => (
+                    <article key={s.sede} className="card" style={{ marginBottom: 0, background: '#faf9f6', borderTop: '4px solid #183a31' }}>
+                      <span style={{ fontSize: '10px', fontWeight: 800, color: '#782c3e' }}>DIMENSIÓN SEDE (`dim_sede`)</span>
+                      <h3 style={{ fontFamily: "'Playfair Display', Georgia, serif", fontSize: '18px', margin: '4px 0' }}>{s.sede}</h3>
+                      <div style={{ fontSize: '22px', fontWeight: 800, color: '#183a31' }}>
+                        ${Number(s.total_usd || 0).toLocaleString('en-US', { minimumFractionDigits: 2 })} USD
+                      </div>
+                      <small style={{ color: '#787970' }}>
+                        {s.botellas} botellas consolidadas · {s.lotes_etl} lotes Mini-ETL
+                      </small>
+                    </article>
+                  ))}
+                </div>
+
+                {/* INSTRUCCIONES PASO A PASO PARA POWER BI DESKTOP */}
+                <div className="grid-2" style={{ marginBottom: '16px' }}>
+                  <div style={{ background: '#faf9f6', border: '1px solid #e9e6de', borderRadius: '10px', padding: '14px' }}>
+                    <strong style={{ color: '#782c3e', fontSize: '13px', display: 'block', marginBottom: '6px' }}>
+                      Conexión en vivo (sin drivers) — guía completa en <code>powerbi_datos/GUIA_POWER_BI.md</code>:
+                    </strong>
+                    <ol style={{ fontSize: '12px', color: '#25251f', margin: 0, paddingLeft: '18px', lineHeight: 1.6 }}>
+                      <li>Power BI Desktop → <strong>Transformar datos → Nuevo origen → Consulta en blanco</strong>.</li>
+                      <li>Pega cada bloque de <code>powerbi_datos/LaCava_PowerQuery.pq</code> en el <strong>Editor avanzado</strong> (7 consultas: <code>ApiLaCava</code>, <code>fact_ventas</code>, <code>dim_sede</code>, <code>dim_producto</code>, <code>dim_tiempo</code>, <code>operaciones_6bds</code>, <code>salud_nodos</code>).</li>
+                      <li>Relaciona <code>fact_ventas</code> con las 3 dimensiones por <code>id_sede</code>, <code>id_producto</code> e <code>id_tiempo</code> (varios a uno).</li>
+                      <li>Crea las medidas de <code>powerbi_datos/MEDIDAS_DAX.dax</code> y arma las 3 páginas sugeridas.</li>
+                      <li>Sin API: <code>python exportar_powerbi.py</code> genera los CSV del estrella en la misma carpeta.</li>
+                    </ol>
+                  </div>
+
+                  <div style={{ background: '#faf9f6', border: '1px solid #e9e6de', borderRadius: '10px', padding: '14px' }}>
+                    <strong style={{ color: '#183a31', fontSize: '13px', display: 'block', marginBottom: '6px' }}>
+                      Ejemplo de una consulta (tabla de hechos) — endpoints: /api/powerbi/fact_ventas · /dim/dim_sede · /dim/dim_producto · /dim/dim_tiempo · /operaciones_6bds · /salud_nodos
+                    </strong>
+                    <textarea
+                      readOnly
+                      rows={6}
+                      value={`let\n    Origen = Json.Document(Web.Contents(ApiLaCava, [RelativePath = "/api/powerbi/fact_ventas"])),\n    Tabla = Table.FromRecords(Origen)\nin\n    Tabla`}
+                      style={{
+                        width: '100%',
+                        fontFamily: 'Consolas, monospace',
+                        fontSize: '11.5px',
+                        background: '#132a23',
+                        color: '#e8f3ec',
+                        padding: '10px',
+                        borderRadius: '8px',
+                      }}
+                    />
+                  </div>
+                </div>
+
+                {/* TABLA EN VIVO DEL ESQUEMA ESTRELLA */}
+                <div className="table-scroll" style={{ maxHeight: '320px' }}>
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>ID Hecho</th>
+                        <th>Sede (`dim_sede`)</th>
+                        <th>Producto (`dim_producto`)</th>
+                        <th>Categoría</th>
+                        <th>Mes (`dim_tiempo`)</th>
+                        <th>Usuario RBAC</th>
+                        <th>Botellas</th>
+                        <th>Total Venta USD</th>
+                        <th>Lote ETL (`AG 5`)</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {powerBiData.starSchemaFacts.slice(0, 25).map((f, idx) => (
+                        <tr key={idx}>
+                          <td><code>{f.id_fact}</code></td>
+                          <td><strong>{f.nombre_sede}</strong></td>
+                          <td>{f.nombre_producto}</td>
+                          <td>{f.categoria}</td>
+                          <td>{f.mes} ({f.trimestre})</td>
+                          <td><code>{f.usuario_rbac}</code></td>
+                          <td><strong>{f.cantidad_botellas}</strong></td>
+                          <td><strong style={{ color: '#183a31' }}>${Number(f.total_venta_usd || 0).toFixed(2)}</strong></td>
+                          <td><span className="badge badge-APR">{f.etl_lote}</span></td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </>
+            )}
+          </section>
+        </div>
+      )}
+
+      {/* ==================== TAB 3: CONSOLA GLOBAL DEL DBA (TAREA 2.2 Y 2.3) ==================== */}
       {activeTab === 'global_dba' && (
         <div>
           <section className="card">
@@ -1380,7 +1685,7 @@ export const ArchitectureConsole: React.FC = () => {
         </div>
       )}
 
-      {/* ==================== TAB 3: IDENTIDAD DE CADA SUCURSAL & MAPA DE 6 NODOS ==================== */}
+      {/* ==================== TAB 4: IDENTIDAD DE CADA SUCURSAL & MAPA DE 6 NODOS ==================== */}
       {activeTab === 'board' && topology && (
         <div>
           <section className="card">
@@ -1531,7 +1836,7 @@ export const ArchitectureConsole: React.FC = () => {
         </div>
       )}
 
-      {/* ==================== TAB 4: PROMPT SQL / MONGODB DEL DBA + 17 USUARIOS ==================== */}
+      {/* ==================== TAB 5: PROMPT SQL / MONGODB DEL DBA + 17 USUARIOS ==================== */}
       {activeTab === 'dba_prompt' && (
         <div>
           <section className="card">
@@ -1800,7 +2105,7 @@ export const ArchitectureConsole: React.FC = () => {
         </div>
       )}
 
-      {/* ==================== TAB 5: SIMULADOR 2PC (PREGUNTAS 4 Y 5) ==================== */}
+      {/* ==================== TAB 6: SIMULADOR 2PC (PREGUNTAS 4 Y 5) ==================== */}
       {activeTab === 'twopc' && (
         <div>
           <section className="card">

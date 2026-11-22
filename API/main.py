@@ -6533,7 +6533,7 @@ async def postgres_access_control(request: Request, call_next):
                            headers=headers)
 
    path = request.url.path
-   if path.startswith(('/api/arquitectura', '/api/dba', '/api/agentes')) or not path.startswith("/api/") or request.method == "OPTIONS":
+   if path.startswith(('/api/arquitectura', '/api/dba', '/api/agentes', '/api/powerbi')) or not path.startswith("/api/") or request.method == "OPTIONS":
        return await call_next(request)
    try:
        backend = database_backend()

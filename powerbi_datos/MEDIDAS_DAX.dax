@@ -1,0 +1,41 @@
+// ============================================================================
+// MEDIDAS DAX — "La Cava"  (Inicio -> Nueva medida, pega UNA por vez)
+// Créalas dentro de la tabla fact_ventas (o en una tabla vacía llamada "Medidas").
+// ============================================================================
+
+Ventas Totales USD = SUM ( fact_ventas[total_venta_usd] )
+
+Subtotal USD = SUM ( fact_ventas[subtotal_usd] )
+
+IVA USD = SUM ( fact_ventas[iva_usd] )
+
+Botellas Vendidas = SUM ( fact_ventas[cantidad_botellas] )
+
+Hechos Cargados = COUNTROWS ( fact_ventas )
+
+Ticket Promedio USD = DIVIDE ( [Ventas Totales USD], [Hechos Cargados] )
+
+Precio Promedio por Botella = DIVIDE ( [Subtotal USD], [Botellas Vendidas] )
+
+% Participación Sede =
+DIVIDE (
+    [Ventas Totales USD],
+    CALCULATE ( [Ventas Totales USD], ALL ( dim_sede ) )
+)
+
+Lotes ETL = DISTINCTCOUNT ( fact_ventas[etl_lote] )
+
+Última Carga ETL = MAX ( fact_ventas[fecha_carga_etl] )
+
+// ---- Sobre operaciones_6bds (actividad de los 6 agentes) ----
+Operaciones Agentes = COUNTROWS ( operaciones_6bds )
+
+Monto Operado USD = SUM ( operaciones_6bds[monto_usd] )
+
+// ---- Sobre salud_nodos (semáforo del clúster) ----
+BDs Online = CALCULATE ( COUNTROWS ( salud_nodos ), salud_nodos[estado] = "ONLINE" )
+
+Latencia Promedio ms = AVERAGE ( salud_nodos[latencia_ms] )
+
+Estado Clúster =
+IF ( [BDs Online] = COUNTROWS ( salud_nodos ), "6/6 ONLINE", [BDs Online] & "/6 ONLINE" )

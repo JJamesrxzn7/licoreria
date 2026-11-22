@@ -1,0 +1,4 @@
+﻿id_sede,nombre_sede,ciudad,region,maquina_fisica,motor_bd,puerto_tcp
+CUENCA,Sede Austral Cuenca Cloud,Cuenca,Sierra Austral,Nube AWS / Supabase,PostgreSQL DBaaS,5432
+GUAYAQUIL,Sede Regional Guayaquil,Guayaquil,Costa Litoral,Laptop (Tailscale),MariaDB OLTP,3306
+QUITO,Sede Matriz Quito,Quito,Sierra Norte,PC Escritorio (Tailscale),MariaDB OLTP,3307
