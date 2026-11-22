@@ -2,7 +2,7 @@ import React, { useEffect, useState, useCallback } from 'react';
 import {
   Server, Database, Terminal, Play, RefreshCw, ShieldCheck, AlertTriangle,
   Layers, Cloud, Activity, CheckCircle2, XCircle, HardDrive, Network,
-  Filter, GitCompare, Lock
+  Filter, GitCompare, Lock, Bot, Globe, Cpu, BarChart3
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { isDbaUser, isSuperAdmin } from '../rolePermissions';
@@ -164,6 +164,19 @@ interface TwoPcResult {
   steps: TwoPcStep[];
 }
 
+type InteractiveElementId =
+  | 'quito-sql'
+  | 'quito-nosql'
+  | 'quito-otras'
+  | 'guayaquil-sql'
+  | 'guayaquil-replica'
+  | 'cuenca-cloud'
+  | 'api-gateway'
+  | 'gui-frontend'
+  | 'agentes-quito'
+  | 'agentes-gye'
+  | 'power-bi';
+
 const BRANCH_IDENTITIES = [
   {
     code: 'UIO',
@@ -207,6 +220,9 @@ export const ArchitectureConsole: React.FC = () => {
   const [topology, setTopology] = useState<TopologyResponse | null>(null);
   const [loadingTopo, setLoadingTopo] = useState(false);
 
+  // Elemento interactivo seleccionado en el Diagrama Visual
+  const [focusedElement, setFocusedElement] = useState<InteractiveElementId>('cuenca-cloud');
+
   // Consola Global del DBA (GET /api/dba/global)
   const [globalData, setGlobalData] = useState<GlobalDbaResponse | null>(null);
   const [filterSede, setFilterSede] = useState<string>('TODAS');
@@ -214,9 +230,9 @@ export const ArchitectureConsole: React.FC = () => {
   const [loadingGlobal, setLoadingGlobal] = useState<boolean>(false);
 
   // Prompt SQL DBA state
-  const [selectedNodeId, setSelectedNodeId] = useState<string>('guayaquil-sql');
+  const [selectedNodeId, setSelectedNodeId] = useState<string>('cuenca-cloud');
   const [sqlText, setSqlText] = useState<string>(
-    "SELECT username, password_plano, rol_bd, rol_aplicacion, modulo_codigo, modulo_nombre, nombre_colaborador, descripcion_cargo, sede_nodo, estado FROM rbac_matriz_15_usuarios ORDER BY modulo_codigo, rol_bd;"
+    "SELECT id_op, sede_header, agente_nombre, usuario_rbac, rol_rbac, modulo, operacion, monto_usd, latencia_wan_ms, fecha_hora FROM operaciones_agentes_cloud ORDER BY id_op DESC LIMIT 15;"
   );
   const [queryResult, setQueryResult] = useState<QueryResult | null>(null);
   const [queryError, setQueryError] = useState<string>('');
@@ -230,9 +246,6 @@ export const ArchitectureConsole: React.FC = () => {
   const [simulateFail, setSimulateFail] = useState<boolean>(false);
   const [twoPcResult, setTwoPcResult] = useState<TwoPcResult | null>(null);
   const [runningTwoPc, setRunningTwoPc] = useState<boolean>(false);
-
-  // SI Users slider
-  const [simulatedUsers, setSimulatedUsers] = useState<number>(250);
 
   const fetchTopology = useCallback(async () => {
     setLoadingTopo(true);
@@ -282,29 +295,7 @@ export const ArchitectureConsole: React.FC = () => {
     }
   }, []);
 
-  useEffect(() => {
-    void fetchTopology();
-    void fetchGlobalDbaConsole('TODAS', 'TODOS');
-  }, [fetchTopology, fetchGlobalDbaConsole]);
-
-  useEffect(() => {
-    if (selectedNodeId && selectedNodeId !== 'global-federated') {
-      void fetchNodeLogs(selectedNodeId);
-    }
-  }, [selectedNodeId, fetchNodeLogs]);
-
-  const handleSelectNodeForDba = (nodeId: string, defaultSql?: string) => {
-    setSelectedNodeId(nodeId);
-    const nodeObj = topology?.nodes.find(n => n.id === nodeId);
-    if (defaultSql) {
-      setSqlText(defaultSql);
-    } else if (nodeObj && nodeObj.presets.length > 0) {
-      setSqlText(nodeObj.presets[0].sql);
-    }
-    setActiveTab('dba_prompt');
-  };
-
-  const runDbaQuery = async (overrideNodeId?: string, overrideSql?: string) => {
+  const runDbaQuery = useCallback(async (overrideNodeId?: string, overrideSql?: string) => {
     const targetNode = overrideNodeId ?? selectedNodeId;
     const targetSql = overrideSql ?? sqlText;
     setRunningQuery(true);
@@ -329,6 +320,45 @@ export const ArchitectureConsole: React.FC = () => {
     } finally {
       setRunningQuery(false);
     }
+  }, [selectedNodeId, sqlText, fetchNodeLogs]);
+
+  useEffect(() => {
+    void fetchTopology();
+    void fetchGlobalDbaConsole('TODAS', 'TODOS');
+    void runDbaQuery('cuenca-cloud', "SELECT id_op, sede_header, agente_nombre, usuario_rbac, rol_rbac, modulo, operacion, monto_usd, latencia_wan_ms, fecha_hora FROM operaciones_agentes_cloud ORDER BY id_op DESC LIMIT 10;");
+  }, [fetchTopology, fetchGlobalDbaConsole, runDbaQuery]);
+
+  useEffect(() => {
+    if (selectedNodeId && selectedNodeId !== 'global-federated') {
+      void fetchNodeLogs(selectedNodeId);
+    }
+  }, [selectedNodeId, fetchNodeLogs]);
+
+  const handleClickDiagramNode = (elemId: InteractiveElementId) => {
+    setFocusedElement(elemId);
+    const dbIds: InteractiveElementId[] = ['quito-sql', 'quito-nosql', 'quito-otras', 'guayaquil-sql', 'guayaquil-replica', 'cuenca-cloud'];
+    if (dbIds.includes(elemId)) {
+      setSelectedNodeId(elemId);
+      const nodeObj = topology?.nodes.find(n => n.id === elemId);
+      if (nodeObj && nodeObj.presets.length > 0) {
+        setSqlText(nodeObj.presets[0].sql);
+        void runDbaQuery(elemId, nodeObj.presets[0].sql);
+      } else {
+        void fetchNodeLogs(elemId);
+      }
+    }
+  };
+
+  const handleSelectNodeForDba = (nodeId: string, defaultSql?: string) => {
+    setSelectedNodeId(nodeId);
+    const nodeObj = topology?.nodes.find(n => n.id === nodeId);
+    if (defaultSql) {
+      setSqlText(defaultSql);
+    } else if (nodeObj && nodeObj.presets.length > 0) {
+      setSqlText(nodeObj.presets[0].sql);
+    }
+    setActiveTab('dba_prompt');
+    void runDbaQuery(nodeId, defaultSql || nodeObj?.presets[0]?.sql);
   };
 
   const triggerAgentsRoundNow = async () => {
@@ -382,12 +412,87 @@ export const ArchitectureConsole: React.FC = () => {
   };
 
   const currentNode = topology?.nodes.find(n => n.id === selectedNodeId);
-  const tps = Math.max(2, Math.round(simulatedUsers * 0.18));
+  const focusedDbNode = topology?.nodes.find(n => n.id === focusedElement);
 
-  const getNodeBadge = (xSedeKey: string) => {
-    const n = topology?.nodes.find(node => node.xSede === xSedeKey);
-    if (!n) return { status: 'ONLINE', ms: '—' };
-    return { status: n.status, ms: `${n.latencyMs} ms` };
+  const findNode = (id: string) => topology?.nodes.find(n => n.id === id);
+
+  // Renderizador de cada cajita "BD" del boceto del usuario
+  const renderDbSquare = (nodeId: InteractiveElementId, shortCode: string, subtitle: string) => {
+    const n = findNode(nodeId);
+    const isOnline = !n || n.status === 'ONLINE';
+    const isFocused = focusedElement === nodeId;
+    return (
+      <button
+        key={nodeId}
+        type="button"
+        onClick={() => handleClickDiagramNode(nodeId)}
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          gap: '4px',
+          background: 'transparent',
+          border: 'none',
+          cursor: 'pointer',
+          padding: '4px',
+          transition: 'transform 0.15s ease',
+          transform: isFocused ? 'scale(1.06)' : 'scale(1)',
+        }}
+      >
+        <div
+          style={{
+            width: '86px',
+            height: '82px',
+            borderRadius: '16px',
+            border: isFocused
+              ? '3px solid #782c3e'
+              : isOnline
+              ? '2.5px solid #183a31'
+              : '2.5px solid #9a3937',
+            background: isFocused
+              ? '#fbf3f0'
+              : isOnline
+              ? '#ffffff'
+              : '#f8e9e8',
+            boxShadow: isFocused
+              ? '0 8px 22px rgba(120,44,62,0.22)'
+              : '0 4px 12px rgba(24,58,49,0.08)',
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            justifyContent: 'center',
+            position: 'relative',
+          }}
+        >
+          {/* Punto de estado en vivo */}
+          <span
+            style={{
+              position: 'absolute',
+              top: '7px',
+              right: '7px',
+              width: '9px',
+              height: '9px',
+              borderRadius: '50%',
+              background: isOnline ? '#267154' : '#9a3937',
+              boxShadow: isOnline ? '0 0 0 3px rgba(38,113,84,0.2)' : '0 0 0 3px rgba(154,57,55,0.2)',
+            }}
+          />
+          <Database size={22} color={isFocused ? '#782c3e' : isOnline ? '#183a31' : '#9a3937'} />
+          <strong style={{ fontSize: '11px', color: '#25251f', marginTop: '3px' }}>{shortCode}</strong>
+          <code style={{ fontSize: '9.5px', color: '#782c3e', fontWeight: 700 }}>
+            :{n?.actualPort || subtitle}
+          </code>
+        </div>
+        <div style={{ textAlign: 'center' }}>
+          <div style={{ fontFamily: "'Playfair Display', Georgia, serif", fontWeight: 700, fontSize: '13px', color: '#25251f' }}>
+            BD ({shortCode})
+          </div>
+          <div style={{ fontSize: '9.5px', color: isOnline ? '#267154' : '#9a3937', fontWeight: 700 }}>
+            {isOnline ? `${n?.latencyMs ?? 12} ms` : 'OFFLINE'}
+          </div>
+        </div>
+      </button>
+    );
   };
 
   return (
@@ -396,18 +501,16 @@ export const ArchitectureConsole: React.FC = () => {
       <div className="page-heading">
         <div>
           <span className="eyebrow">
-            SECCIÓN EXCLUSIVA DBA & ARQUITECTURA · TAILSCALE VPN · 3 RÉPLICAS API ({globalData?.apiReplica || topology?.apiReplica || 'api_lacava_1'})
+            TOPOLOGÍA INTERACTIVA EN VIVO · TÚNEL VPN TAILSCALE · 3 RÉPLICAS API ({globalData?.apiReplica || topology?.apiReplica || 'api_lacava_1'})
           </span>
-          <h1>Arquitectura de BD vs. Arquitectura de SI</h1>
+          <h1>Mapa Visual del Clúster Híbrido "La Cava"</h1>
           <p>
-            <strong>Quito (100.77.220.102):</strong> BD 1 (:3307), BD 2 Mongo (:27017), BD 3 Hash (:3308) ·{' '}
-            <strong>Guayaquil (100.123.81.4):</strong> BD 4 (:3306), BD 5 DWH (:3309) ·{' '}
-            <strong>Cuenca (Cloud):</strong> BD 6 Supabase (:5432)
+            Haz clic en cualquiera de las <strong>6 Bases de Datos (BD)</strong>, en los <strong>Agentes IA</strong>, en el <strong>API Gateway</strong> o en la <strong>GUI</strong> del diagrama para inspeccionar su flujo, tablas y consultas en vivo.
           </p>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
           <span className="demo-badge">
-            {topology ? `${topology.onlineNodes}/${topology.totalNodes} BDs ONLINE` : 'CONECTANDO...'}
+            {topology ? `${topology.onlineNodes}/${topology.totalNodes} BDs CONECTADAS POR TAILSCALE` : 'CONECTANDO...'}
           </span>
           <button
             type="button"
@@ -427,10 +530,10 @@ export const ArchitectureConsole: React.FC = () => {
       {/* PESTAÑAS CON LOS COLORES BORGOÑA Y VERDE BOSQUE DE LA CAVA */}
       <div style={{ display: 'flex', gap: '9px', marginBottom: '20px', flexWrap: 'wrap' }}>
         {[
-          { id: 'diagram_vs', label: '1. Diagrama Maestro: Arquitectura de BD vs. Arquitectura de SI', icon: GitCompare, show: true },
+          { id: 'diagram_vs', label: '1. Diagrama Interactivo en Vivo (6 BDs + Túnel Tailscale + Agentes + API + GUI)', icon: GitCompare, show: true },
           { id: 'dba_prompt', label: '2. Terminal Read-Only del DBA (Consultas para las 3 Sucursales / 6 BDs)', icon: Terminal, show: true },
           { id: 'global_dba', label: '3. Monitor Global Unificado (6 BDs en Paralelo · Solo Lectura)', icon: Filter, show: true },
-          { id: 'board', label: '4. Identidad por Sucursal & Estado de 6 Nodos en Vivo', icon: Network, show: true },
+          { id: 'board', label: '4. Identidad por Sucursal & Tarjetas de Nodos', icon: Network, show: true },
           { id: 'twopc', label: '5. Simulador de Escritura 2PC (Exclusivo Admin / Arquitecto)', icon: ShieldCheck, show: !isStrictDba },
         ].filter(t => t.show).map(tab => {
           const Icon = tab.icon;
@@ -455,348 +558,671 @@ export const ArchitectureConsole: React.FC = () => {
         })}
       </div>
 
-      {/* ==================== TAB 1: DIAGRAMA MAESTRO (ARQUITECTURA BD VS ARQUITECTURA SI) ==================== */}
+      {/* ==================== TAB 1: DIAGRAMA VISUAL INTERACTIVO (EXACTAMENTE COMO EL BOCETO) ==================== */}
       {activeTab === 'diagram_vs' && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '18px' }}>
-          <section className="card" style={{ padding: '22px' }}>
-            <div className="section-heading">
+          <section className="card" style={{ padding: '22px', position: 'relative', overflow: 'hidden' }}>
+            <div className="section-heading" style={{ marginBottom: '12px' }}>
               <div>
                 <h2 style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '18px' }}>
-                  <GitCompare size={20} color="#782c3e" />
-                  Diagrama Arquitectónico Integral — Pizarra Completa del Clúster Híbrido "La Cava"
+                  <Network size={20} color="#782c3e" />
+                  Arquitectura en Vivo: Quito (3 BDs) · Guayaquil (2 BDs) · Cuenca (1 BD) ↔ Túnel Tailscale ↔ API ↔ GUI
                 </h2>
                 <p>
-                  Contraste visual e interactivo entre el <strong>Dominio del DBA (Arquitectura de Bases de Datos)</strong> y el <strong>Dominio del Arquitecto de Software (Arquitectura de Sistemas de Información)</strong> conectados por Tailscale VPN.
+                  <strong>Interactivo:</strong> Haz clic sobre cualquier bloque (<strong>BD 1..6</strong>, <strong>Agentes IA</strong>, <strong>API</strong> o <strong>GUI</strong>) para abrir abajo su inspector en vivo con todos sus datos, logs y terminal Read-Only.
                 </p>
               </div>
-              <span className="demo-badge">SHARED NOTHING · SCALE-OUT + SPEED-UP</span>
+              <span className="demo-badge">HAZ CLIC EN CUALQUIER NODO DEL DIAGRAMA</span>
             </div>
 
-            {/* LIENZO DEL DIAGRAMA MAESTRO (2 GRANDES COLUMNAS + PUENTE CENTRAL VPN / X-SEDE) */}
+            {/* ==================== LIENZO GRÁFICO CON LÍNEAS SVG DEL TÚNEL TAILSCALE ==================== */}
             <div
               style={{
-                display: 'grid',
-                gridTemplateColumns: 'repeat(auto-fit, minmax(460px, 1fr))',
-                gap: '18px',
-                alignItems: 'stretch',
+                position: 'relative',
+                width: '100%',
+                minHeight: '590px',
+                background: 'radial-gradient(circle at 50% 52%, #ffffff 0%, #f6f4ef 100%)',
+                border: '1.5px solid #dfded7',
+                borderRadius: '16px',
+                padding: '18px',
+                overflowX: 'auto',
               }}
             >
-              {/* ==================== LADO IZQUIERDO: ARQUITECTURA DE BASES DE DATOS (DBA) ==================== */}
-              <div
-                style={{
-                  border: '2px solid #183a31',
-                  borderRadius: '14px',
-                  background: '#faf9f6',
-                  padding: '18px',
-                  display: 'flex',
-                  flexDirection: 'column',
-                  gap: '14px',
-                }}
-              >
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '2px solid #183a31', paddingBottom: '10px' }}>
-                  <div>
-                    <span style={{ fontSize: '10px', fontWeight: 800, letterSpacing: '.14em', color: '#782c3e' }}>
-                      LADO IZQUIERDO DE LA PIZARRA · ROL: DBA (`dba`)
+              <div style={{ position: 'relative', minWidth: '940px', height: '550px', margin: '0 auto' }}>
+                {/* LÍNEAS DE CONEXIÓN SVG (TÚNEL TAILSCALE WIREGUARD + ENRUTAMIENTO X-SEDE) */}
+                <svg
+                  viewBox="0 0 1000 550"
+                  style={{
+                    position: 'absolute',
+                    inset: 0,
+                    width: '100%',
+                    height: '100%',
+                    pointerEvents: 'none',
+                    zIndex: 1,
+                  }}
+                >
+                  <defs>
+                    <marker id="arrow-wine" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto">
+                      <path d="M0,0 L8,4 L0,8 Z" fill="#782c3e" />
+                    </marker>
+                    <marker id="arrow-green" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto">
+                      <path d="M0,0 L8,4 L0,8 Z" fill="#183a31" />
+                    </marker>
+                    <marker id="arrow-gold" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto">
+                      <path d="M0,0 L8,4 L0,8 Z" fill="#a96b16" />
+                    </marker>
+                  </defs>
+
+                  {/* Halo del Túnel Tailscale */}
+                  <ellipse cx="500" cy="310" rx="235" ry="62" fill="rgba(24,58,49,0.04)" stroke="#cbd5cb" strokeDasharray="6 4" strokeWidth="1.5" />
+                  <text x="500" y="259" textAnchor="middle" fill="#183a31" fontSize="10" fontWeight="800" letterSpacing="1.5">
+                    🔒 MALLA VPN TAILSCALE (100.77.220.102 ◄── WireGuard 7ms ──► 100.123.81.4)
+                  </text>
+
+                  {/* Línea: Quito (3 BDs a la izquierda) <---> API Central */}
+                  <path
+                    d="M 315 235 C 375 260, 400 310, 415 340"
+                    fill="none"
+                    stroke="#782c3e"
+                    strokeWidth="2.8"
+                    strokeDasharray="7 4"
+                    markerEnd="url(#arrow-wine)"
+                  />
+                  <rect x="295" y="274" width="138" height="20" rx="10" fill="#fbf3f0" stroke="#ead6cf" />
+                  <text x="364" y="287" textAnchor="middle" fill="#782c3e" fontSize="9.5" fontWeight="700">
+                    Tailscale :3307/:27017/:3308
+                  </text>
+
+                  {/* Línea: Agentes Quito ---> API Central */}
+                  <path
+                    d="M 225 365 C 310 380, 360 365, 412 355"
+                    fill="none"
+                    stroke="#782c3e"
+                    strokeWidth="2"
+                    markerEnd="url(#arrow-wine)"
+                  />
+                  <text x="320" y="390" textAnchor="middle" fill="#782c3e" fontSize="9" fontWeight="700">
+                    X-Sede: QUITO / NOSQL / PARALELA
+                  </text>
+
+                  {/* Línea: Guayaquil (2 BDs arriba) <---> API Central */}
+                  <path
+                    d="M 500 175 L 500 295"
+                    fill="none"
+                    stroke="#183a31"
+                    strokeWidth="2.8"
+                    strokeDasharray="7 4"
+                    markerEnd="url(#arrow-green)"
+                  />
+                  <rect x="424" y="212" width="152" height="20" rx="10" fill="#eff5f1" stroke="#cde0d3" />
+                  <text x="500" y="225" textAnchor="middle" fill="#183a31" fontSize="9.5" fontWeight="700">
+                    Tailscale 100.123.81.4 (:3306/:3309)
+                  </text>
+
+                  {/* Línea: Cuenca (1 BD a la derecha) <---> API Central */}
+                  <path
+                    d="M 760 250 C 690 280, 635 315, 588 340"
+                    fill="none"
+                    stroke="#a96b16"
+                    strokeWidth="2.8"
+                    strokeDasharray="7 4"
+                    markerEnd="url(#arrow-gold)"
+                  />
+                  <rect x="615" y="274" width="142" height="20" rx="10" fill="#fbf4e6" stroke="#ead8b8" />
+                  <text x="686" y="287" textAnchor="middle" fill="#a96b16" fontSize="9.5" fontWeight="700">
+                    TLS WAN Supabase :5432
+                  </text>
+
+                  {/* Línea: Agentes Guayaquil/Cuenca ---> API Central */}
+                  <path
+                    d="M 765 375 C 690 385, 640 370, 588 358"
+                    fill="none"
+                    stroke="#183a31"
+                    strokeWidth="2"
+                    markerEnd="url(#arrow-green)"
+                  />
+                  <text x="685" y="394" textAnchor="middle" fill="#183a31" fontSize="9" fontWeight="700">
+                    X-Sede: GUAYAQUIL / DWH / CUENCA
+                  </text>
+
+                  {/* Línea: API Central <---> GUI (Abajo) */}
+                  <path
+                    d="M 500 402 L 500 456"
+                    fill="none"
+                    stroke="#183a31"
+                    strokeWidth="3"
+                    markerEnd="url(#arrow-green)"
+                  />
+                  <text x="568" y="435" textAnchor="middle" fill="#575950" fontSize="9.5" fontWeight="700">
+                    HTTPS / CORS JSON
+                  </text>
+                </svg>
+
+                {/* ==================== 1. GRUPO IZQUIERDO: QUITO (3 BDs + 3 AGENTES IA EN PC ESCRITORIO) ==================== */}
+                <div
+                  style={{
+                    position: 'absolute',
+                    left: '14px',
+                    top: '95px',
+                    width: '310px',
+                    zIndex: 2,
+                    background: 'rgba(255,255,255,0.94)',
+                    border: '2px solid #782c3e',
+                    borderRadius: '14px',
+                    padding: '12px',
+                    boxShadow: '0 8px 24px rgba(120,44,62,0.08)',
+                  }}
+                >
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                    <span style={{ fontSize: '10px', fontWeight: 800, color: '#782c3e', letterSpacing: '.08em' }}>
+                      🖥️ PC ESCRITORIO (`JERXMY-01`)
                     </span>
-                    <h3 style={{ margin: '2px 0 0', fontSize: '18px', fontFamily: "'Playfair Display', Georgia, serif", color: '#183a31' }}>
-                      1. Arquitectura de Bases de Datos (6 BDs)
-                    </h3>
+                    <code style={{ fontSize: '10px', background: '#fbf3f0', color: '#782c3e', padding: '2px 6px', borderRadius: '6px', fontWeight: 700 }}>
+                      100.77.220.102
+                    </code>
                   </div>
-                  <span style={{ background: '#183a31', color: '#fff', padding: '4px 10px', borderRadius: '20px', fontSize: '10.5px', fontWeight: 700 }}>
-                    6 Motores · 17 Usuarios RBAC
-                  </span>
+                  <div style={{ fontWeight: 700, fontSize: '13px', color: '#25251f', marginBottom: '10px', fontFamily: "'Playfair Display', Georgia, serif" }}>
+                    Sede Quito — 3 Bases de Datos
+                  </div>
+
+                  {/* LAS 3 CAJITAS BD DE LA IZQUIERDA (COMO EN EL DIBUJO) */}
+                  <div style={{ display: 'flex', justifyContent: 'space-around', alignItems: 'flex-start' }}>
+                    {renderDbSquare('quito-sql', 'BD 1 SQL', '3307')}
+                    {renderDbSquare('quito-nosql', 'BD 2 NoSQL', '27017')}
+                    {renderDbSquare('quito-otras', 'BD 3 Hash', '3308')}
+                  </div>
+
+                  {/* REFERENCIA DEL AGENTE AL LADO EN LA MISMA MÁQUINA DE ESCRITORIO */}
+                  <button
+                    type="button"
+                    onClick={() => handleClickDiagramNode('agentes-quito')}
+                    style={{
+                      marginTop: '10px',
+                      width: '100%',
+                      padding: '8px 10px',
+                      borderRadius: '10px',
+                      border: focusedElement === 'agentes-quito' ? '2px solid #782c3e' : '1px dashed #782c3e',
+                      background: focusedElement === 'agentes-quito' ? '#fbf3f0' : '#faf9f6',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '7px', textAlign: 'left' }}>
+                      <Bot size={17} color="#782c3e" />
+                      <div>
+                        <strong style={{ fontSize: '11px', color: '#782c3e', display: 'block' }}>
+                          3 Agentes IA Quito (`agentes_quito.py`)
+                        </strong>
+                        <span style={{ fontSize: '9.5px', color: '#787970' }}>
+                          Agente 1 (OLTP) · Agente 2 (Mongo) · Agente 3 (Hash)
+                        </span>
+                      </div>
+                    </div>
+                    <span className="badge badge-APR" style={{ fontSize: '8.5px' }}>ACTIVOS 60s</span>
+                  </button>
                 </div>
 
-                {/* 5 CILINDROS DE FRAGMENTACIÓN MODULAR (C, I, V, TH, Ctbl) */}
-                <div style={{ background: '#ffffff', border: '1px solid #d9d4c7', borderRadius: '10px', padding: '12px' }}>
-                  <div style={{ fontSize: '11px', fontWeight: 800, color: '#183a31', marginBottom: '8px', display: 'flex', justifyContent: 'space-between' }}>
-                    <span>5 CILINDROS / MÓDULOS DE NEGOCIO FRAGMENTADOS</span>
-                    <span style={{ color: '#782c3e' }}>3 Roles × 5 Módulos = 15 Usuarios + DBA + Admin</span>
+                {/* ==================== 2. GRUPO SUPERIOR CENTRAL: GUAYAQUIL (2 BDs EN LAPTOP) ==================== */}
+                <div
+                  style={{
+                    position: 'absolute',
+                    left: '375px',
+                    top: '8px',
+                    width: '250px',
+                    zIndex: 2,
+                    background: 'rgba(255,255,255,0.94)',
+                    border: '2px solid #183a31',
+                    borderRadius: '14px',
+                    padding: '10px 12px',
+                    boxShadow: '0 8px 24px rgba(24,58,49,0.08)',
+                  }}
+                >
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
+                    <span style={{ fontSize: '9.5px', fontWeight: 800, color: '#183a31', letterSpacing: '.06em' }}>
+                      💻 LAPTOP (`DESKTOP-6JDT8Q0`)
+                    </span>
+                    <code style={{ fontSize: '9.5px', background: '#eff5f1', color: '#183a31', padding: '2px 6px', borderRadius: '6px', fontWeight: 700 }}>
+                      100.123.81.4
+                    </code>
                   </div>
-                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: '6px' }}>
-                    {[
-                      { c: 'C', n: 'Compras', u: 'c_jefe / sup / ope', col: '#782c3e' },
-                      { c: 'I', n: 'Inventarios', u: 'i_jefe / sup / ope', col: '#183a31' },
-                      { c: 'V', n: 'Ventas', u: 'v_jefe / sup / ope', col: '#782c3e' },
-                      { c: 'TH', n: 'T. Humano', u: 'th_jefe / sup / ope', col: '#a96b16' },
-                      { c: 'Ctbl', n: 'Contabilidad', u: 'ctbl_jefe / sup / ope', col: '#183a31' },
-                    ].map(cyl => (
-                      <div
-                        key={cyl.c}
-                        onClick={() => handleSelectNodeForDba('guayaquil-sql')}
-                        style={{
-                          border: `1.5px solid ${cyl.col}`,
-                          borderRadius: '10px 10px 6px 6px',
-                          padding: '7px 5px',
-                          textAlign: 'center',
-                          background: '#faf9f6',
-                          cursor: 'pointer',
-                        }}
-                      >
-                        <div style={{ background: cyl.col, color: '#fff', fontWeight: 800, fontSize: '11px', borderRadius: '999px', padding: '2px 0', marginBottom: '4px' }}>
-                          ({cyl.c})
+                  <div style={{ fontWeight: 700, fontSize: '12.5px', color: '#25251f', marginBottom: '6px', textAlign: 'center', fontFamily: "'Playfair Display', Georgia, serif" }}>
+                    Sede Guayaquil — 2 BDs
+                  </div>
+
+                  {/* LAS 2 CAJITAS BD DE ARRIBA (COMO EN EL DIBUJO) */}
+                  <div style={{ display: 'flex', justifyContent: 'center', gap: '18px' }}>
+                    {renderDbSquare('guayaquil-sql', 'BD 4 OLTP', '3306')}
+                    {renderDbSquare('guayaquil-replica', 'BD 5 DWH', '3309')}
+                  </div>
+                </div>
+
+                {/* ==================== 3. GRUPO DERECHO: CUENCA (1 BD SOLA EN LA NUBE + AGENTES LAPTOP/BI) ==================== */}
+                <div
+                  style={{
+                    position: 'absolute',
+                    right: '18px',
+                    top: '110px',
+                    width: '255px',
+                    zIndex: 2,
+                    background: 'rgba(255,255,255,0.94)',
+                    border: '2px solid #a96b16',
+                    borderRadius: '14px',
+                    padding: '12px',
+                    boxShadow: '0 8px 24px rgba(169,107,22,0.08)',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: 'center',
+                  }}
+                >
+                  <div style={{ width: '100%', display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
+                    <span style={{ fontSize: '10px', fontWeight: 800, color: '#a96b16' }}>
+                      ☁️ NUBE SUPABASE DBaaS
+                    </span>
+                    <code style={{ fontSize: '9.5px', background: '#fbf4e6', color: '#a96b16', padding: '2px 6px', borderRadius: '6px', fontWeight: 700 }}>
+                      us-east-1
+                    </code>
+                  </div>
+                  <div style={{ fontWeight: 700, fontSize: '13px', color: '#25251f', marginBottom: '8px', fontFamily: "'Playfair Display', Georgia, serif" }}>
+                    Sede Cuenca & Loja — 1 BD Cloud
+                  </div>
+
+                  {/* LA CAJITA BD SOLA A LA DERECHA (COMO EN EL DIBUJO) */}
+                  {renderDbSquare('cuenca-cloud', 'BD 6 Cloud', '5432')}
+
+                  {/* REFERENCIA DE AGENTES GUAYAQUIL/CUENCA Y POWER BI */}
+                  <div style={{ width: '100%', display: 'flex', flexDirection: 'column', gap: '6px', marginTop: '8px' }}>
+                    <button
+                      type="button"
+                      onClick={() => handleClickDiagramNode('agentes-gye')}
+                      style={{
+                        width: '100%',
+                        padding: '7px 9px',
+                        borderRadius: '9px',
+                        border: focusedElement === 'agentes-gye' ? '2px solid #183a31' : '1px dashed #183a31',
+                        background: focusedElement === 'agentes-gye' ? '#eff5f1' : '#faf9f6',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        cursor: 'pointer',
+                      }}
+                    >
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '6px', textAlign: 'left' }}>
+                        <Bot size={15} color="#183a31" />
+                        <div>
+                          <strong style={{ fontSize: '10.5px', color: '#183a31', display: 'block' }}>
+                            3 Agentes Laptop (`agentes_gye_cuenca.py`)
+                          </strong>
+                          <span style={{ fontSize: '9px', color: '#787970' }}>
+                            Agente 4 (GYE) · Agente 5 (ETL) · Agente 6 (Cuenca)
+                          </span>
                         </div>
-                        <div style={{ fontWeight: 700, fontSize: '10.5px', color: '#25251f' }}>{cyl.n}</div>
-                        <div style={{ fontSize: '8.5px', color: '#787970', marginTop: '2px', fontFamily: 'monospace' }}>{cyl.u}</div>
+                      </div>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => handleClickDiagramNode('power-bi')}
+                      style={{
+                        width: '100%',
+                        padding: '6px 9px',
+                        borderRadius: '9px',
+                        border: focusedElement === 'power-bi' ? '2px solid #a96b16' : '1px solid #ead8b8',
+                        background: focusedElement === 'power-bi' ? '#fbf4e6' : '#ffffff',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        cursor: 'pointer',
+                      }}
+                    >
+                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', fontSize: '10.5px', fontWeight: 700, color: '#a96b16' }}>
+                        <BarChart3 size={14} /> Power BI Desktop (OLAP :3309 & :5432)
+                      </span>
+                      <span style={{ fontSize: '9px', color: '#787970' }}>Ver conexión</span>
+                    </button>
+                  </div>
+                </div>
+
+                {/* ==================== 4. BLOQUE CENTRAL: API (NGINX LB + 3 RÉPLICAS) ==================== */}
+                <button
+                  type="button"
+                  onClick={() => handleClickDiagramNode('api-gateway')}
+                  style={{
+                    position: 'absolute',
+                    left: '412px',
+                    top: '296px',
+                    width: '176px',
+                    height: '104px',
+                    zIndex: 3,
+                    borderRadius: '20px',
+                    border: focusedElement === 'api-gateway' ? '3px solid #782c3e' : '2.5px solid #183a31',
+                    background: focusedElement === 'api-gateway' ? '#183a31' : '#ffffff',
+                    color: focusedElement === 'api-gateway' ? '#ffffff' : '#25251f',
+                    boxShadow: '0 12px 28px rgba(24,58,49,0.16)',
+                    cursor: 'pointer',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    padding: '10px',
+                  }}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <Cpu size={20} color={focusedElement === 'api-gateway' ? '#e7c6a8' : '#782c3e'} />
+                    <span style={{ fontFamily: "'Playfair Display', Georgia, serif", fontSize: '20px', fontWeight: 700 }}>
+                      API
+                    </span>
+                  </div>
+                  <div style={{ fontSize: '10px', fontWeight: 700, marginTop: '2px', color: focusedElement === 'api-gateway' ? '#e7c6a8' : '#782c3e' }}>
+                    Nginx LB :8000 / :8080
+                  </div>
+                  <div style={{ fontSize: '9px', marginTop: '3px', opacity: 0.9 }}>
+                    3 Réplicas (`api_lacava_1..3`)
+                  </div>
+                  <div style={{ fontSize: '8.5px', marginTop: '2px', fontFamily: 'monospace', background: 'rgba(120,44,62,0.12)', padding: '2px 6px', borderRadius: '6px' }}>
+                    Pool 6 BDs · Header X-Sede
+                  </div>
+                </button>
+
+                {/* ==================== 5. BLOQUE INFERIOR: GUI (FRONTEND GITHUB PAGES) ==================== */}
+                <button
+                  type="button"
+                  onClick={() => handleClickDiagramNode('gui-frontend')}
+                  style={{
+                    position: 'absolute',
+                    left: '430px',
+                    top: '458px',
+                    width: '140px',
+                    height: '72px',
+                    zIndex: 3,
+                    borderRadius: '16px',
+                    border: focusedElement === 'gui-frontend' ? '3px solid #782c3e' : '2.5px solid #25251f',
+                    background: focusedElement === 'gui-frontend' ? '#782c3e' : '#ffffff',
+                    color: focusedElement === 'gui-frontend' ? '#ffffff' : '#25251f',
+                    boxShadow: '0 8px 20px rgba(0,0,0,0.1)',
+                    cursor: 'pointer',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                  }}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <Globe size={17} color={focusedElement === 'gui-frontend' ? '#fff' : '#183a31'} />
+                    <span style={{ fontFamily: "'Playfair Display', Georgia, serif", fontSize: '18px', fontWeight: 700 }}>
+                      GUI
+                    </span>
+                  </div>
+                  <div style={{ fontSize: '9.5px', fontWeight: 600 }}>
+                    GitHub Pages · React 18
+                  </div>
+                  <div style={{ fontSize: '8.5px', opacity: 0.85 }}>
+                    17 Usuarios RBAC
+                  </div>
+                </button>
+              </div>
+            </div>
+
+            {/* ==================== PANEL INSPECTOR DINÁMICO DEL ELEMENTO CLICADO EN EL DIAGRAMA ==================== */}
+            <div
+              style={{
+                marginTop: '18px',
+                border: '2px solid #183a31',
+                borderRadius: '14px',
+                background: '#faf9f6',
+                padding: '18px 20px',
+              }}
+            >
+              {/* CASO A: EL USUARIO HIZO CLIC EN UNA DE LAS 6 BASES DE DATOS (EJ. BD 6 CUENCA SOLA A LA DERECHA) */}
+              {focusedDbNode && (
+                <div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px', borderBottom: '1px solid #e9e6de', paddingBottom: '12px', marginBottom: '14px' }}>
+                    <div>
+                      <span style={{ fontSize: '10px', fontWeight: 800, color: '#782c3e', letterSpacing: '.12em' }}>
+                        INSPECTOR EN VIVO DE BASE DE DATOS SELECCIONADA EN EL DIAGRAMA
+                      </span>
+                      <h3 style={{ margin: '3px 0 0', fontSize: '19px', fontFamily: "'Playfair Display', Georgia, serif", color: '#183a31' }}>
+                        {focusedDbNode.name} — <code>{focusedDbNode.activeHost || focusedDbNode.host}:{focusedDbNode.actualPort}</code>
+                      </h3>
+                      <p style={{ margin: '3px 0 0', fontSize: '12px', color: '#575950' }}>
+                        <strong>Propósito Arquitectónico:</strong> {focusedDbNode.role}
+                      </p>
+                    </div>
+                    <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                      <span className={`badge ${focusedDbNode.status === 'ONLINE' ? 'badge-APR' : 'badge-ERR'}`} style={{ fontSize: '11px', padding: '6px 12px' }}>
+                        {focusedDbNode.status} · Ping: {focusedDbNode.latencyMs} ms
+                      </span>
+                      <span className="demo-badge">Header X-Sede: {focusedDbNode.xSede}</span>
+                    </div>
+                  </div>
+
+                  {/* FICHA TÉCNICA COMPLETA DE LA BD SELECCIONADA */}
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(175px, 1fr))', gap: '10px', marginBottom: '14px' }}>
+                    <div style={{ background: '#fff', padding: '10px 12px', borderRadius: '8px', border: '1px solid #e9e6de' }}>
+                      <small style={{ color: '#787970', display: 'block', fontSize: '10px' }}>MOTOR DE BASE DE DATOS</small>
+                      <strong style={{ fontSize: '12.5px', color: '#183a31' }}>{focusedDbNode.engine}</strong>
+                    </div>
+                    <div style={{ background: '#fff', padding: '10px 12px', borderRadius: '8px', border: '1px solid #e9e6de' }}>
+                      <small style={{ color: '#787970', display: 'block', fontSize: '10px' }}>MÁQUINA FÍSICA / IP TAILSCALE</small>
+                      <strong style={{ fontSize: '12.5px', color: '#782c3e' }}>{focusedDbNode.machine}</strong>
+                    </div>
+                    <div style={{ background: '#fff', padding: '10px 12px', borderRadius: '8px', border: '1px solid #e9e6de' }}>
+                      <small style={{ color: '#787970', display: 'block', fontSize: '10px' }}>ESQUEMA / BASE & PUERTO TCP</small>
+                      <strong style={{ fontSize: '12.5px', fontFamily: 'monospace' }}>{focusedDbNode.database} (:{focusedDbNode.actualPort})</strong>
+                    </div>
+                    <div style={{ background: '#fff', padding: '10px 12px', borderRadius: '8px', border: '1px solid #e9e6de' }}>
+                      <small style={{ color: '#787970', display: 'block', fontSize: '10px' }}>TABLAS / COLECCIONES & TAMAÑO</small>
+                      <strong style={{ fontSize: '12.5px' }}>{focusedDbNode.tablesCount} objetos · {focusedDbNode.sizeKb} KB</strong>
+                    </div>
+                  </div>
+
+                  {/* CONSULTAS RÁPIDAS Y TERMINAL READ-ONLY EMBEBIDA PARA ESTE NODO */}
+                  <div style={{ background: '#ffffff', border: '1px solid #e9e6de', borderRadius: '10px', padding: '14px' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px', marginBottom: '10px' }}>
+                      <strong style={{ fontSize: '12.5px', color: '#183a31', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                        <Terminal size={15} color="#782c3e" />
+                        Consultas en Vivo sobre {focusedDbNode.shortName} (Solo Lectura / Read-Only):
+                      </strong>
+                      <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+                        {focusedDbNode.presets.map((p, idx) => (
+                          <button
+                            key={idx}
+                            type="button"
+                            className="btn btn-outline"
+                            onClick={() => {
+                              setSqlText(p.sql);
+                              void runDbaQuery(focusedDbNode.id, p.sql);
+                            }}
+                            style={{ padding: '5px 10px', fontSize: '11px', background: '#faf9f6' }}
+                          >
+                            {p.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div style={{ display: 'flex', gap: '8px', alignItems: 'stretch', marginBottom: '10px' }}>
+                      <input
+                        className="input"
+                        value={sqlText}
+                        onChange={e => setSqlText(e.target.value)}
+                        style={{ fontFamily: 'Consolas, monospace', fontSize: '12px', background: '#132a23', color: '#e8f3ec' }}
+                      />
+                      <button
+                        type="button"
+                        className="btn btn-primary"
+                        onClick={() => void runDbaQuery(focusedDbNode.id, sqlText)}
+                        disabled={runningQuery}
+                        style={{ whiteSpace: 'nowrap' }}
+                      >
+                        <Play size={14} />
+                        {runningQuery ? 'Consultando...' : 'Consultar BD'}
+                      </button>
+                    </div>
+
+                    {queryError && (
+                      <div style={{ padding: '10px', background: '#f8e9e8', border: '1px solid #e2b4b1', borderRadius: '7px', color: '#9a3937', fontSize: '12px', marginBottom: '10px' }}>
+                        <strong>Bloqueo de Seguridad DBA:</strong> {queryError}
+                      </div>
+                    )}
+
+                    {queryResult && (
+                      <div className="table-scroll" style={{ maxHeight: '250px', border: '1px solid #e9e6de', borderRadius: '8px' }}>
+                        <table>
+                          <thead>
+                            <tr>
+                              {queryResult.columns.map((c, i) => <th key={i}>{c}</th>)}
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {queryResult.rows.slice(0, 12).map((r, ri) => (
+                              <tr key={ri}>
+                                {r.map((v, ci) => (
+                                  <td key={ci} style={{ whiteSpace: 'normal', maxWidth: '320px' }}>
+                                    {v === null ? 'NULL' : String(v)}
+                                  </td>
+                                ))}
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* CASO B: EL USUARIO HIZO CLIC EN EL BLOQUE CENTRAL "API" */}
+              {focusedElement === 'api-gateway' && (
+                <div>
+                  <span style={{ fontSize: '10px', fontWeight: 800, color: '#782c3e', letterSpacing: '.12em' }}>
+                    INSPECTOR EN VIVO DE LA CAPA MEDIA (MIDDLEWARE & BALANCEADOR)
+                  </span>
+                  <h3 style={{ margin: '4px 0 8px', fontSize: '19px', fontFamily: "'Playfair Display', Georgia, serif", color: '#183a31' }}>
+                    API Gateway: Balanceador Nginx Round-Robin (:8000 / :8080) + 3 Réplicas FastAPI (`api_lacava_1..3`)
+                  </h3>
+                  <p style={{ fontSize: '12.5px', color: '#575950', marginBottom: '12px' }}>
+                    Vive en la <strong>Laptop (`100.123.81.4`)</strong>. Recibe todas las peticiones de la <strong>GUI (GitHub Pages)</strong> y de los <strong>6 Agentes IA</strong>, inspecciona el header obligatorio <code>X-Sede</code> (<code>QUITO</code>, <code>QUITO_NOSQL</code>, <code>QUITO_PARALELA</code>, <code>GUAYAQUIL</code>, <code>GUAYAQUIL_DWH</code>, <code>CUENCA</code>) y enruta la conexión por el túnel Tailscale hacia el motor correspondiente.
+                  </p>
+                  <div className="grid-3">
+                    {[
+                      { id: 'api_lacava_1', port: '127.0.0.1:8001', role: 'Réplica FastAPI #1 (Scale-Out Horizontal)' },
+                      { id: 'api_lacava_2', port: '127.0.0.1:8002', role: 'Réplica FastAPI #2 (Scale-Out Horizontal)' },
+                      { id: 'api_lacava_3', port: '127.0.0.1:8003', role: 'Réplica FastAPI #3 (Scale-Out Horizontal)' },
+                    ].map(rep => (
+                      <div key={rep.id} style={{ background: '#fff', border: '1px solid #e9e6de', borderRadius: '9px', padding: '12px' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                          <strong style={{ color: '#183a31' }}>{rep.id}</strong>
+                          <span className="badge badge-APR">ONLINE · {rep.port}</span>
+                        </div>
+                        <div style={{ fontSize: '11.5px', color: '#787970', marginTop: '5px' }}>{rep.role}</div>
                       </div>
                     ))}
                   </div>
                 </div>
+              )}
 
-                {/* MÁQUINA 1: PC DE ESCRITORIO — NODO QUITO (3 BDs) */}
-                <div style={{ background: '#ffffff', border: '1.5px solid #782c3e', borderRadius: '10px', padding: '12px' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
-                    <strong style={{ fontSize: '12px', color: '#782c3e' }}>
-                      🖥️ MÁQUINA 1 (PC ESCRITORIO · 100.77.220.102) — NODO QUITO (3 BDs)
-                    </strong>
-                    <span className="badge badge-ANU" style={{ background: '#fbf3f0', color: '#782c3e' }}>Cava Gran Reserva Sierra</span>
-                  </div>
-                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '8px' }}>
-                    {[
-                      { id: 'quito-sql', x: 'QUITO', title: 'BD 1 · SQL OLTP', sub: 'MariaDB :3307', desc: 'licoreriadatabase + 17 Usuarios RBAC' },
-                      { id: 'quito-nosql', x: 'QUITO_NOSQL', title: 'BD 2 · NoSQL JSON', sub: 'MongoDB :27017', desc: 'logs_auditoria & eventos_agentes' },
-                      { id: 'quito-otras', x: 'QUITO_PARALELA', title: 'BD 3 · Paralela', sub: 'MariaDB :3308', desc: 'PARTITION BY HASH(id) PARTITIONS 4 (Speed-up)' },
-                    ].map(b => {
-                      const st = getNodeBadge(b.x);
-                      const isOnline = st.status === 'ONLINE';
-                      return (
-                        <div
-                          key={b.id}
-                          onClick={() => handleSelectNodeForDba(b.id)}
-                          style={{
-                            border: isOnline ? '1px solid #e9e6de' : '2px solid #9a3937',
-                            borderRadius: '8px',
-                            padding: '8px',
-                            background: isOnline ? '#faf9f6' : '#f8e9e8',
-                            cursor: 'pointer',
-                          }}
-                        >
-                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                            <strong style={{ fontSize: '11px', color: isOnline ? '#183a31' : '#9a3937' }}>{b.title}</strong>
-                            <span style={{ fontSize: '9px', fontWeight: 800, color: isOnline ? '#267154' : '#9a3937' }}>
-                              ● {isOnline ? `ONLINE · ${st.ms}` : 'CAÍDA / OFFLINE'}
-                            </span>
-                          </div>
-                          <div style={{ fontSize: '10.5px', fontWeight: 700, color: '#782c3e', fontFamily: 'monospace', marginTop: '2px' }}>{b.sub}</div>
-                          <div style={{ fontSize: '9.5px', color: '#787970', marginTop: '3px' }}>{b.desc}</div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-
-                {/* MÁQUINA 2: LAPTOP — NODO GUAYAQUIL (2 BDs) */}
-                <div style={{ background: '#ffffff', border: '1.5px solid #183a31', borderRadius: '10px', padding: '12px' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
-                    <strong style={{ fontSize: '12px', color: '#183a31' }}>
-                      💻 MÁQUINA 2 (LAPTOP · 100.123.81.4) — NODO GUAYAQUIL (2 BDs)
-                    </strong>
-                    <span className="badge badge-APR">Hub Puerto Marítimo Costa</span>
-                  </div>
-                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '8px' }}>
-                    {[
-                      { id: 'guayaquil-sql', x: 'GUAYAQUIL', title: 'BD 4 · SQL OLTP Local', sub: 'MariaDB :3306', desc: 'licoreriadatabase Costa + 17 Usuarios RBAC' },
-                      { id: 'guayaquil-replica', x: 'GUAYAQUIL_DWH', title: 'BD 5 · DWH Estrella (OLAP)', sub: 'MariaDB :3309', desc: 'db_gye_dwh (fact_ventas, dim_sede, dim_producto, dim_tiempo)' },
-                    ].map(b => {
-                      const st = getNodeBadge(b.x);
-                      const isOnline = st.status === 'ONLINE';
-                      return (
-                        <div
-                          key={b.id}
-                          onClick={() => handleSelectNodeForDba(b.id)}
-                          style={{
-                            border: isOnline ? '1px solid #e9e6de' : '2px solid #9a3937',
-                            borderRadius: '8px',
-                            padding: '9px',
-                            background: isOnline ? '#faf9f6' : '#f8e9e8',
-                            cursor: 'pointer',
-                          }}
-                        >
-                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                            <strong style={{ fontSize: '11.5px', color: isOnline ? '#183a31' : '#9a3937' }}>{b.title}</strong>
-                            <span style={{ fontSize: '9.5px', fontWeight: 800, color: isOnline ? '#267154' : '#9a3937' }}>
-                              ● {isOnline ? `ONLINE · ${st.ms}` : 'CAÍDA / OFFLINE'}
-                            </span>
-                          </div>
-                          <div style={{ fontSize: '10.5px', fontWeight: 700, color: '#782c3e', fontFamily: 'monospace', marginTop: '2px' }}>{b.sub}</div>
-                          <div style={{ fontSize: '10px', color: '#787970', marginTop: '3px' }}>{b.desc}</div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-
-                {/* NUBE: NODO CUENCA & LOJA (1 Cloud DB) */}
-                <div style={{ background: '#ffffff', border: '1.5px solid #a96b16', borderRadius: '10px', padding: '12px' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
-                    <strong style={{ fontSize: '12px', color: '#a96b16' }}>
-                      ☁️ NODO NUBE (SUPABASE DBaaS · AWS us-east-1) — SEDE CUENCA & LOJA (BD 6)
-                    </strong>
-                    <span className="badge badge-ABI">Destilerías del Sur (Zhumir/Cristal)</span>
-                  </div>
-                  <div
-                    onClick={() => handleSelectNodeForDba('cuenca-cloud')}
-                    style={{ border: '1px solid #e9e6de', borderRadius: '8px', padding: '9px', background: '#faf9f6', cursor: 'pointer', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}
-                  >
-                    <div>
-                      <strong style={{ fontSize: '11.5px', color: '#183a31' }}>BD 6 · PostgreSQL 18 Cloud DBaaS (:5432 `cloud_cuenca_loja`)</strong>
-                      <div style={{ fontSize: '10px', color: '#787970', marginTop: '2px' }}>
-                        Certificado TLS `prod-ca-2021.crt` · Pooler `aws-0-us-east-1.pooler.supabase.com:5432` · Medición de Latencia WAN
-                      </div>
-                    </div>
-                    <span style={{ fontSize: '10px', fontWeight: 700, color: '#267154', whiteSpace: 'nowrap' }}>
-                      ● {getNodeBadge('CUENCA').ms}
-                    </span>
-                  </div>
-                </div>
-              </div>
-
-              {/* ==================== LADO DERECHO: ARQUITECTURA DE SISTEMAS DE INFORMACIÓN (SI) ==================== */}
-              <div
-                style={{
-                  border: '2px solid #782c3e',
-                  borderRadius: '14px',
-                  background: '#faf9f6',
-                  padding: '18px',
-                  display: 'flex',
-                  flexDirection: 'column',
-                  gap: '14px',
-                }}
-              >
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '2px solid #782c3e', paddingBottom: '10px' }}>
-                  <div>
-                    <span style={{ fontSize: '10px', fontWeight: 800, letterSpacing: '.14em', color: '#183a31' }}>
-                      LADO DERECHO DE LA PIZARRA · ROL: ARQUITECTO SI (`admin`)
-                    </span>
-                    <h3 style={{ margin: '2px 0 0', fontSize: '18px', fontFamily: "'Playfair Display', Georgia, serif", color: '#782c3e' }}>
-                      2. Arquitectura de Sistemas de Información (3 Capas + Docker)
-                    </h3>
-                  </div>
-                  <span style={{ background: '#782c3e', color: '#fff', padding: '4px 10px', borderRadius: '20px', fontSize: '10.5px', fontWeight: 700 }}>
-                    3 Réplicas API · 6 Agentes IA
+              {/* CASO C: EL USUARIO HIZO CLIC EN EL BLOQUE INFERIOR "GUI" */}
+              {focusedElement === 'gui-frontend' && (
+                <div>
+                  <span style={{ fontSize: '10px', fontWeight: 800, color: '#782c3e', letterSpacing: '.12em' }}>
+                    INSPECTOR DE LA CAPA DE PRESENTACIÓN (CLIENTE WEB)
                   </span>
-                </div>
-
-                {/* CAPA 1: PRESENTACIÓN + AGENTES IA + POWER BI */}
-                <div style={{ background: '#ffffff', border: '1px solid #d9d4c7', borderRadius: '10px', padding: '12px' }}>
-                  <div style={{ fontSize: '11px', fontWeight: 800, color: '#782c3e', marginBottom: '8px' }}>
-                    CAPA 1: PRESENTACIÓN, ANALÍTICA BI & 6 AGENTES IA AUTÓNOMOS (CADA 60s)
-                  </div>
-                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '8px' }}>
-                    <div style={{ border: '1px solid #e9e6de', borderRadius: '8px', padding: '8px', background: '#faf9f6' }}>
-                      <strong style={{ fontSize: '11px', color: '#183a31' }}>🌐 Frontend GitHub Pages</strong>
-                      <div style={{ fontSize: '9.5px', color: '#787970', marginTop: '3px' }}>
-                        `jjamesrxzn7.github.io/licoreria` · React 18 + TS · Login con 17 Usuarios RBAC.
-                      </div>
+                  <h3 style={{ margin: '4px 0 8px', fontSize: '19px', fontFamily: "'Playfair Display', Georgia, serif", color: '#183a31' }}>
+                    GUI — Interfaz Web "La Cava" (React 18 + TypeScript en GitHub Pages)
+                  </h3>
+                  <p style={{ fontSize: '12.5px', color: '#575950', marginBottom: '12px' }}>
+                    Desplegada en <code>https://jjamesrxzn7.github.io/licoreria/</code> (ahorrando levantar un servidor de frontend adicional). Adapta dinámicamente el menú lateral y las acciones permitidas según cuál de los <strong>17 Usuarios RBAC</strong> inicia sesión:
+                  </p>
+                  <div className="grid-3">
+                    <div style={{ background: '#fff', border: '1px solid #e9e6de', borderRadius: '9px', padding: '12px' }}>
+                      <strong style={{ color: '#782c3e' }}>1. Rol `dba` (`LaCavaDba2026*`)</strong>
+                      <p style={{ fontSize: '11.5px', color: '#575950', margin: '4px 0 0' }}>
+                        Ve únicamente este Diagrama Interactivo, la Terminal de Consultas Read-Only para las 6 BDs y la Auditoría. No puede borrar, insertar ni actualizar.
+                      </p>
                     </div>
-                    <div style={{ border: '1px solid #e9e6de', borderRadius: '8px', padding: '8px', background: '#faf9f6' }}>
-                      <strong style={{ fontSize: '11px', color: '#782c3e' }}>🤖 6 Agentes IA Python</strong>
-                      <div style={{ fontSize: '9.5px', color: '#787970', marginTop: '3px' }}>
-                        3 en Quito (`agentes_quito.py`) + 3 en Laptop (`agentes_gye_cuenca.py`) con Header `X-Sede`.
-                      </div>
+                    <div style={{ background: '#fff', border: '1px solid #e9e6de', borderRadius: '9px', padding: '12px' }}>
+                      <strong style={{ color: '#183a31' }}>2. Rol `admin` (`LaCavaAdmin2026*`)</strong>
+                      <p style={{ fontSize: '11.5px', color: '#575950', margin: '4px 0 0' }}>
+                        Centro de Mando Global con las 3 Sucursales lado a lado (Quito, Guayaquil y Cuenca), acceso a los 5 módulos y simulador 2PC.
+                      </p>
                     </div>
-                    <div style={{ border: '1px solid #e9e6de', borderRadius: '8px', padding: '8px', background: '#faf9f6' }}>
-                      <strong style={{ fontSize: '11px', color: '#a96b16' }}>📊 Power BI Desktop</strong>
-                      <div style={{ fontSize: '9.5px', color: '#787970', marginTop: '3px' }}>
-                        Conectado a BD 5 Estrella (`:3309`), BD 6 Supabase (`:5432`) y `/api/dba/global`.
-                      </div>
-                    </div>
-                  </div>
-                </div>
-
-                {/* CAPA 2: CONTENEDOR DOCKER + NGINX LOAD BALANCER + 3 RÉPLICAS API (SCALE-OUT) */}
-                <div style={{ background: '#ffffff', border: '1.5px dashed #183a31', borderRadius: '10px', padding: '12px' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
-                    <strong style={{ fontSize: '11.5px', color: '#183a31' }}>
-                      🐳 CONTENEDOR DOCKER (`docker-compose.app.yml`) — CAPA DE LÓGICA DE NEGOCIO (SCALE-OUT)
-                    </strong>
-                    <span className="badge badge-APR">Round-Robin :8000 / :8080</span>
-                  </div>
-
-                  {/* NGINX LB */}
-                  <div style={{ background: '#183a31', color: '#f9f7f0', borderRadius: '8px', padding: '9px 12px', marginBottom: '8px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <div>
-                      <strong style={{ fontSize: '11.5px' }}>⚖️ Balanceador de Carga `nginx_lb` (`nginx.conf` / `load_balancer_8080.py`)</strong>
-                      <div style={{ fontSize: '10px', color: '#c0cec2' }}>
-                        Recibe peticiones HTTP en `100.123.81.4:8000/api`, lee Header `X-Sede` y reparte en Round-Robin:
-                      </div>
-                    </div>
-                    <code style={{ background: '#782c3e', color: '#fff', padding: '3px 8px', borderRadius: '5px', fontSize: '10px' }}>
-                      Activa: {globalData?.apiReplica || topology?.apiReplica || 'api_lacava_1'}
-                    </code>
-                  </div>
-
-                  {/* 3 RÉPLICAS DE LA API */}
-                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '8px' }}>
-                    {[
-                      { name: 'api_lacava_1', port: ':8001', desc: 'Réplica FastAPI #1 + Pool 6 BDs + 2PC' },
-                      { name: 'api_lacava_2', port: ':8002', desc: 'Réplica FastAPI #2 + Pool 6 BDs + 2PC' },
-                      { name: 'api_lacava_3', port: ':8003', desc: 'Réplica FastAPI #3 + Pool 6 BDs + 2PC' },
-                    ].map(rep => {
-                      const isCurrent = (globalData?.apiReplica || topology?.apiReplica) === rep.name;
-                      return (
-                        <div
-                          key={rep.name}
-                          style={{
-                            border: isCurrent ? '2px solid #782c3e' : '1px solid #e9e6de',
-                            borderRadius: '8px',
-                            padding: '8px',
-                            background: isCurrent ? '#fbf3f0' : '#faf9f6',
-                          }}
-                        >
-                          <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-                            <strong style={{ fontSize: '11px', color: '#183a31' }}>{rep.name}</strong>
-                            <code style={{ fontSize: '10px', color: '#782c3e', fontWeight: 700 }}>{rep.port}</code>
-                          </div>
-                          <div style={{ fontSize: '9.5px', color: '#787970', marginTop: '3px' }}>{rep.desc}</div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-
-                {/* CAPA 3: MALLA VPN TAILSCALE + ENRUTAMIENTO X-SEDE + ESCALABILIDAD */}
-                <div style={{ background: '#ffffff', border: '1px solid #d9d4c7', borderRadius: '10px', padding: '12px' }}>
-                  <div style={{ fontSize: '11px', fontWeight: 800, color: '#183a31', marginBottom: '6px' }}>
-                    🔗 MALLA VPN TAILSCALE & SIMULADOR DE ESCALABILIDAD (15 → 1000 USUARIOS)
-                  </div>
-                  <div style={{ fontSize: '11px', color: '#575950', marginBottom: '10px', fontFamily: 'monospace', background: '#faf9f6', padding: '7px 10px', borderRadius: '6px', border: '1px solid #e9e6de' }}>
-                    IP_TS_QUITO = <strong>100.77.220.102</strong> (:3307, :27017, :3308) ◄── WireGuard 7ms ──► IP_TS_GUAYAQUIL = <strong>100.123.81.4</strong> (:3306, :3309, :8000)
-                  </div>
-
-                  <label style={{ fontWeight: 700, fontSize: '11.5px', display: 'block', marginBottom: '6px', color: '#25251f' }}>
-                    Usuarios Concurrentes en el SI:{' '}
-                    <span style={{ color: '#782c3e', fontSize: '13px' }}>{simulatedUsers} usuarios</span>
-                  </label>
-                  <input
-                    type="range"
-                    min={15}
-                    max={1000}
-                    step={5}
-                    value={simulatedUsers}
-                    onChange={e => setSimulatedUsers(Number(e.target.value))}
-                    style={{ width: '100%', accentColor: '#782c3e' }}
-                  />
-                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '8px', marginTop: '8px' }}>
-                    <div style={{ background: '#faf9f6', padding: '7px', borderRadius: '6px', border: '1px solid #e9e6de', textAlign: 'center' }}>
-                      <div style={{ fontSize: '9px', color: '#787970', fontWeight: 700 }}>TX / SEGUNDO</div>
-                      <strong style={{ fontSize: '14px', color: '#183a31' }}>{tps} /s</strong>
-                    </div>
-                    <div style={{ background: '#faf9f6', padding: '7px', borderRadius: '6px', border: '1px solid #e9e6de', textAlign: 'center' }}>
-                      <div style={{ fontSize: '9px', color: '#787970', fontWeight: 700 }}>TX / MINUTO</div>
-                      <strong style={{ fontSize: '14px', color: '#782c3e' }}>{(tps * 60).toLocaleString()} /m</strong>
-                    </div>
-                    <div style={{ background: '#faf9f6', padding: '7px', borderRadius: '6px', border: '1px solid #e9e6de', textAlign: 'center' }}>
-                      <div style={{ fontSize: '9px', color: '#787970', fontWeight: 700 }}>TX / HORA</div>
-                      <strong style={{ fontSize: '14px', color: '#183a31' }}>{(tps * 3600).toLocaleString()} /h</strong>
-                    </div>
-                    <div style={{ background: '#faf9f6', padding: '7px', borderRadius: '6px', border: '1px solid #e9e6de', textAlign: 'center' }}>
-                      <div style={{ fontSize: '9px', color: '#787970', fontWeight: 700 }}>TX / DÍA</div>
-                      <strong style={{ fontSize: '14px', color: '#a96b16' }}>{(tps * 28800).toLocaleString()} /d</strong>
+                    <div style={{ background: '#fff', border: '1px solid #e9e6de', borderRadius: '9px', padding: '12px' }}>
+                      <strong style={{ color: '#a96b16' }}>3. 15 Usuarios por Módulo (`C, I, V, TH, Ctbl`)</strong>
+                      <p style={{ fontSize: '11.5px', color: '#575950', margin: '4px 0 0' }}>
+                        Cada usuario ve solo su módulo: `_operador` (VER/CREAR), `_supervisor` (+APROBAR) y `_jefe` (+ANULAR).
+                      </p>
                     </div>
                   </div>
                 </div>
-              </div>
+              )}
+
+              {/* CASO D: EL USUARIO HIZO CLIC EN LOS AGENTES IA DE QUITO O GUAYAQUIL */}
+              {(focusedElement === 'agentes-quito' || focusedElement === 'agentes-gye') && (
+                <div>
+                  <span style={{ fontSize: '10px', fontWeight: 800, color: '#782c3e', letterSpacing: '.12em' }}>
+                    INSPECTOR EN VIVO DE AGENTES IA TRANSACCIONALES (EJECUCIÓN CADA 60 SEGUNDOS)
+                  </span>
+                  <h3 style={{ margin: '4px 0 8px', fontSize: '19px', fontFamily: "'Playfair Display', Georgia, serif", color: '#183a31' }}>
+                    {focusedElement === 'agentes-quito'
+                      ? '🤖 3 Agentes IA en PC de Escritorio (`agentes_quito.py` · 100.77.220.102 → 100.123.81.4:8000)'
+                      : '🤖 3 Agentes IA en Laptop (`agentes_gye_cuenca.py` · 100.123.81.4 → :8000)'}
+                  </h3>
+                  <div className="grid-3" style={{ marginBottom: '12px' }}>
+                    {(focusedElement === 'agentes-quito'
+                      ? [
+                          { name: 'Agente 1 (`X-Sede: QUITO`)', target: 'BD 1 MariaDB (:3307)', desc: 'Rota entre los 15 usuarios RBAC con su contraseña real e inserta operaciones en los 5 módulos de Quito.' },
+                          { name: 'Agente 2 (`X-Sede: QUITO_NOSQL`)', target: 'BD 2 MongoDB (:27017)', desc: 'Envía documentos JSON de telemetría y alertas de stock bajo a `eventos_agentes` y `logs_auditoria`.' },
+                          { name: 'Agente 3 (`X-Sede: QUITO_PARALELA`)', target: 'BD 3 MariaDB Hash (:3308)', desc: 'Inserta lotes históricos en `historico_transacciones` (`PARTITION BY HASH(id) PARTITIONS 4`).' },
+                        ]
+                      : [
+                          { name: 'Agente 4 (`X-Sede: GUAYAQUIL`)', target: 'BD 4 MariaDB Local (:3306)', desc: 'Simula operaciones de los 5 módulos en Guayaquil autenticándose con los 15 usuarios RBAC.' },
+                          { name: 'Agente 5 (`X-Sede: GUAYAQUIL_DWH`)', target: 'BD 5 Estrella DWH (:3309)', desc: 'Ejecuta un Mini-ETL cada minuto consolidando ventas hacia `fact_ventas` para Power BI.' },
+                          { name: 'Agente 6 (`X-Sede: CUENCA`)', target: 'BD 6 Supabase Cloud (:5432)', desc: 'Inserta transacciones australes en Cuenca Cloud y mide la latencia WAN en milisegundos.' },
+                        ]
+                    ).map(ag => (
+                      <div key={ag.name} style={{ background: '#fff', border: '1px solid #e9e6de', borderRadius: '9px', padding: '12px' }}>
+                        <strong style={{ color: '#183a31', fontSize: '12.5px' }}>{ag.name}</strong>
+                        <div style={{ fontSize: '11px', color: '#782c3e', fontWeight: 700, marginTop: '2px' }}>Destino: {ag.target}</div>
+                        <p style={{ fontSize: '11px', color: '#575950', margin: '5px 0 0' }}>{ag.desc}</p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* CASO E: EL USUARIO HIZO CLIC EN POWER BI */}
+              {focusedElement === 'power-bi' && (
+                <div>
+                  <span style={{ fontSize: '10px', fontWeight: 800, color: '#a96b16', letterSpacing: '.12em' }}>
+                    CONEXIÓN GERENCIAL OLAP & BUSINESS INTELLIGENCE
+                  </span>
+                  <h3 style={{ margin: '4px 0 8px', fontSize: '19px', fontFamily: "'Playfair Display', Georgia, serif", color: '#183a31' }}>
+                    📊 Power BI Desktop conectado a BD 5 Estrella (:3309), BD 6 Cuenca (:5432) y API Global
+                  </h3>
+                  <div className="grid-3">
+                    <div style={{ background: '#fff', border: '1px solid #e9e6de', borderRadius: '9px', padding: '12px' }}>
+                      <strong style={{ color: '#183a31' }}>1. Esquema Estrella (`db_gye_dwh`)</strong>
+                      <p style={{ fontSize: '11.5px', color: '#575950', margin: '4px 0 0' }}>
+                        Servidor MySQL/MariaDB: <code>100.123.81.4:3309</code> | Tablas: <code>fact_ventas</code>, <code>dim_sede</code>, <code>dim_producto</code>, <code>dim_tiempo</code>.
+                      </p>
+                    </div>
+                    <div style={{ background: '#fff', border: '1px solid #e9e6de', borderRadius: '9px', padding: '12px' }}>
+                      <strong style={{ color: '#a96b16' }}>2. Nodo Cloud Cuenca (`cloud_cuenca_loja`)</strong>
+                      <p style={{ fontSize: '11.5px', color: '#575950', margin: '4px 0 0' }}>
+                        Servidor PostgreSQL: <code>100.123.81.4:5432</code> / Supabase Pooler | Tablas: <code>operaciones_agentes_cloud</code>, <code>frag_austral_facturas</code>.
+                      </p>
+                    </div>
+                    <div style={{ background: '#fff', border: '1px solid #e9e6de', borderRadius: '9px', padding: '12px' }}>
+                      <strong style={{ color: '#782c3e' }}>3. Endpoint Web JSON Unificado</strong>
+                      <p style={{ fontSize: '11.5px', color: '#575950', margin: '4px 0 0' }}>
+                        Conector Web de Power BI apuntando a <code>http://100.123.81.4:8000/api/dba/global</code> (6 BDs en paralelo).
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
           </section>
         </div>
@@ -957,7 +1383,6 @@ export const ArchitectureConsole: React.FC = () => {
       {/* ==================== TAB 3: IDENTIDAD DE CADA SUCURSAL & MAPA DE 6 NODOS ==================== */}
       {activeTab === 'board' && topology && (
         <div>
-          {/* IDENTIDAD DISTINTIVA POR SUCURSAL */}
           <section className="card">
             <div className="section-heading">
               <div>
@@ -1004,7 +1429,6 @@ export const ArchitectureConsole: React.FC = () => {
             </div>
           </section>
 
-          {/* 3 SEDES Y SUS 6 BASES DE DATOS */}
           {topology.sites.map(site => (
             <section key={site.siteId} className="card">
               <div className="section-heading" style={{ borderBottom: '1px solid #efeee9', paddingBottom: '12px' }}>
@@ -1218,7 +1642,7 @@ export const ArchitectureConsole: React.FC = () => {
                 <span style={{ fontSize: '12px', color: '#575950' }}>
                   Nodo destino:{' '}
                   <strong style={{ color: '#183a31' }}>
-                    {currentNode ? `${currentNode.name} (Header X-Sede: ${currentNode.xSede} · Puerto :${currentNode.actualPort})` : ''}
+                    {currentNode ? `${currentNode.name} (Header X-Sede: ${currentNode.xSede} · Puerto :${currentNode.actualPort})` : 'Consulta Federada Multi-Sucursal (6 BDs)'}
                   </strong>
                 </span>
                 <button
@@ -1228,14 +1652,14 @@ export const ArchitectureConsole: React.FC = () => {
                   disabled={runningQuery}
                 >
                   <Play size={15} />
-                  {runningQuery ? 'Ejecutando...' : 'Ejecutar en Nodo'}
+                  {runningQuery ? 'Ejecutando...' : 'Ejecutar Consulta Read-Only'}
                 </button>
               </div>
             </div>
 
             {queryError && (
               <div style={{ marginTop: '12px', padding: '12px', background: '#f8e9e8', border: '1px solid #e2b4b1', borderRadius: '8px', color: '#9a3937', fontSize: '12.5px' }}>
-                <strong>Error:</strong> {queryError}
+                <strong>Error / Bloqueo Read-Only:</strong> {queryError}
               </div>
             )}
 
