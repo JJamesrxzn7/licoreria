@@ -12,3 +12,4 @@ API/__pycache__/
 cluster_nodes/
 data/
 API/data/
+logs/

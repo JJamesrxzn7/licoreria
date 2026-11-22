@@ -358,6 +358,13 @@ interface FeedResponse {
   eventos: FeedEvent[];
 }
 
+interface LbStatus {
+  balanceador: string;
+  replicasOnline: number;
+  replicasTotal: number;
+  replicas: Array<{ replica: string; url: string; online: boolean; ms: number }>;
+}
+
 type SiteKey = 'QUITO' | 'GUAYAQUIL' | 'CUENCA';
 
 // Medidas del layout dividido (px)
@@ -386,6 +393,18 @@ const LIVE_CSS = `
 .lc-row-new { animation: lcRowNew 4s ease-out; }
 .lc-side .grid-2, .lc-side .grid-3 { grid-template-columns: minmax(0, 1fr); gap: 10px; }
 .lc-side h3 { font-size: 17px !important; }
+@keyframes lcAlertRed {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(210,58,51,0); border-color: #9a3937; }
+  50% { box-shadow: 0 0 0 5px rgba(210,58,51,.30), 0 0 24px rgba(210,58,51,.75); border-color: #d23a33; }
+}
+@keyframes lcAlertAmber {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(229,162,26,0); border-color: #c98a14; }
+  50% { box-shadow: 0 0 0 4px rgba(229,162,26,.30), 0 0 18px rgba(229,162,26,.70); border-color: #e5a21a; }
+}
+.lc-alert-red { animation: lcAlertRed 1s ease-in-out infinite !important; border-style: solid !important; border-width: 2.5px !important; }
+.lc-alert-amber { animation: lcAlertAmber 1.4s ease-in-out infinite !important; border-style: solid !important; border-width: 2px !important; }
+@keyframes lcBlink { 0%, 49% { opacity: 1; } 50%, 100% { opacity: .2; } }
+.lc-blink { animation: lcBlink 1s linear infinite; display: inline-block; }
 `;
 
 const isAgentId = (id: string): id is AgentId => id in AGENT_DETAILS;
@@ -504,6 +523,25 @@ export const ArchitectureConsole: React.FC = () => {
   const canvasScale = canvasArea > 0 ? Math.min(1, canvasArea / CANVAS_W) : 1;
   const feedBusyRef = useRef<boolean>(false);
 
+  // Alarmas: error del feed (API) y estado del balanceador + réplicas (GET /api/lb/estado cada 4 s)
+  const [feedError, setFeedError] = useState<string | null>(null);
+  const [lbStatus, setLbStatus] = useState<LbStatus | null>(null);
+  const [lbError, setLbError] = useState<boolean>(false);
+
+  const fetchLbStatus = useCallback(async () => {
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/lb/estado`);
+      if (res.ok) {
+        setLbStatus(await res.json());
+        setLbError(false);
+      } else {
+        setLbError(true);
+      }
+    } catch {
+      setLbError(true);
+    }
+  }, []);
+
   const fetchFeed = useCallback(async () => {
     if (feedBusyRef.current) return;
     feedBusyRef.current = true;
@@ -535,9 +573,19 @@ export const ArchitectureConsole: React.FC = () => {
         seenKeysRef.current = merged;
         setFeed(data);
         setFeedAt(t);
+        setFeedError(null);
+      } else {
+        let detalle = `HTTP ${res.status}`;
+        try {
+          const body = await res.json();
+          detalle = body?.error || body?.detail || detalle;
+        } catch {
+          // respuesta sin JSON
+        }
+        setFeedError(detalle);
       }
     } catch {
-      // API no disponible momentáneamente
+      setFeedError('sin respuesta del balanceador');
     } finally {
       feedBusyRef.current = false;
     }
@@ -669,6 +717,14 @@ export const ArchitectureConsole: React.FC = () => {
     return () => window.clearInterval(t);
   }, [activeTab, fetchFeed]);
 
+  // Estado del balanceador y sus 3 réplicas cada 4 s (luces de la caja API)
+  useEffect(() => {
+    if (activeTab !== 'diagram_vs') return undefined;
+    void fetchLbStatus();
+    const t = window.setInterval(() => void fetchLbStatus(), 4000);
+    return () => window.clearInterval(t);
+  }, [activeTab, fetchLbStatus]);
+
   // Detalle del agente seleccionado: cada 5 s y al instante cuando el feed detecta una escritura suya
   const focusedPulseAt = isAgentId(focusedElement) ? pulses[focusedElement] ?? 0 : 0;
   useEffect(() => {
@@ -769,13 +825,64 @@ export const ArchitectureConsole: React.FC = () => {
   const liveSecs = (secs: number | null | undefined): number | null =>
     secs === null || secs === undefined ? null : secs + elapsedSinceFeed;
   const agentLiveSecs = (agentId: AgentId) => liveSecs(feed?.agentes[agentId]?.segundosDesdeUltima);
-  const agentEstado = (agentId: AgentId): 'ACTIVO' | 'INACTIVO' | 'SIN CONEXIÓN' | 'CARGANDO' => {
+  // Estado de la API: caída (rojo) si el balanceador no responde, no quedan réplicas o el feed falla;
+  // degradada (ámbar) si faltan réplicas pero el balanceador sigue atendiendo con las que quedan.
+  const replicasOnline = lbStatus?.replicasOnline ?? null;
+  const apiDown = lbError || replicasOnline === 0 || feedError !== null;
+  const apiDegraded = !apiDown && replicasOnline !== null && replicasOnline < (lbStatus?.replicasTotal ?? 3);
+
+  const agentEstado = (agentId: AgentId): 'ACTIVO' | 'INACTIVO' | 'SIN CONEXIÓN' | 'SIN API' | 'CARGANDO' => {
+    if (apiDown) return 'SIN API';
     const a = feed?.agentes[agentId];
     if (!a) return 'CARGANDO';
     if (!a.online) return 'SIN CONEXIÓN';
     const s = agentLiveSecs(agentId);
     return s !== null && s <= 150 ? 'ACTIVO' : 'INACTIVO';
   };
+
+  // Lista de problemas actuales (banner del diagrama y panel global)
+  const problemas: Array<{ nivel: 'rojo' | 'ambar'; texto: string }> = [];
+  if (lbError) {
+    problemas.push({ nivel: 'rojo', texto: 'El balanceador (:8000) no responde: ejecuta iniciar_laptop.ps1 en la Laptop.' });
+  } else if (replicasOnline === 0) {
+    problemas.push({ nivel: 'rojo', texto: 'API: las 3 réplicas están apagadas. Ejecuta iniciar_laptop.ps1 en la Laptop.' });
+  } else if (feedError) {
+    problemas.push({ nivel: 'rojo', texto: `La API no entrega datos (${feedError}).` });
+  } else if (apiDegraded && lbStatus) {
+    const caidas = lbStatus.replicas.filter(r => !r.online).map(r => r.replica).join(', ');
+    problemas.push({ nivel: 'ambar', texto: `API degradada: ${replicasOnline}/${lbStatus.replicasTotal} réplicas (${caidas} apagada). El balanceador reparte entre las que quedan.` });
+  }
+  if (!apiDown && feed) {
+    AGENT_IDS.forEach(id => {
+      const ag = AGENT_DETAILS[id];
+      const a = feed.agentes[id];
+      if (!a) return;
+      if (!a.online) {
+        problemas.push({ nivel: 'rojo', texto: `${ag.targetDbName} sin conexión: ${ag.code} no puede escribir.` });
+      } else if (agentEstado(id) === 'INACTIVO') {
+        const donde = AGENT_SITE[id] === 'QUITO' ? 'agentes_quito.py en la PC de Escritorio' : 'iniciar_laptop.ps1 en la Laptop';
+        problemas.push({ nivel: 'ambar', texto: `${ag.code} dormido (última operación ${formatAgo(agentLiveSecs(id))}): enciende ${donde}.` });
+      }
+    });
+  }
+
+  const renderAlarmas = (compacto: boolean) => (
+    problemas.length === 0 ? (
+      <div style={{ display: 'flex', alignItems: 'center', gap: '7px', padding: compacto ? '5px 12px' : '8px 12px', borderRadius: '999px', background: '#eff5f1', border: '1px solid #cde0d3', color: '#183a31', fontSize: '11px', fontWeight: 700 }}>
+        <span className="lc-dot-live" style={{ width: 8, height: 8, borderRadius: '50%', background: '#267154', color: '#267154' }} />
+        Todo operativo · API {replicasOnline ?? '?'}/{lbStatus?.replicasTotal ?? 3} réplicas · 6/6 BDs · 6/6 agentes activos
+      </div>
+    ) : (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', padding: '8px 12px', borderRadius: '10px', background: problemas.some(p => p.nivel === 'rojo') ? '#f8e9e8' : '#fdf3df', border: `1.5px solid ${problemas.some(p => p.nivel === 'rojo') ? '#9a3937' : '#c98a14'}`, maxWidth: '760px' }}>
+        {problemas.map((p, i) => (
+          <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '11.5px', fontWeight: 700, color: p.nivel === 'rojo' ? '#9a3937' : '#8a5a00' }}>
+            <span className="lc-blink" style={{ width: 9, height: 9, flexShrink: 0, borderRadius: '50%', background: p.nivel === 'rojo' ? '#d23a33' : '#e5a21a', boxShadow: `0 0 8px ${p.nivel === 'rojo' ? '#d23a33' : '#e5a21a'}` }} />
+            {p.texto}
+          </div>
+        ))}
+      </div>
+    )
+  );
   const isPulsing = (agentId: AgentId) => nowMs - (pulses[agentId] ?? 0) < 2600;
   const anyPulsing = (ids: AgentId[]) => ids.some(isPulsing);
   const isNewKey = (key: string) => nowMs - (newKeys[key] ?? 0) < 4000;
@@ -810,6 +917,9 @@ export const ArchitectureConsole: React.FC = () => {
     // El feed (cada 2 s) manda: si el agente no puede leer su BD, la BD está caída en este momento.
     const live = feed?.agentes[agentId];
     const isOnline = live ? live.online : !n || n.status === 'ONLINE';
+    // Sin API no se puede saber el estado de la BD: se muestra en gris, sin alarma propia.
+    const unknown = apiDown;
+    const alarma = !unknown && !isOnline;
     const isDbFocused = focusedElement === nodeId;
     const pulse = isPulsing(agentId);
     const accent = AGENT_DETAILS[agentId].accent;
@@ -822,6 +932,7 @@ export const ArchitectureConsole: React.FC = () => {
         style={{ width: `${COL_W}px`, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '4px', background: 'transparent', border: 'none', cursor: 'pointer', padding: 0 }}
       >
         <div
+          className={alarma ? 'lc-alert-red' : undefined}
           style={{
             width: '86px',
             height: '80px',
@@ -839,7 +950,10 @@ export const ArchitectureConsole: React.FC = () => {
             transition: 'all 0.25s ease',
           }}
         >
-          <span style={{ position: 'absolute', top: '7px', right: '7px', width: '9px', height: '9px', borderRadius: '50%', background: isOnline ? '#267154' : '#9a3937' }} />
+          <span
+            className={alarma ? 'lc-blink' : undefined}
+            style={{ position: 'absolute', top: '7px', right: '7px', width: '9px', height: '9px', borderRadius: '50%', background: unknown ? '#b5b3aa' : isOnline ? '#267154' : '#d23a33' }}
+          />
           {pulse && (
             <span style={{ position: 'absolute', top: '-9px', left: '50%', transform: 'translateX(-50%)', fontSize: '9px', fontWeight: 800, background: accent, color: '#fff', padding: '1px 7px', borderRadius: '999px', whiteSpace: 'nowrap' }}>
               + escritura
@@ -850,8 +964,8 @@ export const ArchitectureConsole: React.FC = () => {
           <code style={{ fontSize: '9.5px', color: '#782c3e', fontWeight: 700 }}>:{n?.actualPort || portStr}</code>
         </div>
         <span style={{ fontSize: '12px', fontWeight: 700, color: '#25251f' }}>{roleShort}</span>
-        <span style={{ fontSize: '10px', fontWeight: 700, color: isOnline ? '#267154' : '#9a3937' }}>
-          {!isOnline ? 'OFFLINE' : n ? `${n.latencyMs} ms` : '…'}
+        <span className={alarma ? 'lc-blink' : undefined} style={{ fontSize: '10px', fontWeight: 800, color: unknown ? '#9e9d95' : isOnline ? '#267154' : '#d23a33' }}>
+          {unknown ? 'sin datos (API)' : !isOnline ? '● CAÍDA' : n ? `${n.latencyMs} ms` : '…'}
         </span>
       </button>
     );
@@ -862,13 +976,22 @@ export const ArchitectureConsole: React.FC = () => {
     const estado = agentEstado(agentId);
     const focused = focusedElement === agentId;
     const pulse = isPulsing(agentId);
-    const color = estado === 'ACTIVO' ? '#267154' : estado === 'INACTIVO' ? '#a96b16' : estado === 'SIN CONEXIÓN' ? '#9a3937' : '#9e9d95';
+    const color = estado === 'ACTIVO' ? '#267154' : estado === 'INACTIVO' ? '#e5a21a' : estado === 'CARGANDO' ? '#9e9d95' : '#d23a33';
     const secs = agentLiveSecs(agentId);
+    const alarmClass = focused ? undefined
+      : estado === 'INACTIVO' ? 'lc-alert-amber'
+        : estado === 'SIN CONEXIÓN' || estado === 'SIN API' ? 'lc-alert-red' : undefined;
+    const statusText = estado === 'SIN API' ? 'sin API'
+      : estado === 'SIN CONEXIÓN' ? 'BD caída'
+        : pulse ? '¡escribiendo!'
+          : estado === 'INACTIVO' ? `DORMIDO · ${formatAgo(secs)}`
+            : formatAgo(secs);
     return (
       <div key={agentId} style={{ width: `${COL_W}px`, display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
         {renderFlowLine({ dir: 'v', color: ag.accent, active: pulse, length: '20px', reverse: true })}
         <button
           type="button"
+          className={alarmClass}
           onClick={() => handleClickDiagramNode(agentId)}
           title={`${ag.name}: clic para ver qué está insertando`}
           style={{
@@ -890,11 +1013,14 @@ export const ArchitectureConsole: React.FC = () => {
           <span style={{ display: 'flex', alignItems: 'center', gap: '5px', fontSize: '12px', fontWeight: 800 }}>
             <Bot size={14} color={focused ? '#ffffff' : ag.accent} />
             {ag.code}
-            <span className={estado === 'ACTIVO' ? 'lc-dot-live' : undefined} style={{ width: '8px', height: '8px', borderRadius: '50%', background: color, color }} />
+            <span
+              className={estado === 'ACTIVO' ? 'lc-dot-live' : estado === 'CARGANDO' ? undefined : 'lc-blink'}
+              style={{ width: '8px', height: '8px', borderRadius: '50%', background: color, color }}
+            />
           </span>
           <span style={{ fontSize: '10.5px', fontWeight: 600, opacity: 0.9 }}>{ag.short}</span>
-          <span style={{ fontSize: '10px', fontWeight: 700, fontVariantNumeric: 'tabular-nums', opacity: 0.9 }}>
-            {estado === 'SIN CONEXIÓN' ? 'sin conexión' : pulse ? '¡escribiendo!' : formatAgo(secs)}
+          <span style={{ fontSize: '10px', fontWeight: 800, fontVariantNumeric: 'tabular-nums', color: focused ? undefined : estado === 'INACTIVO' ? '#8a5a00' : estado === 'SIN CONEXIÓN' || estado === 'SIN API' ? '#d23a33' : undefined }}>
+            {statusText}
           </span>
         </button>
       </div>
@@ -1063,7 +1189,7 @@ export const ArchitectureConsole: React.FC = () => {
                   border: focusedElement === 'cluster-global' ? '2.5px solid #183a31' : '1.5px solid #dfded7',
                   boxShadow: focusedElement === 'cluster-global' ? '0 0 0 4px rgba(24,58,49,0.10)' : 'none',
                   borderRadius: '16px',
-                  padding: '22px 20px 18px',
+                  padding: '40px 20px 18px',
                   display: 'flex',
                   flexDirection: 'column',
                   alignItems: 'center',
@@ -1072,13 +1198,19 @@ export const ArchitectureConsole: React.FC = () => {
               >
                 {/* RELOJ EN VIVO */}
                 <div style={{ position: 'absolute', top: '12px', right: '14px', display: 'flex', alignItems: 'center', gap: '7px', fontSize: '10.5px', color: '#575950', fontWeight: 700 }}>
-                  <span className="lc-dot-live" style={{ width: 8, height: 8, borderRadius: '50%', background: feed ? '#267154' : '#9e9d95', color: '#267154' }} />
-                  EN VIVO · {new Date(nowMs).toLocaleTimeString('es-EC')}
-                  <span style={{ fontWeight: 500 }}>· datos de hace {elapsedSinceFeed} s</span>
+                  <span
+                    className={apiDown ? 'lc-blink' : 'lc-dot-live'}
+                    style={{ width: 8, height: 8, borderRadius: '50%', background: apiDown ? '#d23a33' : feed ? '#267154' : '#9e9d95', color: '#267154' }}
+                  />
+                  {apiDown ? 'SIN CONEXIÓN CON LA API' : 'EN VIVO'} · {new Date(nowMs).toLocaleTimeString('es-EC')}
+                  <span style={{ fontWeight: 500, color: elapsedSinceFeed > 10 ? '#d23a33' : undefined }}>· datos de hace {elapsedSinceFeed} s</span>
                 </div>
                 <div style={{ position: 'absolute', top: '12px', left: '14px', fontSize: '10.5px', color: '#787970' }}>
                   Clic en el fondo = actividad de todas las sedes
                 </div>
+
+                {/* BANNER DE ALARMAS: verde si todo funciona; luces parpadeantes si algo falla */}
+                <div style={{ marginBottom: '12px', display: 'flex', justifyContent: 'center' }}>{renderAlarmas(true)}</div>
 
                 {/* FILA SUPERIOR: LAPTOP GUAYAQUIL (su eje central baja hasta la API) */}
                 {renderSite({
@@ -1124,6 +1256,7 @@ export const ArchitectureConsole: React.FC = () => {
                     </span>
                     <button
                       type="button"
+                      className={focusedElement === 'api-gateway' ? undefined : apiDown ? 'lc-alert-red' : apiDegraded ? 'lc-alert-amber' : undefined}
                       onClick={() => handleClickDiagramNode('api-gateway')}
                       style={{
                         width: '196px',
@@ -1146,7 +1279,19 @@ export const ArchitectureConsole: React.FC = () => {
                         <span style={{ fontFamily: "'Playfair Display', Georgia, serif", fontSize: '22px', fontWeight: 700 }}>API</span>
                       </span>
                       <span style={{ fontSize: '10.5px', fontWeight: 700 }}>Balanceador :8000 / :8080</span>
-                      <span style={{ fontSize: '9.5px', opacity: 0.9 }}>3 réplicas · enruta por X-Sede</span>
+                      {/* Una luz por réplica: verde encendida, roja parpadeante apagada */}
+                      <span style={{ display: 'flex', alignItems: 'center', gap: '7px', fontSize: '9.5px', fontWeight: 700 }}>
+                        {(lbStatus?.replicas ?? [1, 2, 3].map(i => ({ replica: `api_lacava_${i}`, online: !lbError }))).map((r, i) => (
+                          <span key={r.replica} title={`${r.replica}: ${lbError ? 'balanceador sin respuesta' : r.online ? 'encendida' : 'APAGADA'}`} style={{ display: 'inline-flex', alignItems: 'center', gap: '3px' }}>
+                            <span
+                              className={lbError || !r.online ? 'lc-blink' : undefined}
+                              style={{ width: 8, height: 8, borderRadius: '50%', background: lbError || !r.online ? '#d23a33' : '#267154' }}
+                            />
+                            R{i + 1}
+                          </span>
+                        ))}
+                        <span style={{ opacity: 0.85 }}>{lbError ? 'LB caído' : `${replicasOnline ?? '?'}/3`}</span>
+                      </span>
                       <span style={{ fontSize: '8.5px', fontFamily: 'monospace', background: 'rgba(120,44,62,0.12)', padding: '2px 8px', borderRadius: '6px', marginTop: '2px' }}>
                         respondió: {feed?.apiReplica || globalData?.apiReplica || '…'}
                       </span>
@@ -1287,6 +1432,8 @@ export const ArchitectureConsole: React.FC = () => {
                       ))}
                     </div>
                   </div>
+
+                  <div style={{ marginBottom: '12px' }}>{renderAlarmas(false)}</div>
 
                   {/* RESUMEN POR SEDE: cada agente con su cronómetro y su última acción */}
                   <div className="grid-3" style={{ marginBottom: '14px' }}>

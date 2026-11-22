@@ -8,12 +8,14 @@ Y sirve también el Frontend compilado de "La Cava" (`frontend/dist`) en `http:/
 Preserva el header obligatorio `X-Sede` (`QUITO`, `QUITO_NOSQL`, `QUITO_PARALELA`, `GUAYAQUIL`, `GUAYAQUIL_DWH`, `CUENCA`).
 """
 
+import asyncio
 import itertools
 from pathlib import Path
+import time
 import httpx
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 
 REPLICAS = [
     ("api_lacava_1", "http://127.0.0.1:8001"),
@@ -35,43 +37,88 @@ lb_app.add_middleware(
 DIST_DIR = Path(__file__).resolve().parent.parent / "frontend" / "dist"
 
 
+def _cors_headers(request: Request) -> dict[str, str]:
+    origin = request.headers.get("origin")
+    headers = {
+        "Access-Control-Allow-Origin": origin or "*",
+        "Access-Control-Allow-Private-Network": "true",
+        "Access-Control-Allow-Headers": "*",
+        "Access-Control-Allow-Methods": "*",
+        "X-Load-Balancer": "nginx_lb_round_robin_8080",
+    }
+    if origin:
+        headers["Vary"] = "Origin"
+    return headers
+
+
+@lb_app.get("/api/lb/estado")
+async def load_balancer_status(request: Request):
+    """Estado del balanceador: qué réplicas responden /healthz ahora mismo (lo usa la GUI para las alarmas)."""
+
+    async def check(name: str, base: str) -> dict:
+        t0 = time.perf_counter()
+        try:
+            async with httpx.AsyncClient(timeout=1.5) as client:
+                r = await client.get(f"{base}/healthz")
+            ok = r.status_code < 500
+        except httpx.HTTPError:
+            ok = False
+        return {"replica": name, "url": base, "online": ok, "ms": round((time.perf_counter() - t0) * 1000, 1)}
+
+    replicas = await asyncio.gather(*(check(n, b) for n, b in REPLICAS))
+    online = sum(1 for r in replicas if r["online"])
+    return JSONResponse(
+        {"balanceador": "ONLINE", "replicasOnline": online, "replicasTotal": len(REPLICAS), "replicas": replicas},
+        headers=_cors_headers(request),
+    )
+
+
 @lb_app.api_route("/api/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"])
 @lb_app.api_route("/healthz", methods=["GET"])
 @lb_app.api_route("/readyz", methods=["GET"])
 async def round_robin_proxy(request: Request, path: str = ""):
-    replica_name, base_url = next(replica_cycle)
     target_path = request.url.path
     if request.url.query:
         target_path = f"{target_path}?{request.url.query}"
-    url = f"{base_url}{target_path}"
 
     body = await request.body()
     headers = {k: v for k, v in request.headers.items() if k.lower() not in ("host", "content-length")}
 
-    async with httpx.AsyncClient(timeout=15.0) as client:
-        resp = await client.request(
-            method=request.method,
-            url=url,
-            content=body,
-            headers=headers,
-        )
+    # Round-robin con failover: si la réplica elegida no acepta la conexión, se prueba la siguiente.
+    caidas: list[str] = []
+    for _ in range(len(REPLICAS)):
+        replica_name, base_url = next(replica_cycle)
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                resp = await client.request(
+                    method=request.method,
+                    url=f"{base_url}{target_path}",
+                    content=body,
+                    headers=headers,
+                )
+        except (httpx.ConnectError, httpx.ConnectTimeout):
+            caidas.append(replica_name)
+            continue
 
-    out_headers = {
-        k: v for k, v in resp.headers.items()
-        if k.lower() not in ("content-length", "transfer-encoding", "content-encoding")
-    }
-    origin = request.headers.get("origin")
-    if origin:
-        out_headers["Access-Control-Allow-Origin"] = origin
-        out_headers["Vary"] = "Origin"
-    else:
-        out_headers["Access-Control-Allow-Origin"] = "*"
-    out_headers["Access-Control-Allow-Private-Network"] = "true"
-    out_headers["Access-Control-Allow-Headers"] = "*"
-    out_headers["Access-Control-Allow-Methods"] = "*"
-    out_headers["X-Load-Balancer"] = "nginx_lb_round_robin_8080"
-    out_headers["X-API-Replica"] = replica_name
-    return Response(content=resp.content, status_code=resp.status_code, headers=out_headers)
+        out_headers = {
+            k: v for k, v in resp.headers.items()
+            if k.lower() not in ("content-length", "transfer-encoding", "content-encoding")
+        }
+        out_headers.update(_cors_headers(request))
+        out_headers["X-API-Replica"] = replica_name
+        if caidas:
+            out_headers["X-Replicas-Caidas"] = ",".join(caidas)
+        return Response(content=resp.content, status_code=resp.status_code, headers=out_headers)
+
+    return JSONResponse(
+        status_code=503,
+        content={
+            "error": "API_SIN_REPLICAS",
+            "detail": "El balanceador está activo pero las 3 réplicas de la API están apagadas. Ejecuta iniciar_laptop.ps1.",
+            "replicasCaidas": caidas,
+        },
+        headers=_cors_headers(request),
+    )
 
 
 @lb_app.get("/licoreria/{full_path:path}", include_in_schema=False)
