@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import {
   Server, Database, Terminal, Play, RefreshCw, ShieldCheck, AlertTriangle,
   Layers, Cloud, Activity, CheckCircle2, XCircle, HardDrive, Network,
@@ -189,7 +189,8 @@ type InteractiveElementId =
   | 'agente-6'
   | 'api-gateway'
   | 'gui-frontend'
-  | 'power-bi';
+  | 'power-bi'
+  | 'cluster-global';
 
 type AgentId = 'agente-1' | 'agente-2' | 'agente-3' | 'agente-4' | 'agente-5' | 'agente-6';
 
@@ -336,6 +337,57 @@ const AGENT_DETAILS: Record<
 
 const AGENT_IDS = Object.keys(AGENT_DETAILS) as AgentId[];
 
+interface FeedEvent {
+  key: string;
+  agentId: string;
+  codigo: string;
+  sede: string;
+  bdId: string;
+  segundos: number | null;
+  usuario: string | null;
+  modulo: string | null;
+  detalle: string;
+  monto: number;
+}
+
+interface FeedResponse {
+  timestamp: string;
+  apiReplica: string;
+  latencyMs: number;
+  agentes: Record<string, { agentId: string; online: boolean; segundosDesdeUltima: number | null; error?: string }>;
+  eventos: FeedEvent[];
+}
+
+type SiteKey = 'QUITO' | 'GUAYAQUIL' | 'CUENCA';
+
+// Medidas del layout dividido (px)
+const CANVAS_W = 1100;
+const SIDE_PANEL_W = 430;
+const SPLIT_MIN_W = 1180;
+
+const AGENT_SITE: Record<AgentId, SiteKey> = {
+  'agente-1': 'QUITO', 'agente-2': 'QUITO', 'agente-3': 'QUITO',
+  'agente-4': 'GUAYAQUIL', 'agente-5': 'GUAYAQUIL', 'agente-6': 'CUENCA',
+};
+
+const SITE_SUMMARY: Array<{ id: SiteKey; label: string; accent: string; agents: AgentId[] }> = [
+  { id: 'QUITO', label: '🖥️ Quito · PC Escritorio', accent: '#782c3e', agents: ['agente-1', 'agente-2', 'agente-3'] },
+  { id: 'GUAYAQUIL', label: '💻 Guayaquil · Laptop', accent: '#183a31', agents: ['agente-4', 'agente-5'] },
+  { id: 'CUENCA', label: '☁️ Cuenca · Supabase', accent: '#a96b16', agents: ['agente-6'] },
+];
+
+const LIVE_CSS = `
+@keyframes lcFlowX { from { background-position: 0 0; } to { background-position: 12px 0; } }
+@keyframes lcFlowY { from { background-position: 0 0; } to { background-position: 0 12px; } }
+@keyframes lcDot { 0% { box-shadow: 0 0 0 0 currentColor; } 70% { box-shadow: 0 0 0 6px transparent; } 100% { box-shadow: 0 0 0 0 transparent; } }
+.lc-dot-live { animation: lcDot 1.6s ease-out infinite; display: inline-block; }
+@keyframes lcRowNew { 0% { background: #ffe9a8; } 100% { background: transparent; } }
+.lc-row-new td { animation: lcRowNew 4s ease-out; }
+.lc-row-new { animation: lcRowNew 4s ease-out; }
+.lc-side .grid-2, .lc-side .grid-3 { grid-template-columns: minmax(0, 1fr); gap: 10px; }
+.lc-side h3 { font-size: 17px !important; }
+`;
+
 const isAgentId = (id: string): id is AgentId => id in AGENT_DETAILS;
 
 const formatAgo = (secs: number | null | undefined): string => {
@@ -390,7 +442,7 @@ export const ArchitectureConsole: React.FC = () => {
   const [loadingTopo, setLoadingTopo] = useState(false);
 
   // Elemento interactivo seleccionado en el Diagrama Visual
-  const [focusedElement, setFocusedElement] = useState<InteractiveElementId>('cuenca-cloud');
+  const [focusedElement, setFocusedElement] = useState<InteractiveElementId>('cluster-global');
 
   // Consola Global del DBA (GET /api/dba/global)
   const [globalData, setGlobalData] = useState<GlobalDbaResponse | null>(null);
@@ -420,25 +472,74 @@ export const ArchitectureConsole: React.FC = () => {
   const [runningTwoPc, setRunningTwoPc] = useState<boolean>(false);
 
   // 6 Agentes IA (1 por BD): estado resumido + actividad del agente seleccionado
-  const [agentStatus, setAgentStatus] = useState<Partial<Record<AgentId, AgentActivity>>>({});
   const [agentActivity, setAgentActivity] = useState<AgentActivity | null>(null);
   const [agentRun, setAgentRun] = useState<AgentRunResult | null>(null);
   const [agentRunError, setAgentRunError] = useState<string>('');
   const [runningAgent, setRunningAgent] = useState<boolean>(false);
 
-  const fetchAgentStatus = useCallback(async () => {
+  // Feed en vivo (GET /api/agentes/feed cada 2 s) + reloj de 1 s para los cronómetros
+  const [feed, setFeed] = useState<FeedResponse | null>(null);
+  const [feedAt, setFeedAt] = useState<number>(0);
+  const [nowMs, setNowMs] = useState<number>(() => Date.now());
+  const [pulses, setPulses] = useState<Partial<Record<AgentId, number>>>({});
+  const [newKeys, setNewKeys] = useState<Record<string, number>>({});
+  const [globalFeedFilter, setGlobalFeedFilter] = useState<'TODAS' | SiteKey>('TODAS');
+  const seenKeysRef = useRef<Set<string> | null>(null);
+  // Layout dividido: diagrama a la izquierda (escalado para caber) + panel lateral fijo a la derecha
+  // Ref de callback: vuelve a observar si el contenedor se monta de nuevo (cambio de pestaña, recarga en caliente)
+  const splitObserverRef = useRef<ResizeObserver | null>(null);
+  const [splitWidth, setSplitWidth] = useState<number>(0);
+  const splitRef = useCallback((el: HTMLDivElement | null) => {
+    splitObserverRef.current?.disconnect();
+    splitObserverRef.current = null;
+    if (!el) return;
+    setSplitWidth(el.getBoundingClientRect().width);
+    if (typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(entries => setSplitWidth(entries[0].contentRect.width));
+    ro.observe(el);
+    splitObserverRef.current = ro;
+  }, []);
+  const isSplit = splitWidth >= SPLIT_MIN_W;
+  const canvasArea = isSplit ? splitWidth - SIDE_PANEL_W - 16 : splitWidth;
+  const canvasScale = canvasArea > 0 ? Math.min(1, canvasArea / CANVAS_W) : 1;
+  const feedBusyRef = useRef<boolean>(false);
+
+  const fetchFeed = useCallback(async () => {
+    if (feedBusyRef.current) return;
+    feedBusyRef.current = true;
     try {
-      const res = await fetch(`${API_BASE_URL}/api/agentes/estado`);
+      const res = await fetch(`${API_BASE_URL}/api/agentes/feed?limit=10`);
       if (res.ok) {
-        const data: { agentes: AgentActivity[] } = await res.json();
-        const map: Partial<Record<AgentId, AgentActivity>> = {};
-        data.agentes.forEach(a => {
-          if (isAgentId(a.agentId)) map[a.agentId] = a;
-        });
-        setAgentStatus(map);
+        const data: FeedResponse = await res.json();
+        const t = Date.now();
+        const seen = seenKeysRef.current;
+        if (seen) {
+          // Solo lo que no habíamos visto antes enciende las líneas (la primera carga no dispara pulsos)
+          const fresh = data.eventos.filter(e => !seen.has(e.key));
+          if (fresh.length > 0) {
+            setPulses(prev => {
+              const next = { ...prev };
+              fresh.forEach(e => { if (isAgentId(e.agentId)) next[e.agentId] = t; });
+              return next;
+            });
+            setNewKeys(prev => {
+              const next: Record<string, number> = {};
+              Object.entries(prev).forEach(([k, v]) => { if (t - v < 10000) next[k] = v; });
+              fresh.forEach(e => { next[e.key] = t; });
+              return next;
+            });
+          }
+        }
+        const merged = new Set(seen && seen.size < 3000 ? seen : []);
+        data.eventos.forEach(e => merged.add(e.key));
+        seenKeysRef.current = merged;
+        setFeed(data);
+        setFeedAt(t);
       }
     } catch {
       // API no disponible momentáneamente
+    } finally {
+      feedBusyRef.current = false;
     }
   }, []);
 
@@ -554,21 +655,29 @@ export const ArchitectureConsole: React.FC = () => {
     }
   }, [selectedNodeId, fetchNodeLogs]);
 
-  // Estado de los 6 agentes (punto verde/ámbar en cada tarjeta) cada 15 s mientras se ve el diagrama
+  // Reloj de 1 s: hace avanzar todos los cronómetros "hace X s" sin pedir nada al servidor
+  useEffect(() => {
+    const t = window.setInterval(() => setNowMs(Date.now()), 1000);
+    return () => window.clearInterval(t);
+  }, []);
+
+  // Feed de las 6 BDs cada 2 s mientras se ve el diagrama
   useEffect(() => {
     if (activeTab !== 'diagram_vs') return undefined;
-    void fetchAgentStatus();
-    const t = window.setInterval(() => void fetchAgentStatus(), 15000);
+    void fetchFeed();
+    const t = window.setInterval(() => void fetchFeed(), 2000);
     return () => window.clearInterval(t);
-  }, [activeTab, fetchAgentStatus]);
+  }, [activeTab, fetchFeed]);
 
-  // Actividad del agente seleccionado cada 10 s
+  // Detalle del agente seleccionado: cada 5 s y al instante cuando el feed detecta una escritura suya
+  const focusedPulseAt = isAgentId(focusedElement) ? pulses[focusedElement] ?? 0 : 0;
   useEffect(() => {
     if (activeTab !== 'diagram_vs' || !isAgentId(focusedElement)) return undefined;
     const id = focusedElement;
-    const t = window.setInterval(() => void fetchAgentActivity(id), 10000);
+    void fetchAgentActivity(id);
+    const t = window.setInterval(() => void fetchAgentActivity(id), 5000);
     return () => window.clearInterval(t);
-  }, [activeTab, focusedElement, fetchAgentActivity]);
+  }, [activeTab, focusedElement, fetchAgentActivity, focusedPulseAt]);
 
   const handleClickDiagramNode = (elemId: InteractiveElementId) => {
     setFocusedElement(elemId);
@@ -617,7 +726,7 @@ export const ArchitectureConsole: React.FC = () => {
       await fetchGlobalDbaConsole(filterSede, filterModulo);
       await fetchTopology();
       await fetchPowerBiStar();
-      await fetchAgentStatus();
+      await fetchFeed();
     } finally {
       setLoadingGlobal(false);
     }
@@ -655,31 +764,62 @@ export const ArchitectureConsole: React.FC = () => {
   const focusedAgent = focusedAgentId ? AGENT_DETAILS[focusedAgentId] : null;
   const findNode = (id: string) => topology?.nodes.find(n => n.id === id);
 
-  // ---------- Piezas del lienzo: caja de BD, tarjeta de Agente (separada) y bloque de sede ----------
-  const COL_W = 108;
-  const COL_GAP = 14;
+  // ---------- Tiempo real: cronómetros, pulsos y estado de cada agente a partir del feed ----------
+  const elapsedSinceFeed = feedAt ? Math.max(0, Math.floor((nowMs - feedAt) / 1000)) : 0;
+  const liveSecs = (secs: number | null | undefined): number | null =>
+    secs === null || secs === undefined ? null : secs + elapsedSinceFeed;
+  const agentLiveSecs = (agentId: AgentId) => liveSecs(feed?.agentes[agentId]?.segundosDesdeUltima);
+  const agentEstado = (agentId: AgentId): 'ACTIVO' | 'INACTIVO' | 'SIN CONEXIÓN' | 'CARGANDO' => {
+    const a = feed?.agentes[agentId];
+    if (!a) return 'CARGANDO';
+    if (!a.online) return 'SIN CONEXIÓN';
+    const s = agentLiveSecs(agentId);
+    return s !== null && s <= 150 ? 'ACTIVO' : 'INACTIVO';
+  };
+  const isPulsing = (agentId: AgentId) => nowMs - (pulses[agentId] ?? 0) < 2600;
+  const anyPulsing = (ids: AgentId[]) => ids.some(isPulsing);
+  const isNewKey = (key: string) => nowMs - (newKeys[key] ?? 0) < 4000;
 
-  const renderDbBox = (nodeId: InteractiveElementId, bdLabel: string, roleShort: string, portStr: string) => {
+  // ---------- Piezas del lienzo ----------
+  const COL_W = 100;
+  const COL_GAP = 12;
+
+  /** Línea de conexión: punteada en reposo; se enciende y "fluye" cuando pasa una operación. */
+  const renderFlowLine = (opts: { dir: 'h' | 'v'; color: string; active: boolean; length?: string; reverse?: boolean; grow?: boolean }) => {
+    const thick = opts.active ? 5 : 3;
+    const base: React.CSSProperties = {
+      backgroundImage: `linear-gradient(${opts.dir === 'h' ? 'to right' : 'to bottom'}, ${opts.color} 55%, transparent 55%)`,
+      backgroundSize: opts.dir === 'h' ? '12px 100%' : '100% 12px',
+      backgroundRepeat: opts.dir === 'h' ? 'repeat-x' : 'repeat-y',
+      opacity: opts.active ? 1 : 0.5,
+      boxShadow: opts.active ? `0 0 12px 2px ${opts.color}99` : 'none',
+      borderRadius: '3px',
+      transition: 'opacity .3s, box-shadow .3s, width .2s, height .2s',
+      animation: opts.active ? `${opts.dir === 'h' ? 'lcFlowX' : 'lcFlowY'} .45s linear infinite${opts.reverse ? ' reverse' : ''}` : 'none',
+      flexShrink: 0,
+    };
+    return opts.dir === 'h' ? (
+      <div style={{ ...base, height: `${thick}px`, width: opts.length ?? '100%' }} />
+    ) : (
+      <div style={{ ...base, width: `${thick}px`, height: opts.length ?? '100%', flex: opts.grow ? 1 : undefined }} />
+    );
+  };
+
+  const renderDbBox = (nodeId: InteractiveElementId, agentId: AgentId, bdLabel: string, roleShort: string, portStr: string) => {
     const n = findNode(nodeId);
-    const isOnline = !n || n.status === 'ONLINE';
+    // El feed (cada 2 s) manda: si el agente no puede leer su BD, la BD está caída en este momento.
+    const live = feed?.agentes[agentId];
+    const isOnline = live ? live.online : !n || n.status === 'ONLINE';
     const isDbFocused = focusedElement === nodeId;
+    const pulse = isPulsing(agentId);
+    const accent = AGENT_DETAILS[agentId].accent;
     return (
       <button
         key={nodeId}
         type="button"
         onClick={() => handleClickDiagramNode(nodeId)}
         title={n ? `${n.name} — ${n.status}` : bdLabel}
-        style={{
-          width: `${COL_W}px`,
-          display: 'flex',
-          flexDirection: 'column',
-          alignItems: 'center',
-          gap: '4px',
-          background: 'transparent',
-          border: 'none',
-          cursor: 'pointer',
-          padding: 0,
-        }}
+        style={{ width: `${COL_W}px`, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '4px', background: 'transparent', border: 'none', cursor: 'pointer', padding: 0 }}
       >
         <div
           style={{
@@ -687,29 +827,31 @@ export const ArchitectureConsole: React.FC = () => {
             height: '80px',
             borderRadius: '16px',
             border: isDbFocused ? '3px solid #782c3e' : isOnline ? '2px solid #25251f' : '2.5px solid #9a3937',
-            background: isDbFocused ? '#fbf3f0' : isOnline ? '#ffffff' : '#f8e9e8',
-            boxShadow: isDbFocused ? '0 8px 20px rgba(120,44,62,0.22)' : '0 3px 10px rgba(0,0,0,0.06)',
+            background: pulse ? '#fffbe9' : isDbFocused ? '#fbf3f0' : isOnline ? '#ffffff' : '#f8e9e8',
+            boxShadow: pulse
+              ? `0 0 0 4px ${accent}40, 0 0 22px ${accent}99`
+              : isDbFocused ? '0 8px 20px rgba(120,44,62,0.22)' : '0 3px 10px rgba(0,0,0,0.06)',
             display: 'flex',
             flexDirection: 'column',
             alignItems: 'center',
             justifyContent: 'center',
             position: 'relative',
-            transition: 'all 0.15s ease',
+            transition: 'all 0.25s ease',
           }}
         >
-          <span
-            style={{
-              position: 'absolute', top: '7px', right: '7px', width: '9px', height: '9px', borderRadius: '50%',
-              background: isOnline ? '#267154' : '#9a3937',
-            }}
-          />
+          <span style={{ position: 'absolute', top: '7px', right: '7px', width: '9px', height: '9px', borderRadius: '50%', background: isOnline ? '#267154' : '#9a3937' }} />
+          {pulse && (
+            <span style={{ position: 'absolute', top: '-9px', left: '50%', transform: 'translateX(-50%)', fontSize: '9px', fontWeight: 800, background: accent, color: '#fff', padding: '1px 7px', borderRadius: '999px', whiteSpace: 'nowrap' }}>
+              + escritura
+            </span>
+          )}
           <Database size={21} color={isOnline ? '#183a31' : '#9a3937'} />
           <strong style={{ fontSize: '11.5px', color: '#25251f', marginTop: '3px' }}>{bdLabel}</strong>
           <code style={{ fontSize: '9.5px', color: '#782c3e', fontWeight: 700 }}>:{n?.actualPort || portStr}</code>
         </div>
         <span style={{ fontSize: '12px', fontWeight: 700, color: '#25251f' }}>{roleShort}</span>
         <span style={{ fontSize: '10px', fontWeight: 700, color: isOnline ? '#267154' : '#9a3937' }}>
-          {n ? (isOnline ? `${n.latencyMs} ms` : 'OFFLINE') : '…'}
+          {!isOnline ? 'OFFLINE' : n ? `${n.latencyMs} ms` : '…'}
         </span>
       </button>
     );
@@ -717,13 +859,14 @@ export const ArchitectureConsole: React.FC = () => {
 
   const renderAgentCard = (agentId: AgentId) => {
     const ag = AGENT_DETAILS[agentId];
-    const st = agentStatus[agentId];
+    const estado = agentEstado(agentId);
     const focused = focusedElement === agentId;
-    const color = !st ? '#9e9d95' : st.estado === 'ACTIVO' ? '#267154' : st.estado === 'INACTIVO' ? '#a96b16' : '#9a3937';
+    const pulse = isPulsing(agentId);
+    const color = estado === 'ACTIVO' ? '#267154' : estado === 'INACTIVO' ? '#a96b16' : estado === 'SIN CONEXIÓN' ? '#9a3937' : '#9e9d95';
+    const secs = agentLiveSecs(agentId);
     return (
       <div key={agentId} style={{ width: `${COL_W}px`, display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
-        {/* conector punteado: el agente escribe en la BD de arriba (vía API + X-Sede) */}
-        <div style={{ width: '2px', height: '20px', background: `repeating-linear-gradient(to bottom, ${ag.accent} 0, ${ag.accent} 4px, transparent 4px, transparent 7px)` }} />
+        {renderFlowLine({ dir: 'v', color: ag.accent, active: pulse, length: '20px', reverse: true })}
         <button
           type="button"
           onClick={() => handleClickDiagramNode(agentId)}
@@ -732,26 +875,26 @@ export const ArchitectureConsole: React.FC = () => {
             width: '100%',
             padding: '7px 6px',
             borderRadius: '12px',
-            border: focused ? `2px solid ${ag.accent}` : '1.5px solid #d9d6cc',
-            background: focused ? ag.accent : '#ffffff',
+            border: focused || pulse ? `2px solid ${ag.accent}` : '1.5px solid #d9d6cc',
+            background: focused ? ag.accent : pulse ? '#fffbe9' : '#ffffff',
             color: focused ? '#ffffff' : '#25251f',
-            boxShadow: focused ? `0 6px 16px ${ag.accent}40` : '0 2px 6px rgba(0,0,0,0.05)',
+            boxShadow: pulse ? `0 0 0 3px ${ag.accent}33, 0 0 16px ${ag.accent}88` : focused ? `0 6px 16px ${ag.accent}40` : '0 2px 6px rgba(0,0,0,0.05)',
             cursor: 'pointer',
             display: 'flex',
             flexDirection: 'column',
             alignItems: 'center',
             gap: '2px',
-            transition: 'all 0.15s ease',
+            transition: 'all 0.25s ease',
           }}
         >
           <span style={{ display: 'flex', alignItems: 'center', gap: '5px', fontSize: '12px', fontWeight: 800 }}>
             <Bot size={14} color={focused ? '#ffffff' : ag.accent} />
             {ag.code}
-            <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: color, boxShadow: `0 0 0 2px ${focused ? '#ffffff55' : color + '33'}` }} />
+            <span className={estado === 'ACTIVO' ? 'lc-dot-live' : undefined} style={{ width: '8px', height: '8px', borderRadius: '50%', background: color, color }} />
           </span>
           <span style={{ fontSize: '10.5px', fontWeight: 600, opacity: 0.9 }}>{ag.short}</span>
-          <span style={{ fontSize: '9.5px', opacity: 0.85 }}>
-            {st ? (st.nodoOnline ? formatAgo(st.segundosDesdeUltima) : 'sin conexión') : '…'}
+          <span style={{ fontSize: '10px', fontWeight: 700, fontVariantNumeric: 'tabular-nums', opacity: 0.9 }}>
+            {estado === 'SIN CONEXIÓN' ? 'sin conexión' : pulse ? '¡escribiendo!' : formatAgo(secs)}
           </span>
         </button>
       </div>
@@ -760,33 +903,38 @@ export const ArchitectureConsole: React.FC = () => {
 
   type SiteDb = [InteractiveElementId, AgentId, string, string, string];
 
-  const renderSite = (opts: {
-    label: string;
-    sub: string;
-    accent: string;
-    bg: string;
-    border: string;
-    dbs: SiteDb[];
-  }) => {
+  const renderSite = (opts: { label: string; sub: string; accent: string; bg: string; dbs: SiteDb[]; spine?: boolean }) => {
     const cols = `repeat(${opts.dbs.length}, ${COL_W}px)`;
+    const agentIds = opts.dbs.map(d => d[1]);
     return (
       <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
-        {/* RECUADRO DE LA MÁQUINA: SOLO CONTIENE SUS BASES DE DATOS */}
-        <div style={{ border: `2px solid ${opts.accent}`, borderRadius: '16px', background: opts.bg, padding: '10px 14px 12px', boxShadow: '0 6px 18px rgba(0,0,0,0.05)' }}>
+        {/* RECUADRO DE LA MÁQUINA: SOLO SUS BASES DE DATOS */}
+        <div style={{ border: `2px solid ${opts.accent}`, borderRadius: '16px', background: opts.bg, padding: '10px 14px 12px', boxShadow: anyPulsing(agentIds) ? `0 0 0 3px ${opts.accent}22, 0 8px 24px ${opts.accent}33` : '0 6px 18px rgba(0,0,0,0.05)', transition: 'box-shadow .3s' }}>
           <div style={{ textAlign: 'center', marginBottom: '10px' }}>
             <div style={{ fontSize: '10.5px', fontWeight: 800, color: opts.accent, letterSpacing: '.06em' }}>{opts.label}</div>
             <div style={{ fontSize: '9.5px', color: '#787970', fontFamily: 'monospace' }}>{opts.sub}</div>
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: cols, gap: `${COL_GAP}px`, justifyItems: 'center' }}>
-            {opts.dbs.map(([nodeId, , bd, role, port]) => renderDbBox(nodeId, bd, role, port))}
+            {opts.dbs.map(([nodeId, agentId, bd, role, port]) => renderDbBox(nodeId, agentId, bd, role, port))}
           </div>
         </div>
         {/* CARRIL DE AGENTES: FUERA DEL RECUADRO, UNO DEBAJO DE CADA BD */}
-        <div style={{ display: 'grid', gridTemplateColumns: cols, gap: `${COL_GAP}px`, justifyItems: 'center', padding: '0 16px' }}>
+        <div style={{ position: 'relative', display: 'grid', gridTemplateColumns: cols, gap: `${COL_GAP}px`, justifyItems: 'center', padding: '0 16px' }}>
+          {opts.spine && (
+            // Eje central que baja desde el recuadro hasta la API pasando entre los agentes
+            <div style={{ position: 'absolute', left: '50%', top: 0, bottom: 0, transform: 'translateX(-50%)', display: 'flex', flexDirection: 'column' }}>
+              {renderFlowLine({ dir: 'v', color: opts.accent, active: anyPulsing(agentIds), grow: true })}
+            </div>
+          )}
           {opts.dbs.map(([, agentId]) => renderAgentCard(agentId))}
         </div>
       </div>
     );
+  };
+
+  const handleCanvasClick = (e: React.MouseEvent<HTMLDivElement>) => {
+    if ((e.target as HTMLElement).closest('button')) return;
+    setFocusedElement('cluster-global');
   };
 
   const runSingleAgent = async (agentId: AgentId) => {
@@ -801,7 +949,7 @@ export const ArchitectureConsole: React.FC = () => {
       } else {
         setAgentRun(body);
       }
-      await Promise.all([fetchAgentActivity(agentId), fetchAgentStatus()]);
+      await Promise.all([fetchAgentActivity(agentId), fetchFeed()]);
     } catch (err) {
       setAgentRunError(err instanceof Error ? err.message : 'Error de red.');
     } finally {
@@ -811,6 +959,7 @@ export const ArchitectureConsole: React.FC = () => {
 
   return (
     <div>
+      <style>{LIVE_CSS}</style>
       {/* ENCABEZADO CON LA ESTÉTICA DE LA CAVA */}
       <div className="page-heading">
         <div>
@@ -885,130 +1034,147 @@ export const ArchitectureConsole: React.FC = () => {
                   Flujo en Vivo: 3 BDs Quito (Izq) · 2 BDs Guayaquil (Arriba) · 1 BD Cuenca (Der) ↔ Túnel Tailscale ↔ API ↔ GUI
                 </h2>
                 <p>
-                  Cada Base de Datos tiene su propio <strong>Agente IA independiente (`AG 1` a `AG 6`)</strong> justo debajo. Haz clic en cualquier <strong>BD</strong> o en cualquier <strong>Agente (`AG 1..6`)</strong> para ver exactamente qué está ingresando.
+                  Cada Base de Datos tiene su propio <strong>Agente IA independiente (`AG 1` a `AG 6`)</strong> justo debajo. Haz clic en una <strong>BD</strong>, un <strong>Agente</strong>, la <strong>API</strong> o el <strong>fondo</strong> del diagrama: el detalle en vivo aparece {isSplit ? 'en el panel de la derecha' : 'debajo del diagrama'} sin perder de vista las líneas.
                 </p>
               </div>
               <span className="demo-badge">1 AGENTE IA POR CADA BASE DE DATOS</span>
             </div>
 
-            {/* ==================== LIENZO: SEDES (SOLO BDs) + CARRIL DE AGENTES APARTE + API + GUI ==================== */}
-            <div style={{ overflowX: 'auto' }}>
+            {/* ==================== DIAGRAMA (IZQUIERDA, ESCALADO) + PANEL LATERAL FIJO (DERECHA) ==================== */}
+            <div
+              ref={splitRef}
+              style={{
+                display: 'grid',
+                gridTemplateColumns: isSplit ? `minmax(0, 1fr) ${SIDE_PANEL_W}px` : 'minmax(0, 1fr)',
+                gap: '16px',
+                alignItems: 'start',
+              }}
+            >
+            <div style={{ minWidth: 0, overflowX: canvasScale < 0.6 ? 'auto' : 'visible' }}>
+            <div style={{ zoom: Math.max(canvasScale, 0.6) }}>
               <div
+                onClick={handleCanvasClick}
+                title="Clic en el fondo: actividad en vivo de las 3 sedes"
                 style={{
-                  minWidth: '980px',
+                  width: `${CANVAS_W}px`,
+                  position: 'relative',
+                  cursor: 'pointer',
                   background: 'radial-gradient(circle at 50% 45%, #ffffff 0%, #f6f4ef 100%)',
-                  border: '1.5px solid #dfded7',
+                  border: focusedElement === 'cluster-global' ? '2.5px solid #183a31' : '1.5px solid #dfded7',
+                  boxShadow: focusedElement === 'cluster-global' ? '0 0 0 4px rgba(24,58,49,0.10)' : 'none',
                   borderRadius: '16px',
                   padding: '22px 20px 18px',
                   display: 'flex',
                   flexDirection: 'column',
                   alignItems: 'center',
-                  gap: '6px',
+                  transition: 'border .2s, box-shadow .2s',
                 }}
               >
-                {/* FILA SUPERIOR: LAPTOP GUAYAQUIL */}
+                {/* RELOJ EN VIVO */}
+                <div style={{ position: 'absolute', top: '12px', right: '14px', display: 'flex', alignItems: 'center', gap: '7px', fontSize: '10.5px', color: '#575950', fontWeight: 700 }}>
+                  <span className="lc-dot-live" style={{ width: 8, height: 8, borderRadius: '50%', background: feed ? '#267154' : '#9e9d95', color: '#267154' }} />
+                  EN VIVO · {new Date(nowMs).toLocaleTimeString('es-EC')}
+                  <span style={{ fontWeight: 500 }}>· datos de hace {elapsedSinceFeed} s</span>
+                </div>
+                <div style={{ position: 'absolute', top: '12px', left: '14px', fontSize: '10.5px', color: '#787970' }}>
+                  Clic en el fondo = actividad de todas las sedes
+                </div>
+
+                {/* FILA SUPERIOR: LAPTOP GUAYAQUIL (su eje central baja hasta la API) */}
                 {renderSite({
                   label: '💻 LAPTOP — SEDE GUAYAQUIL',
                   sub: `${findNode('guayaquil-sql')?.machine || 'Laptop (100.123.81.4)'} · 2 BDs`,
                   accent: '#183a31',
                   bg: '#f4f9f6',
-                  border: '#cde0d3',
+                  spine: true,
                   dbs: [
                     ['guayaquil-sql', 'agente-4', 'BD 4', 'OLTP', '3306'],
                     ['guayaquil-replica', 'agente-5', 'BD 5', 'DWH', '3309'],
                   ],
                 })}
 
-                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', margin: '2px 0' }}>
-                  <div style={{ width: '2.5px', height: '18px', background: 'repeating-linear-gradient(to bottom, #183a31 0, #183a31 5px, transparent 5px, transparent 9px)' }} />
-                  <span style={{ fontSize: '9.5px', fontWeight: 700, color: '#183a31', background: '#eff5f1', padding: '2px 8px', borderRadius: '8px' }}>
-                    ▼ X-Sede: GUAYAQUIL · GUAYAQUIL_DWH (local)
-                  </span>
-                </div>
-
-                {/* FILA CENTRAL: QUITO ── TAILSCALE ── API ── TLS WAN ── CUENCA */}
-                <div
-                  style={{
-                    width: '100%',
-                    display: 'grid',
-                    gridTemplateColumns: 'auto minmax(110px, 1fr) auto minmax(110px, 1fr) auto',
-                    alignItems: 'center',
-                    gap: '8px',
-                  }}
-                >
-                  {renderSite({
-                    label: '🖥️ PC ESCRITORIO — SEDE QUITO',
-                    sub: `${findNode('quito-sql')?.machine || 'PC Escritorio (100.77.220.102)'} · 3 BDs`,
-                    accent: '#782c3e',
-                    bg: '#fcf6f4',
-                    border: '#ead6cf',
-                    dbs: [
-                      ['quito-sql', 'agente-1', 'BD 1', 'SQL OLTP', '3307'],
-                      ['quito-nosql', 'agente-2', 'BD 2', 'NoSQL', '27017'],
-                      ['quito-otras', 'agente-3', 'BD 3', 'Hash', '3308'],
-                    ],
-                  })}
-
-                  <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
-                    <span style={{ fontSize: '9px', fontWeight: 800, color: '#782c3e', background: '#fbf3f0', padding: '3px 8px', borderRadius: '999px', border: '1px solid #ead6cf', marginBottom: '4px', whiteSpace: 'nowrap' }}>
-                      🔒 Túnel Tailscale
-                    </span>
-                    <div style={{ width: '100%', height: '3px', background: 'repeating-linear-gradient(to right, #782c3e 0, #782c3e 6px, transparent 6px, transparent 10px)' }} />
-                    <span style={{ fontSize: '8.5px', color: '#575950', fontWeight: 700, marginTop: '4px', textAlign: 'center' }}>
-                      :3307 · :27017 · :3308
-                    </span>
+                {/* FILA CENTRAL: [QUITO ── Tailscale] [API] [WAN ── CUENCA] con la API exactamente al centro */}
+                <div style={{ width: '100%', display: 'grid', gridTemplateColumns: '1fr auto 1fr', alignItems: 'start' }}>
+                  <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'flex-end' }}>
+                    {renderSite({
+                      label: '🖥️ PC ESCRITORIO — SEDE QUITO',
+                      sub: `${findNode('quito-sql')?.machine || 'PC Escritorio (100.77.220.102)'} · 3 BDs`,
+                      accent: '#782c3e',
+                      bg: '#fcf6f4',
+                      dbs: [
+                        ['quito-sql', 'agente-1', 'BD 1', 'SQL OLTP', '3307'],
+                        ['quito-nosql', 'agente-2', 'BD 2', 'NoSQL', '27017'],
+                        ['quito-otras', 'agente-3', 'BD 3', 'Hash', '3308'],
+                      ],
+                    })}
+                    <div style={{ flex: 1, minWidth: '70px', marginTop: '74px', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+                      <span style={{ fontSize: '9px', fontWeight: 800, color: '#782c3e', background: '#fbf3f0', padding: '3px 8px', borderRadius: '999px', border: '1px solid #ead6cf', marginBottom: '5px', whiteSpace: 'nowrap' }}>
+                        🔒 Túnel Tailscale
+                      </span>
+                      {renderFlowLine({ dir: 'h', color: '#782c3e', active: anyPulsing(['agente-1', 'agente-2', 'agente-3']) })}
+                      <span style={{ fontSize: '8.5px', color: '#575950', fontWeight: 700, marginTop: '5px' }}>:3307 · :27017 · :3308</span>
+                    </div>
                   </div>
 
-                  <button
-                    type="button"
-                    onClick={() => handleClickDiagramNode('api-gateway')}
-                    style={{
-                      width: '196px',
-                      padding: '14px 12px',
-                      borderRadius: '20px',
-                      border: focusedElement === 'api-gateway' ? '3px solid #782c3e' : '2.5px solid #183a31',
-                      background: focusedElement === 'api-gateway' ? '#183a31' : '#ffffff',
-                      color: focusedElement === 'api-gateway' ? '#ffffff' : '#25251f',
-                      boxShadow: '0 12px 28px rgba(24,58,49,0.16)',
-                      cursor: 'pointer',
-                      display: 'flex',
-                      flexDirection: 'column',
-                      alignItems: 'center',
-                      gap: '3px',
-                    }}
-                  >
-                    <span style={{ display: 'flex', alignItems: 'center', gap: '7px' }}>
-                      <Cpu size={21} color={focusedElement === 'api-gateway' ? '#e7c6a8' : '#782c3e'} />
-                      <span style={{ fontFamily: "'Playfair Display', Georgia, serif", fontSize: '22px', fontWeight: 700 }}>API</span>
+                  {/* COLUMNA CENTRAL: continuación del eje de Guayaquil → API → GUI */}
+                  <div style={{ alignSelf: 'stretch', display: 'flex', flexDirection: 'column', alignItems: 'center', position: 'relative' }}>
+                    {renderFlowLine({ dir: 'v', color: '#183a31', active: anyPulsing(['agente-4', 'agente-5']), length: '44px' })}
+                    <span style={{ position: 'absolute', top: '12px', left: 'calc(50% + 10px)', fontSize: '9px', fontWeight: 700, color: '#183a31', background: '#eff5f1', padding: '2px 8px', borderRadius: '8px', whiteSpace: 'nowrap' }}>
+                      X-Sede: GUAYAQUIL · GUAYAQUIL_DWH (local)
                     </span>
-                    <span style={{ fontSize: '10.5px', fontWeight: 700 }}>Balanceador :8000 / :8080</span>
-                    <span style={{ fontSize: '9.5px', opacity: 0.9 }}>3 réplicas · enruta por X-Sede</span>
-                    <span style={{ fontSize: '8.5px', fontFamily: 'monospace', background: 'rgba(120,44,62,0.12)', padding: '2px 8px', borderRadius: '6px', marginTop: '2px' }}>
-                      respondió: {globalData?.apiReplica || topology?.apiReplica || '…'}
-                    </span>
-                  </button>
-
-                  <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
-                    <span style={{ fontSize: '9px', fontWeight: 800, color: '#a96b16', background: '#fbf4e6', padding: '3px 8px', borderRadius: '999px', border: '1px solid #ead8b8', marginBottom: '4px', whiteSpace: 'nowrap' }}>
-                      ☁️ TLS WAN Internet
-                    </span>
-                    <div style={{ width: '100%', height: '3px', background: 'repeating-linear-gradient(to right, #a96b16 0, #a96b16 6px, transparent 6px, transparent 10px)' }} />
-                    <span style={{ fontSize: '8.5px', color: '#575950', fontWeight: 700, marginTop: '4px' }}>X-Sede: CUENCA · :5432</span>
+                    <button
+                      type="button"
+                      onClick={() => handleClickDiagramNode('api-gateway')}
+                      style={{
+                        width: '196px',
+                        padding: '14px 12px',
+                        borderRadius: '20px',
+                        border: focusedElement === 'api-gateway' ? '3px solid #782c3e' : '2.5px solid #183a31',
+                        background: focusedElement === 'api-gateway' ? '#183a31' : '#ffffff',
+                        color: focusedElement === 'api-gateway' ? '#ffffff' : '#25251f',
+                        boxShadow: anyPulsing(AGENT_IDS) ? '0 0 0 5px rgba(24,58,49,0.15), 0 0 26px rgba(24,58,49,0.45)' : '0 12px 28px rgba(24,58,49,0.16)',
+                        cursor: 'pointer',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        alignItems: 'center',
+                        gap: '3px',
+                        transition: 'box-shadow .3s',
+                      }}
+                    >
+                      <span style={{ display: 'flex', alignItems: 'center', gap: '7px' }}>
+                        <Cpu size={21} color={focusedElement === 'api-gateway' ? '#e7c6a8' : '#782c3e'} />
+                        <span style={{ fontFamily: "'Playfair Display', Georgia, serif", fontSize: '22px', fontWeight: 700 }}>API</span>
+                      </span>
+                      <span style={{ fontSize: '10.5px', fontWeight: 700 }}>Balanceador :8000 / :8080</span>
+                      <span style={{ fontSize: '9.5px', opacity: 0.9 }}>3 réplicas · enruta por X-Sede</span>
+                      <span style={{ fontSize: '8.5px', fontFamily: 'monospace', background: 'rgba(120,44,62,0.12)', padding: '2px 8px', borderRadius: '6px', marginTop: '2px' }}>
+                        respondió: {feed?.apiReplica || globalData?.apiReplica || '…'}
+                      </span>
+                    </button>
+                    {renderFlowLine({ dir: 'v', color: '#25251f', active: false, grow: true, length: 'auto' })}
                   </div>
 
-                  {renderSite({
-                    label: '☁️ NUBE — SEDE CUENCA',
-                    sub: 'Supabase DBaaS · 1 BD',
-                    accent: '#a96b16',
-                    bg: '#fdf8ee',
-                    border: '#ead8b8',
-                    dbs: [['cuenca-cloud', 'agente-6', 'BD 6', 'Cloud', '5432']],
-                  })}
+                  <div style={{ display: 'flex', alignItems: 'flex-start' }}>
+                    <div style={{ flex: 1, minWidth: '70px', marginTop: '74px', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+                      <span style={{ fontSize: '9px', fontWeight: 800, color: '#a96b16', background: '#fbf4e6', padding: '3px 8px', borderRadius: '999px', border: '1px solid #ead8b8', marginBottom: '5px', whiteSpace: 'nowrap' }}>
+                        ☁️ TLS WAN Internet
+                      </span>
+                      {renderFlowLine({ dir: 'h', color: '#a96b16', active: isPulsing('agente-6'), reverse: true })}
+                      <span style={{ fontSize: '8.5px', color: '#575950', fontWeight: 700, marginTop: '5px' }}>X-Sede: CUENCA · :5432</span>
+                    </div>
+                    {renderSite({
+                      label: '☁️ NUBE — SEDE CUENCA',
+                      sub: 'Supabase DBaaS · 1 BD',
+                      accent: '#a96b16',
+                      bg: '#fdf8ee',
+                      dbs: [['cuenca-cloud', 'agente-6', 'BD 6', 'Cloud', '5432']],
+                    })}
+                  </div>
                 </div>
 
-                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', margin: '4px 0' }}>
-                  <div style={{ width: '2.5px', height: '18px', background: '#183a31' }} />
-                  <span style={{ fontSize: '9px', fontWeight: 700, color: '#575950' }}>▼ HTTPS / JSON ▼</span>
+                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+                  {renderFlowLine({ dir: 'v', color: '#25251f', active: false, length: '14px' })}
+                  <span style={{ fontSize: '9px', fontWeight: 700, color: '#575950', margin: '3px 0' }}>▼ HTTPS / JSON · la GUI consulta cada 2 s ▼</span>
                 </div>
 
                 {/* FILA INFERIOR: GUI + POWER BI */}
@@ -1052,32 +1218,174 @@ export const ArchitectureConsole: React.FC = () => {
                 </div>
 
                 {/* LEYENDA */}
-                <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap', justifyContent: 'center', marginTop: '10px', fontSize: '10.5px', color: '#575950' }}>
+                <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap', justifyContent: 'center', marginTop: '12px', fontSize: '10.5px', color: '#575950' }}>
                   <span><span style={{ display: 'inline-block', width: 8, height: 8, borderRadius: '50%', background: '#267154', marginRight: 5 }} />Agente activo (operó hace &lt; 2.5 min)</span>
                   <span><span style={{ display: 'inline-block', width: 8, height: 8, borderRadius: '50%', background: '#a96b16', marginRight: 5 }} />Agente detenido</span>
-                  <span><span style={{ display: 'inline-block', width: 8, height: 8, borderRadius: '50%', background: '#9a3937', marginRight: 5 }} />BD sin conexión</span>
-                  <span>┆ línea punteada = el agente escribe en esa BD (envía HTTP a la API con su X-Sede)</span>
+                  <span><span style={{ display: 'inline-block', width: 8, height: 8, borderRadius: '50%', background: '#9a3937', marginRight: 5 }} />Sin conexión</span>
+                  <span>━ línea encendida y en movimiento = una operación acaba de viajar por ese camino</span>
                 </div>
               </div>
             </div>
 
-            {/* ==================== PANEL INSPECTOR DINÁMICO DEL ELEMENTO CLICADO ==================== */}
-            <div
+            </div>
+
+            {/* ==================== PANEL LATERAL FIJO: DETALLE EN VIVO DEL ELEMENTO CLICADO ==================== */}
+            {/* En modo dividido el panel mide exactamente lo mismo que el diagrama (su contenido es absoluto
+                y no estira la fila) y desplaza su contenido por dentro: diagrama y detalle siempre a la vista. */}
+            <aside
+              className={isSplit ? 'lc-side' : undefined}
               style={{
-                marginTop: '18px',
+                position: 'relative',
+                alignSelf: isSplit ? 'stretch' : undefined,
+                minHeight: isSplit ? '560px' : undefined,
+                marginTop: isSplit ? 0 : '18px',
                 border: '2px solid #183a31',
                 borderRadius: '14px',
                 background: '#faf9f6',
-                padding: '18px 20px',
+                overflow: 'hidden',
               }}
             >
+            <div
+              style={
+                isSplit
+                  ? { position: 'absolute', inset: 0, overflowY: 'auto', padding: '14px' }
+                  : { padding: '18px 20px' }
+              }
+            >
+              {/* CASO 0: CLIC EN EL FONDO DEL LIENZO → ACTIVIDAD EN VIVO DE LAS 3 SEDES */}
+              {focusedElement === 'cluster-global' && (
+                <div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '10px', borderBottom: '1px solid #e9e6de', paddingBottom: '12px', marginBottom: '12px' }}>
+                    <div>
+                      <span style={{ fontSize: '10px', fontWeight: 800, color: '#183a31', letterSpacing: '.12em', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                        <span className="lc-dot-live" style={{ width: 8, height: 8, borderRadius: '50%', background: '#267154', color: '#267154' }} />
+                        EN VIVO · SE ACTUALIZA CADA 2 s
+                      </span>
+                      <h3 style={{ margin: '3px 0 0', fontSize: '19px', fontFamily: "'Playfair Display', Georgia, serif", color: '#183a31' }}>
+                        Actividad de todas las sedes (6 agentes · 6 BDs)
+                      </h3>
+                      <p style={{ margin: '3px 0 0', fontSize: '12px', color: '#575950' }}>
+                        Cada fila es una escritura real leída de su base de datos. Las nuevas aparecen arriba resaltadas.
+                      </p>
+                    </div>
+                    <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+                      {(['TODAS', 'QUITO', 'GUAYAQUIL', 'CUENCA'] as const).map(f => (
+                        <button
+                          key={f}
+                          type="button"
+                          className="btn btn-outline"
+                          onClick={() => setGlobalFeedFilter(f)}
+                          style={{
+                            padding: '5px 12px',
+                            fontSize: '11.5px',
+                            background: globalFeedFilter === f ? '#183a31' : '#ffffff',
+                            color: globalFeedFilter === f ? '#ffffff' : '#25251f',
+                          }}
+                        >
+                          {f === 'TODAS' ? 'Todas' : f.charAt(0) + f.slice(1).toLowerCase()}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* RESUMEN POR SEDE: cada agente con su cronómetro y su última acción */}
+                  <div className="grid-3" style={{ marginBottom: '14px' }}>
+                    {SITE_SUMMARY.map(site => {
+                      const evs = (feed?.eventos ?? []).filter(e => isAgentId(e.agentId) && AGENT_SITE[e.agentId] === site.id);
+                      const ultimos5 = evs.filter(e => (liveSecs(e.segundos) ?? 9999) <= 300).length;
+                      return (
+                        <div key={site.id} style={{ background: '#fff', border: `1px solid ${site.accent}44`, borderTop: `4px solid ${site.accent}`, borderRadius: '10px', padding: '10px 12px' }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: '6px' }}>
+                            <strong style={{ color: site.accent, fontSize: '13px' }}>{site.label}</strong>
+                            <small style={{ color: '#787970' }}>{ultimos5} escrituras en 5 min</small>
+                          </div>
+                          {site.agents.map(aid => {
+                            const ag = AGENT_DETAILS[aid];
+                            const last = evs.find(e => e.agentId === aid);
+                            const estado = agentEstado(aid);
+                            const pulse = isPulsing(aid);
+                            return (
+                              <button
+                                key={aid}
+                                type="button"
+                                onClick={() => handleClickDiagramNode(aid)}
+                                style={{
+                                  width: '100%', textAlign: 'left', display: 'block', cursor: 'pointer',
+                                  border: 'none', borderTop: '1px solid #f0eee8', padding: '6px 2px',
+                                  background: pulse ? '#fff6d6' : 'transparent', transition: 'background .4s',
+                                }}
+                              >
+                                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11.5px' }}>
+                                  <span style={{ fontWeight: 800, color: '#25251f' }}>
+                                    <span style={{ display: 'inline-block', width: 7, height: 7, borderRadius: '50%', marginRight: 5, background: estado === 'ACTIVO' ? '#267154' : estado === 'INACTIVO' ? '#a96b16' : '#9a3937' }} />
+                                    {ag.code} · {ag.short}
+                                  </span>
+                                  <span style={{ fontVariantNumeric: 'tabular-nums', color: pulse ? ag.accent : '#575950', fontWeight: 700 }}>
+                                    {pulse ? '¡ahora!' : formatAgo(agentLiveSecs(aid))}
+                                  </span>
+                                </div>
+                                <div style={{ fontSize: '10.5px', color: '#787970', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                                  {last ? `${last.usuario ?? ''} · ${last.modulo ?? ''} · ${last.detalle}` : estado === 'SIN CONEXIÓN' ? 'Sin conexión con la BD' : 'Sin acciones registradas'}
+                                </div>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  {/* LÍNEA DE TIEMPO UNIFICADA */}
+                  <strong style={{ fontSize: '12px', color: '#183a31', display: 'block', margin: '2px 0 6px' }}>
+                    Línea de tiempo (más reciente arriba)
+                  </strong>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                    {(feed?.eventos ?? [])
+                      .filter(e => globalFeedFilter === 'TODAS' || (isAgentId(e.agentId) && AGENT_SITE[e.agentId] === globalFeedFilter))
+                      .map(e => {
+                        const ag = isAgentId(e.agentId) ? AGENT_DETAILS[e.agentId] : null;
+                        return (
+                          <button
+                            key={e.key}
+                            type="button"
+                            className={isNewKey(e.key) ? 'lc-row-new' : undefined}
+                            onClick={() => { if (isAgentId(e.agentId)) handleClickDiagramNode(e.agentId); }}
+                            title="Ver el detalle de este agente"
+                            style={{
+                              textAlign: 'left', cursor: 'pointer', background: '#fff',
+                              border: '1px solid #e9e6de', borderLeft: `4px solid ${ag?.accent ?? '#9e9d95'}`,
+                              borderRadius: '8px', padding: '7px 10px',
+                            }}
+                          >
+                            <div style={{ display: 'flex', justifyContent: 'space-between', gap: '8px', fontSize: '11.5px' }}>
+                              <span>
+                                <strong style={{ color: ag?.accent ?? '#25251f' }}>{e.codigo}</strong>
+                                <span style={{ color: '#787970' }}> → {e.bdId} · {e.sede}</span>
+                              </span>
+                              <span style={{ fontVariantNumeric: 'tabular-nums', fontWeight: 700, color: '#575950', whiteSpace: 'nowrap' }}>
+                                {formatAgo(liveSecs(e.segundos))}
+                              </span>
+                            </div>
+                            <div style={{ fontSize: '11.5px', color: '#25251f', margin: '2px 0' }}>{e.detalle}</div>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '10.5px', color: '#787970' }}>
+                              <span><code>{e.usuario ?? '—'}</code> · {e.modulo ?? '—'}</span>
+                              <strong style={{ color: '#183a31' }}>{e.monto ? `$${e.monto.toFixed(2)}` : ''}</strong>
+                            </div>
+                          </button>
+                        );
+                      })}
+                    {!feed && <div className="empty-state">Conectando con las 6 BDs…</div>}
+                  </div>
+                </div>
+              )}
+
               {/* CASO 1: CLIC EN UNO DE LOS 6 AGENTES IA → ACTIVIDAD EN VIVO */}
               {focusedAgent && focusedAgentId && (
                 <div>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '10px', borderBottom: '1px solid #e9e6de', paddingBottom: '12px', marginBottom: '12px' }}>
                     <div>
                       <span style={{ fontSize: '10px', fontWeight: 800, color: focusedAgent.accent, letterSpacing: '.12em' }}>
-                        🤖 AGENTE IA · SE ACTUALIZA CADA 10 s
+                        🤖 AGENTE IA · EN VIVO
                       </span>
                       <h3 style={{ margin: '3px 0 0', fontSize: '19px', fontFamily: "'Playfair Display', Georgia, serif", color: '#183a31' }}>
                         {focusedAgent.name}
@@ -1088,10 +1396,10 @@ export const ArchitectureConsole: React.FC = () => {
                     </div>
                     <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
                       <span
-                        className={`badge ${agentActivity?.estado === 'ACTIVO' ? 'badge-APR' : 'badge-ERR'}`}
+                        className={`badge ${agentEstado(focusedAgentId) === 'ACTIVO' ? 'badge-APR' : 'badge-ERR'}`}
                         style={{ fontSize: '11px', padding: '5px 11px' }}
                       >
-                        {agentActivity ? `${agentActivity.estado} · última operación ${formatAgo(agentActivity.segundosDesdeUltima)}` : 'Cargando…'}
+                        {isPulsing(focusedAgentId) ? '● ESCRIBIENDO AHORA' : `${agentEstado(focusedAgentId)} · última operación ${formatAgo(agentLiveSecs(focusedAgentId))}`}
                       </span>
                       <span className="demo-badge">X-Sede: {focusedAgent.headerXSede}</span>
                       {!isStrictDba && (
@@ -1419,6 +1727,8 @@ export const ArchitectureConsole: React.FC = () => {
                   )}
                 </div>
               )}
+            </div>
+            </aside>
             </div>
           </section>
         </div>

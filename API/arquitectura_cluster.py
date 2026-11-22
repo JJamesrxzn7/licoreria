@@ -1617,9 +1617,9 @@ def run_mini_etl_to_dwh() -> dict[str, Any]:
                 iva = round(sub * 0.15, 2)
                 cur.execute(
                     "INSERT INTO fact_ventas (id_sede, id_producto, id_tiempo, usuario_rbac, rol_rbac, cantidad_botellas, "
-                    "subtotal_usd, iva_usd, total_venta_usd, etl_lote, fecha_carga_etl) "
-                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
-                    (fuente, id_prod, id_tiempo, usuario, rol, botellas, sub, iva, round(sub + iva, 2), lote, fecha.replace(tzinfo=None)),
+                    "subtotal_usd, iva_usd, total_venta_usd, etl_lote) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                    (fuente, id_prod, id_tiempo, usuario, rol, botellas, sub, iva, round(sub + iva, 2), lote),
                 )
                 cargadas += 1
             cur.execute(
@@ -1635,6 +1635,27 @@ def run_mini_etl_to_dwh() -> dict[str, Any]:
         except Exception as exc:
             conn.rollback()
             fuentes.append({"tabla": f"ETL {fuente} -> fact_ventas", "accion": "LOAD (ROLLBACK)", "id": None, "ok": False, "error": str(exc)[:200]})
+
+    # Bitácora de corridas (también las que cargan 0 filas) para el feed en vivo del Agente 5
+    try:
+        cur.execute(
+            "CREATE TABLE IF NOT EXISTS etl_corridas ("
+            " id INT AUTO_INCREMENT PRIMARY KEY,"
+            " lote VARCHAR(40) NOT NULL,"
+            " fecha_corrida DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,"
+            " hechos_cargados INT NOT NULL DEFAULT 0,"
+            " detalle VARCHAR(255) NULL)"
+        )
+        resumen = " · ".join(
+            f"{f['tabla'].replace('ETL ', '').replace(' -> fact_ventas', '')}: {'OK' if f['ok'] else 'OFFLINE'}" for f in fuentes
+        )
+        cur.execute(
+            "INSERT INTO etl_corridas (lote, hechos_cargados, detalle) VALUES (%s, %s, %s)",
+            (lote, total, resumen[:255]),
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
     cur.close()
     conn.close()
     return {"lote": lote, "hechosCargados": total, "fuentes": fuentes}
@@ -1940,3 +1961,115 @@ async def powerbi_salud_nodos():
         }
         for n in nodes
     ]
+
+
+# ==============================================================================
+# FEED EN VIVO: ÚLTIMAS ACCIONES DE LOS 6 AGENTES (consulta ligera, para sondear cada pocos segundos)
+# ==============================================================================
+
+def _feed_agent_sync(agent_num: int, limit: int) -> dict[str, Any]:
+    """Últimas `limit` acciones de un agente. `segundos` se calcula con el reloj de la propia BD (sin desfase)."""
+    ag = AGENTES_IA[agent_num]
+    configs = get_cluster_6dbs_config()
+    cfg = configs[ag["sede"]]
+    like = f"{ag['prefijo']}%"
+    agent_id = f"agente-{agent_num}"
+    eventos: list[dict[str, Any]] = []
+
+    def ev(ident: Any, segundos: Any, usuario: Any, modulo: Any, detalle: Any, monto: Any) -> dict[str, Any]:
+        return {
+            "key": f"{agent_id}:{ident}",
+            "agentId": agent_id,
+            "codigo": ag["codigo"],
+            "sede": ag["sede"],
+            "bdId": cfg["bdId"],
+            "segundos": max(0, int(segundos)) if segundos is not None else None,
+            "usuario": usuario,
+            "modulo": modulo,
+            "detalle": str(detalle or "")[:160],
+            "monto": float(monto or 0),
+        }
+
+    try:
+        if agent_num in (1, 4):
+            conn, _ = connect_mariadb_with_fallback(cfg)
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT id_op, TIMESTAMPDIFF(SECOND, fecha_hora, NOW()), usuario_rbac, modulo, operacion, monto_usd "
+                "FROM operaciones_agentes_ia WHERE agente_nombre LIKE %s ORDER BY id_op DESC LIMIT %s",
+                (like, limit),
+            )
+            eventos = [ev(*r) for r in cur.fetchall()]
+            cur.close()
+            conn.close()
+        elif agent_num == 2:
+            cli, _ = connect_mongo_with_fallback(cfg)
+            col = cli[cfg["database"]]["eventos_agentes"]
+            ahora = datetime.now()
+            for d in col.find({"agente": {"$regex": f"^{ag['prefijo']}"}}).sort("_id", -1).limit(limit):
+                try:
+                    secs = (ahora - datetime.fromisoformat(str(d.get("timestamp")))).total_seconds()
+                except ValueError:
+                    secs = None
+                eventos.append(ev(d.get("evento_id") or d.get("_id"), secs, d.get("usuario_rbac"), d.get("modulo"),
+                                  f"Documento JSON: {json.dumps(d.get('detalle', {}), ensure_ascii=False, default=str)}", 0))
+            cli.close()
+        elif agent_num == 3:
+            conn, _ = connect_mariadb_with_fallback(cfg)
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT id, TIMESTAMPDIFF(SECOND, fecha_registro, NOW()), usuario_rbac, modulo, "
+                "CONCAT('Lote ', codigo_referencia, ' → partición p', particion_hash), monto_usd "
+                "FROM historico_transacciones ORDER BY id DESC LIMIT %s",
+                (limit,),
+            )
+            eventos = [ev(*r) for r in cur.fetchall()]
+            cur.close()
+            conn.close()
+        elif agent_num == 5:
+            conn, _ = connect_mariadb_with_fallback(cfg)
+            cur = conn.cursor()
+            try:
+                cur.execute(
+                    "SELECT id, TIMESTAMPDIFF(SECOND, fecha_corrida, NOW()), 'etl', 'VENTAS', "
+                    "CONCAT('ETL ', lote, ': ', hechos_cargados, ' hechos cargados (', COALESCE(detalle, ''), ')'), "
+                    "(SELECT COALESCE(SUM(total_venta_usd), 0) FROM fact_ventas f WHERE f.etl_lote = c.lote) "
+                    "FROM etl_corridas c ORDER BY id DESC LIMIT %s",
+                    (limit,),
+                )
+                eventos = [ev(*r) for r in cur.fetchall()]
+            except Exception:
+                eventos = []
+            cur.close()
+            conn.close()
+        else:
+            conn, _ = connect_postgres_with_fallback(cfg)
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT id_op, EXTRACT(EPOCH FROM (now() - fecha_hora))::int, usuario_rbac, modulo, "
+                    "operacion || ' (WAN ' || COALESCE(latencia_wan_ms::text, '?') || ' ms)', monto_usd "
+                    "FROM operaciones_agentes_cloud WHERE agente_nombre LIKE %s ORDER BY id_op DESC LIMIT %s",
+                    (like, limit),
+                )
+                eventos = [ev(*r) for r in cur.fetchall()]
+            conn.close()
+        ultima = eventos[0]["segundos"] if eventos else None
+        return {"agentId": agent_id, "online": True, "segundosDesdeUltima": ultima, "eventos": eventos}
+    except Exception as exc:
+        return {"agentId": agent_id, "online": False, "segundosDesdeUltima": None, "eventos": [], "error": str(exc)[:200]}
+
+
+@router.get("/api/agentes/feed")
+async def get_agents_live_feed(limit: int = Query(default=8, ge=1, le=50)):
+    """Feed unificado de las 6 BDs: estado por agente + últimas acciones ordenadas de la más nueva a la más vieja."""
+    t0 = time.perf_counter()
+    results = await asyncio.gather(*(asyncio.to_thread(_feed_agent_sync, n, limit) for n in AGENTES_IA))
+    eventos = [e for r in results for e in r["eventos"]]
+    eventos.sort(key=lambda e: (e["segundos"] if e["segundos"] is not None else 10**9))
+    return {
+        "timestamp": datetime.now().isoformat(),
+        "apiReplica": REPLICA_ID,
+        "latencyMs": round((time.perf_counter() - t0) * 1000, 2),
+        "agentes": {r["agentId"]: {k: v for k, v in r.items() if k != "eventos"} for r in results},
+        "eventos": eventos,
+    }
