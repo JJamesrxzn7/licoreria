@@ -6,6 +6,7 @@ import {
 } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { isDbaUser, isSuperAdmin } from '../rolePermissions';
+import { ParalelismoReal, ReplicacionDR } from './ReplicacionDR';
 
 const configuredApiUrl = import.meta.env.VITE_API_URL?.trim();
 const isGithubPages = typeof window !== 'undefined' && window.location.hostname.endsWith('github.io');
@@ -358,6 +359,28 @@ interface FeedResponse {
   eventos: FeedEvent[];
 }
 
+interface OperacionDetalle {
+  agentId: string;
+  codigo: string;
+  agente: string;
+  bdId: string;
+  nodeId: string;
+  baseDatos: string;
+  motor: string;
+  puerto: number;
+  operacion: Record<string, string | number | boolean | null>;
+  documento: {
+    tabla: string;
+    id: string;
+    modulo: string | null;
+    fila: Record<string, string | number | boolean | null> | null;
+    consultaSql: string;
+  } | null;
+  replica: { nodo: string; tabla: string; presente: boolean | null; replicadoEn?: string | null; error?: string } | null;
+  consultaSqlOperacion: string;
+  sinDocumento?: string | null;
+}
+
 interface LbStatus {
   balanceador: string;
   replicasOnline: number;
@@ -456,7 +479,7 @@ const BRANCH_IDENTITIES = [
 export const ArchitectureConsole: React.FC = () => {
   const { user } = useAuth();
   const isStrictDba = isDbaUser(user) && !isSuperAdmin(user);
-  const [activeTab, setActiveTab] = useState<'diagram_vs' | 'powerbi_tab' | 'global_dba' | 'board' | 'dba_prompt' | 'twopc'>('diagram_vs');
+  const [activeTab, setActiveTab] = useState<'diagram_vs' | 'powerbi_tab' | 'global_dba' | 'board' | 'dba_prompt' | 'twopc' | 'replicacion' | 'paralelismo'>('diagram_vs');
   const [topology, setTopology] = useState<TopologyResponse | null>(null);
   const [loadingTopo, setLoadingTopo] = useState(false);
 
@@ -690,7 +713,12 @@ export const ArchitectureConsole: React.FC = () => {
     }
   }, [selectedNodeId, sqlText, fetchNodeLogs]);
 
+  // Carga inicial UNA sola vez. Antes dependía de runDbaQuery, que cambia con cada edición del SQL,
+  // y volvía a lanzar la consulta por defecto de Cuenca encima de la consulta del usuario.
+  const cargaInicialHecha = useRef(false);
   useEffect(() => {
+    if (cargaInicialHecha.current) return;
+    cargaInicialHecha.current = true;
     void fetchTopology();
     void fetchGlobalDbaConsole('TODAS', 'TODOS');
     void fetchPowerBiStar();
@@ -755,6 +783,38 @@ export const ArchitectureConsole: React.FC = () => {
     } else if (elemId === 'power-bi') {
       void fetchPowerBiStar();
     }
+  };
+
+  // ---------- Detalle de UNA operación de un agente (qué hizo exactamente y dónde quedó) ----------
+  const [opDetalle, setOpDetalle] = useState<{ agentId: AgentId; opId: string; data: OperacionDetalle | null; error: string } | null>(null);
+
+  const opIdDeFila = (agentId: AgentId, fila: Record<string, string | number | null>): string => {
+    const v = agentId === 'agente-2' ? fila.evento_id
+      : agentId === 'agente-3' ? fila.id
+        : agentId === 'agente-5' ? fila.etl_lote
+          : fila.id_op;
+    return String(v ?? '');
+  };
+
+  const abrirDetalleOperacion = async (agentId: AgentId, opId: string) => {
+    if (!opId) return;
+    setOpDetalle({ agentId, opId, data: null, error: '' });
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/agentes/${agentId}/operacion/${encodeURIComponent(opId)}`);
+      const body = await res.json();
+      if (!res.ok) throw new Error(body?.detail || `HTTP ${res.status}`);
+      setOpDetalle({ agentId, opId, data: body, error: '' });
+    } catch (err) {
+      setOpDetalle({ agentId, opId, data: null, error: err instanceof Error ? err.message : 'Error' });
+    }
+  };
+
+  const abrirEnTerminal = (nodeId: string, sql: string) => {
+    setOpDetalle(null);
+    setSelectedNodeId(nodeId);
+    setSqlText(sql);
+    setActiveTab('dba_prompt');
+    void runDbaQuery(nodeId, sql);
   };
 
   const handleSelectNodeForDba = (nodeId: string, defaultSql?: string) => {
@@ -1086,6 +1146,92 @@ export const ArchitectureConsole: React.FC = () => {
   return (
     <div>
       <style>{LIVE_CSS}</style>
+
+      {/* ==================== DETALLE DE UNA OPERACIÓN DE AGENTE (ventana superpuesta) ==================== */}
+      {opDetalle && (
+        <div
+          onClick={() => setOpDetalle(null)}
+          style={{ position: 'fixed', inset: 0, zIndex: 60, background: 'rgba(20,24,20,0.45)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '20px' }}
+        >
+          <div
+            onClick={e => e.stopPropagation()}
+            style={{ width: 'min(860px, 100%)', maxHeight: '88vh', overflowY: 'auto', background: '#faf9f6', borderRadius: '14px', border: `3px solid ${AGENT_DETAILS[opDetalle.agentId].accent}`, padding: '18px 20px', boxShadow: '0 20px 60px rgba(0,0,0,0.3)' }}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '10px', marginBottom: '10px' }}>
+              <div>
+                <span style={{ fontSize: '10px', fontWeight: 800, letterSpacing: '.12em', color: AGENT_DETAILS[opDetalle.agentId].accent }}>
+                  DETALLE DE LA OPERACIÓN · {AGENT_DETAILS[opDetalle.agentId].code}
+                </span>
+                <h3 style={{ margin: '3px 0 0', fontSize: '19px', fontFamily: "'Playfair Display', Georgia, serif", color: '#183a31' }}>
+                  {AGENT_DETAILS[opDetalle.agentId].name} · operación <code>{opDetalle.opId}</code>
+                </h3>
+              </div>
+              <button type="button" className="btn btn-outline" onClick={() => setOpDetalle(null)}>Cerrar</button>
+            </div>
+
+            {!opDetalle.data && !opDetalle.error && <div className="empty-state">Leyendo la operación desde su base de datos…</div>}
+            {opDetalle.error && <div style={{ padding: '10px', background: '#f8e9e8', borderRadius: '8px', color: '#9a3937', fontSize: '12px' }}>{opDetalle.error}</div>}
+
+            {opDetalle.data && (() => {
+              const d = opDetalle.data;
+              const kv = (obj: Record<string, string | number | boolean | null>) => (
+                <div style={{ display: 'grid', gridTemplateColumns: 'minmax(130px, max-content) 1fr', gap: '3px 12px', fontSize: '12px' }}>
+                  {Object.entries(obj).map(([k, v]) => (
+                    <React.Fragment key={k}>
+                      <span style={{ color: '#787970' }}>{k}</span>
+                      <span style={{ fontWeight: 600, wordBreak: 'break-word', whiteSpace: 'pre-wrap' }}>
+                        {v === null ? '—' : /^\d{4}-\d{2}-\d{2}T/.test(String(v)) ? String(v).replace('T', ' ').slice(0, 19) : String(v)}
+                      </span>
+                    </React.Fragment>
+                  ))}
+                </div>
+              );
+              return (
+                <>
+                  <div style={{ fontSize: '12px', color: '#575950', marginBottom: '10px' }}>
+                    Escrita en <strong>{d.bdId}</strong> · {d.motor} · base <code>{d.baseDatos}</code> (:{d.puerto})
+                  </div>
+                  <div style={{ background: '#fff', border: '1px solid #e9e6de', borderRadius: '10px', padding: '12px', marginBottom: '10px' }}>
+                    <strong style={{ color: '#782c3e', fontSize: '12.5px', display: 'block', marginBottom: '6px' }}>1. La transacción (qué acción hizo, quién y cuándo)</strong>
+                    {kv(d.operacion)}
+                  </div>
+                  <div style={{ background: '#fff', border: '1px solid #e9e6de', borderRadius: '10px', padding: '12px', marginBottom: '10px' }}>
+                    <strong style={{ color: '#183a31', fontSize: '12.5px', display: 'block', marginBottom: '6px' }}>
+                      2. Lo que dejó en el módulo{d.documento?.modulo ? ` de ${d.documento.modulo}` : ''}
+                    </strong>
+                    {d.documento ? (
+                      <>
+                        <div style={{ fontSize: '12px', marginBottom: '6px' }}>Tabla <code>{d.documento.tabla}</code> · registro <code>{d.documento.id}</code></div>
+                        {d.documento.fila ? kv(d.documento.fila) : <div style={{ fontSize: '12px', color: '#9a3937' }}>El registro ya no existe en la tabla.</div>}
+                      </>
+                    ) : (
+                      <div style={{ fontSize: '12px', color: '#787970' }}>{d.sinDocumento}</div>
+                    )}
+                  </div>
+                  {d.replica && (
+                    <div style={{ background: d.replica.presente ? '#eff5f1' : '#fdf6e7', border: '1px solid #e9e6de', borderRadius: '10px', padding: '10px 12px', marginBottom: '10px', fontSize: '12px' }}>
+                      <strong>3. Réplica:</strong>{' '}
+                      {d.replica.presente === true && <>ya copiada en <strong>{d.replica.nodo}</strong> (<code>{d.replica.tabla}</code>) el {String(d.replica.replicadoEn ?? '').replace('T', ' ').slice(0, 19)}.</>}
+                      {d.replica.presente === false && <>todavía no está en <strong>{d.replica.nodo}</strong>: se copiará en la próxima ronda (replicación asíncrona).</>}
+                      {d.replica.presente === null && <>no se pudo consultar {d.replica.nodo} ({d.replica.error}).</>}
+                    </div>
+                  )}
+                  <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                    {d.documento && (
+                      <button type="button" className="btn btn-primary" onClick={() => abrirEnTerminal(d.nodeId, d.documento!.consultaSql)}>
+                        <Terminal size={14} /> Ir al módulo: abrir {d.documento.tabla.split(' ')[0]} en la Terminal DBA
+                      </button>
+                    )}
+                    <button type="button" className="btn btn-outline" onClick={() => abrirEnTerminal(d.nodeId, d.consultaSqlOperacion)}>
+                      Ver en la bitácora del agente
+                    </button>
+                  </div>
+                </>
+              );
+            })()}
+          </div>
+        </div>
+      )}
       {/* ENCABEZADO CON LA ESTÉTICA DE LA CAVA */}
       <div className="page-heading">
         <div>
@@ -1126,6 +1272,8 @@ export const ArchitectureConsole: React.FC = () => {
           { id: 'global_dba', label: '4. Monitor Global Unificado (6 BDs en Paralelo)', icon: Filter, show: true },
           { id: 'board', label: '5. Identidad por Sucursal & Tarjetas de Nodos', icon: Network, show: true },
           { id: 'twopc', label: '6. Simulador 2PC (Exclusivo Admin / Arquitecto)', icon: ShieldCheck, show: !isStrictDba },
+          { id: 'replicacion', label: '7. Replicación en anillo y plan DR', icon: Layers, show: true },
+          { id: 'paralelismo', label: '8. Paralelismo real (medido)', icon: Cpu, show: true },
         ].filter(t => t.show).map(tab => {
           const Icon = tab.icon;
           const active = activeTab === tab.id;
@@ -1496,8 +1644,8 @@ export const ArchitectureConsole: React.FC = () => {
                             key={e.key}
                             type="button"
                             className={isNewKey(e.key) ? 'lc-row-new' : undefined}
-                            onClick={() => { if (isAgentId(e.agentId)) handleClickDiagramNode(e.agentId); }}
-                            title="Ver el detalle de este agente"
+                            onClick={() => { if (isAgentId(e.agentId)) void abrirDetalleOperacion(e.agentId, e.key.slice(e.key.indexOf(':') + 1)); }}
+                            title="Ver exactamente qué hizo esta operación"
                             style={{
                               textAlign: 'left', cursor: 'pointer', background: '#fff',
                               border: '1px solid #e9e6de', borderLeft: `4px solid ${ag?.accent ?? '#9e9d95'}`,
@@ -1627,7 +1775,7 @@ export const ArchitectureConsole: React.FC = () => {
                       <div style={{ background: '#ffffff', border: '1px solid #e9e6de', borderRadius: '10px', padding: '12px' }}>
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
                           <strong style={{ fontSize: '12.5px', color: '#183a31' }}>
-                            Últimas filas que {focusedAgent.code} dejó en {agentActivity.bdId} ({agentActivity.baseDatos}):
+                            Últimas filas que {focusedAgent.code} dejó en {agentActivity.bdId} ({agentActivity.baseDatos}) · clic en una fila para ver el detalle:
                           </strong>
                           <span style={{ fontSize: '11px', color: '#267154', fontWeight: 700 }}>
                             {agentActivity.ultimos.length} filas · {agentActivity.latencyMs} ms
@@ -1640,7 +1788,12 @@ export const ArchitectureConsole: React.FC = () => {
                             </thead>
                             <tbody>
                               {agentActivity.ultimos.map((r, ri) => (
-                                <tr key={ri}>
+                                <tr
+                                  key={ri}
+                                  onClick={() => void abrirDetalleOperacion(focusedAgentId, opIdDeFila(focusedAgentId, r))}
+                                  title="Clic para ver exactamente qué hizo esta operación"
+                                  style={{ cursor: 'pointer' }}
+                                >
                                   {Object.values(r).map((v, ci) => (
                                     <td key={ci} style={{ whiteSpace: 'normal', maxWidth: '340px' }}>
                                       {v === null ? '—' : /^\d{4}-\d{2}-\d{2}T/.test(String(v)) ? String(v).replace('T', ' ').slice(0, 19) : String(v)}
@@ -2563,6 +2716,9 @@ export const ArchitectureConsole: React.FC = () => {
       )}
 
       {/* ==================== TAB 6: SIMULADOR 2PC (PREGUNTAS 4 Y 5) ==================== */}
+      {activeTab === 'replicacion' && <ReplicacionDR />}
+      {activeTab === 'paralelismo' && <ParalelismoReal />}
+
       {activeTab === 'twopc' && (
         <div>
           <section className="card">

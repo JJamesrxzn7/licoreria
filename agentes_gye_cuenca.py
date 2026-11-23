@@ -142,11 +142,31 @@ async def run_agente_6_cuenca_cloud(client: httpx.AsyncClient, cycle: int):
 async def run_cycle(cycle: int):
     print(f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] === RONDA #{cycle}: EJECUTANDO 3 AGENTES IA (LAPTOP: GYE + DWH + CUENCA) ===")
     async with httpx.AsyncClient() as client:
-        await asyncio.gather(
+        resultados = await asyncio.gather(
             run_agente_4_guayaquil(client, cycle),
             run_agente_5_guayaquil_dwh(client, cycle),
             run_agente_6_cuenca_cloud(client, cycle),
+            return_exceptions=True,
         )
+        for nombre, res in zip(("Agente 4", "Agente 5", "Agente 6"), resultados):
+            if isinstance(res, Exception):
+                print(f"  [!] {nombre}: ERROR -> {res}")
+        await sincronizar_anillo(client)
+
+
+async def sincronizar_anillo(client: httpx.AsyncClient):
+    """Replicación en anillo Quito -> Guayaquil -> Cuenca -> Quito (una ronda por minuto)."""
+    for base in API_CANDIDATES:
+        try:
+            resp = await client.post(f"{base.rstrip('/')}/replicacion/sincronizar", timeout=60.0)
+            if resp.status_code == 200:
+                for e in resp.json()["enlaces"]:
+                    estado = f"{e['copiadas']} filas copiadas" if e["ok"] else f"ERROR: {e.get('error')}"
+                    print(f"  [Replicación {e['enlace']}] {estado}")
+                return
+        except Exception as exc:
+            print(f"  [!] Replicación: {exc}")
+    print("  [!] Replicación: API no disponible en esta ronda")
 
 
 async def main(run_once: bool = False, interval: int = 60):

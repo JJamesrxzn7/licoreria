@@ -708,6 +708,32 @@ class AgentOperationRequest(BaseModel):
     extraJson: dict[str, Any] | None = Field(default=None, description="Payload adicional JSON para NoSQL o ETL")
 
 
+_REF_COLUMNS_READY: set[str] = set()
+
+
+def _ensure_ref_columns_mariadb(cur, sede_key: str) -> None:
+    """Agrega (una vez por proceso) las columnas que enlazan cada operación con su documento de negocio."""
+    if sede_key in _REF_COLUMNS_READY:
+        return
+    cur.execute(
+        "ALTER TABLE operaciones_agentes_ia "
+        "ADD COLUMN IF NOT EXISTS tabla_ref VARCHAR(40) NULL, "
+        "ADD COLUMN IF NOT EXISTS documento_ref VARCHAR(60) NULL"
+    )
+    _REF_COLUMNS_READY.add(sede_key)
+
+
+def _ensure_ref_columns_pg(cur) -> None:
+    if "CUENCA" in _REF_COLUMNS_READY:
+        return
+    cur.execute(
+        "ALTER TABLE operaciones_agentes_cloud "
+        "ADD COLUMN IF NOT EXISTS tabla_ref VARCHAR(40) NULL, "
+        "ADD COLUMN IF NOT EXISTS documento_ref VARCHAR(60) NULL"
+    )
+    _REF_COLUMNS_READY.add("CUENCA")
+
+
 def _impactar_modulo_quito(cur, modulo: str, short_hex: str, usuario: str, payload: "AgentOperationRequest",
                            sub: float, iva: float, tot: float) -> dict[str, Any]:
     """Inserta en la tabla de negocio del módulo usando el esquema propio de BD 1 Quito."""
@@ -841,6 +867,18 @@ def handle_agent_routed_operation(
         except Exception as exc:
             impacto.append({"tabla": modulo_final.lower(), "accion": "INSERT", "id": None, "ok": False, "error": str(exc)[:200]})
 
+        # Enlace operación -> documento de negocio, para el detalle por operación en la GUI
+        doc_ref = next((i for i in impacto if i.get("ok") and i["tabla"] != "operaciones_agentes_ia" and i.get("id")), None)
+        if doc_ref:
+            try:
+                _ensure_ref_columns_mariadb(cur, sede_key)
+                cur.execute(
+                    "UPDATE operaciones_agentes_ia SET tabla_ref = %s, documento_ref = %s WHERE id_op = %s",
+                    (doc_ref["tabla"], str(doc_ref["id"]), op_id),
+                )
+            except Exception:
+                pass
+
         try:
             cur.execute(
                 "UPDATE rbac_matriz_15_usuarios SET ultima_actividad = CURRENT_TIMESTAMP WHERE username = %s",
@@ -921,6 +959,11 @@ def handle_agent_routed_operation(
                         (fac_c_id, sub, iva, tot),
                     )
                     impacto.append({"tabla": "frag_austral_facturas", "accion": "INSERT", "id": fac_c_id, "ok": True})
+                    _ensure_ref_columns_pg(cur)
+                    cur.execute(
+                        "UPDATE operaciones_agentes_cloud SET tabla_ref = 'frag_austral_facturas', documento_ref = %s WHERE id_op = %s",
+                        (fac_c_id, op_id),
+                    )
                 except Exception as exc:
                     impacto.append({"tabla": "frag_austral_facturas", "accion": "INSERT", "id": None, "ok": False, "error": str(exc)[:200]})
         conn.close()

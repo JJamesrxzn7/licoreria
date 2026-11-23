@@ -41,6 +41,7 @@ import postgres_modulos
 import postgres_usuarios
 import postgres_ventas
 import arquitectura_cluster
+import cluster_replicacion
 
 # Cargar variables de entorno desde .env (con fallback si python-dotenv no estuviera instalado)
 try:
@@ -59,6 +60,7 @@ except ImportError:
 logger = logging.getLogger(__name__)
 app = FastAPI(title="Licorería La Cava - API de Bases de Datos II")
 app.include_router(arquitectura_cluster.router)
+app.include_router(cluster_replicacion.router)
 audit_user_id: ContextVar[str | None] = ContextVar("audit_user_id", default=None)
 audit_client_ip: ContextVar[str | None] = ContextVar("audit_client_ip", default=None)
 
@@ -6533,7 +6535,7 @@ async def postgres_access_control(request: Request, call_next):
                            headers=headers)
 
    path = request.url.path
-   if path.startswith(('/api/arquitectura', '/api/dba', '/api/agentes', '/api/powerbi')) or not path.startswith("/api/") or request.method == "OPTIONS":
+   if path.startswith(('/api/arquitectura', '/api/dba', '/api/agentes', '/api/powerbi', '/api/replicacion', '/api/paralelismo')) or not path.startswith("/api/") or request.method == "OPTIONS":
        return await call_next(request)
    try:
        backend = database_backend()
