@@ -83,6 +83,9 @@ async def round_robin_proxy(request: Request, path: str = ""):
 
     body = await request.body()
     headers = {k: v for k, v in request.headers.items() if k.lower() not in ("host", "content-length")}
+    # IP real del cliente para la auditoría (las réplicas solo ven al balanceador)
+    if request.client and "x-forwarded-for" not in {k.lower() for k in headers}:
+        headers["X-Forwarded-For"] = request.client.host
 
     # Round-robin con failover: si la réplica elegida no acepta la conexión, se prueba la siguiente.
     caidas: list[str] = []

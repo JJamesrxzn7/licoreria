@@ -24,7 +24,11 @@ import asyncio
 from datetime import datetime
 import os
 import random
+import sys
 import httpx
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "API"))
+import generar_recepciones_entregas as app_flujo  # noqa: E402  (flujos reales de la app: compras, POS, bodega)
 
 API_CANDIDATES = [
     os.getenv("API_URL_LAPTOP", "http://127.0.0.1:8000/api"),
@@ -64,8 +68,38 @@ async def post_with_failover(client: httpx.AsyncClient, headers: dict, payload: 
     raise RuntimeError(f"No se pudo conectar a la API en {API_CANDIDATES}: {last_err}")
 
 
+PROB_ACCION_BODEGA = float(os.getenv("AG4_PROB_BODEGA", "0.4"))
+
+
+async def run_agente_4_bodega(client: httpx.AsyncClient, cycle: int):
+    """
+    Agente 4 trabajando como usuario de la app: crea y aprueba una compra (-> recepción), confirma una recepción,
+    vende en el POS (-> entrega) o despacha una entrega. La app lo audita con el usuario RBAC que lo hizo, y el
+    agente lo anota en su bitácora de BD 4 enlazado al documento.
+    """
+    doc = await asyncio.to_thread(app_flujo.accion_bodega)
+    user = doc["usuario"]
+    password, rol = next((p, r) for u, p, r, _, _ in USUARIOS_15_RBAC if u == user)
+    res = await post_with_failover(client, {"X-Sede": "GUAYAQUIL"}, {
+        "agente": "Agente-4-Guayaquil-OLTP",
+        "usuario": user,
+        "password": password,
+        "modulo": doc["modulo"],
+        "operacion": f"[Ciclo #{cycle}] [Bodega] {doc['accion']}"[:120],
+        "montoUsd": doc["monto"],
+        "documentoApp": {"tabla": doc["tabla"], "id": doc["id"], "accion": doc["accion"]},
+    })
+    print(f"  [Agente 4 | Bodega en la app] {doc['accion']} | Usr: {user} ({rol}) | bitácora BD 4 id {res['operationId']}")
+    return res
+
+
 async def run_agente_4_guayaquil(client: httpx.AsyncClient, cycle: int):
     """Agente 4 (X-Sede: GUAYAQUIL): Opera con los 15 usuarios y sus contraseñas en BD 4 (:3306)."""
+    if random.random() < PROB_ACCION_BODEGA:
+        try:
+            return await run_agente_4_bodega(client, cycle)
+        except Exception as exc:  # si la app no responde, el agente hace su operación normal
+            print(f"  [!] Agente 4 bodega: {exc}. Hace su operación OLTP normal.")
     user, password, rol, modulo, desc = random.choice(USUARIOS_15_RBAC)
     monto = round(random.uniform(85.0, 1450.0), 2)
     headers = {

@@ -298,9 +298,9 @@ const AGENT_DETAILS: Record<
     targetDbId: 'guayaquil-sql',
     targetDbName: 'BD 4 · MariaDB Guayaquil (:3306)',
     whatItDoes:
-      'Igual que el Agente 1 pero contra BD 4: cada 60 s un usuario RBAC al azar registra una operación en `operaciones_agentes_ia` y la API la replica en `facturas`, `compras`, `asientos` o el stock de `productos` según el módulo.',
+      'Igual que el Agente 1 pero contra BD 4: cada 60 s un usuario RBAC registra una operación en `operaciones_agentes_ia` y la API la refleja en `facturas`, `compras`, `asientos` o el stock de `productos`. En ~40 % de los ciclos trabaja en BODEGA usando la app como un usuario: crea y aprueba una compra (genera una recepción), confirma una recepción, vende en el POS (genera una entrega) o despacha una entrega.',
     whereToSeeIt:
-      'Lo ves aquí, en el Monitor Global y en la Terminal DBA sobre BD 4. Las filas que crea llevan prefijo AGF-G-, AGC-G- y AGA-G-.',
+      'Aquí, en el Monitor Global y en la Terminal DBA sobre BD 4 (prefijos AGF-G-, AGC-G-, AGA-G-). Sus acciones de bodega aparecen en las pantallas Recepciones y Entregas, y en la pantalla Auditoría con el usuario que las hizo.',
     credentialsUsed: 'Rota entre los 15 usuarios operativos con su contraseña real',
     accent: '#183a31',
   },
@@ -374,8 +374,13 @@ interface OperacionDetalle {
     id: string;
     modulo: string | null;
     fila: Record<string, string | number | boolean | null> | null;
-    consultaSql: string;
+    consultaSql: string | null;
+    appRoute?: string;
   } | null;
+  auditoria?: {
+    bd: Array<Record<string, string | number | boolean | null>>;
+    app: Array<Record<string, string | number | boolean | null>>;
+  };
   replica: { nodo: string; tabla: string; presente: boolean | null; replicadoEn?: string | null; error?: string } | null;
   consultaSqlOperacion: string;
   sinDocumento?: string | null;
@@ -476,7 +481,7 @@ const BRANCH_IDENTITIES = [
   },
 ];
 
-export const ArchitectureConsole: React.FC = () => {
+export const ArchitectureConsole: React.FC<{ onNavigate?: (route: string) => void }> = ({ onNavigate }) => {
   const { user } = useAuth();
   const isStrictDba = isDbaUser(user) && !isSuperAdmin(user);
   const [activeTab, setActiveTab] = useState<'diagram_vs' | 'powerbi_tab' | 'global_dba' | 'board' | 'dba_prompt' | 'twopc' | 'replicacion' | 'paralelismo'>('diagram_vs');
@@ -1216,9 +1221,45 @@ export const ArchitectureConsole: React.FC = () => {
                       {d.replica.presente === null && <>no se pudo consultar {d.replica.nodo} ({d.replica.error}).</>}
                     </div>
                   )}
+                  {d.auditoria && (d.auditoria.bd.length > 0 || d.auditoria.app.length > 0) && (
+                    <div style={{ background: '#fff', border: '1px solid #e9e6de', borderRadius: '10px', padding: '12px', marginBottom: '10px' }}>
+                      <strong style={{ color: '#25251f', fontSize: '12.5px', display: 'block', marginBottom: '6px' }}>
+                        4. Auditoría (quién lo hizo, cuándo y qué tablas tocó)
+                      </strong>
+                      {d.auditoria.bd.length > 0 && (
+                        <>
+                          <div style={{ fontSize: '11.5px', color: '#575950', marginBottom: '4px' }}>En la bitácora de auditoría de {d.bdId}:</div>
+                          <ul style={{ margin: '0 0 8px', paddingLeft: '18px', fontSize: '11.5px' }}>
+                            {d.auditoria.bd.map((a, i) => (
+                              <li key={i}>
+                                {String(a.fecha_hora ?? '').replace('T', ' ').slice(0, 19)} · <code>{String(a.usuario)}</code> · {String(a.accion ?? a.evento ?? '')} {a.tabla ? <code>{String(a.tabla)}</code> : null}
+                              </li>
+                            ))}
+                          </ul>
+                        </>
+                      )}
+                      {d.auditoria.app.length > 0 && (
+                        <>
+                          <div style={{ fontSize: '11.5px', color: '#575950', marginBottom: '4px' }}>En la auditoría de la app principal (pantalla Auditoría):</div>
+                          <ul style={{ margin: 0, paddingLeft: '18px', fontSize: '11.5px' }}>
+                            {d.auditoria.app.map((a, i) => (
+                              <li key={i}>
+                                {String(a.fecha_hora ?? '').replace('T', ' ').slice(0, 19)} · <code>{String(a.usuario ?? 'sistema (trigger)')}</code> · {String(a.accion)} <code>{String(a.tabla)}</code>
+                              </li>
+                            ))}
+                          </ul>
+                        </>
+                      )}
+                    </div>
+                  )}
                   <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-                    {d.documento && (
-                      <button type="button" className="btn btn-primary" onClick={() => abrirEnTerminal(d.nodeId, d.documento!.consultaSql)}>
+                    {d.documento?.appRoute && onNavigate && (
+                      <button type="button" className="btn btn-primary" onClick={() => { setOpDetalle(null); onNavigate(d.documento!.appRoute!); }}>
+                        Ir al módulo: abrir la pantalla {d.documento.modulo}
+                      </button>
+                    )}
+                    {d.documento?.consultaSql && (
+                      <button type="button" className="btn btn-primary" onClick={() => abrirEnTerminal(d.nodeId, d.documento!.consultaSql!)}>
                         <Terminal size={14} /> Ir al módulo: abrir {d.documento.tabla.split(' ')[0]} en la Terminal DBA
                       </button>
                     )}

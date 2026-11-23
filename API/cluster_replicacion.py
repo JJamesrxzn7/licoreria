@@ -34,8 +34,10 @@ from arquitectura_cluster import (
     connect_mongo_with_fallback,
     connect_postgres_with_fallback,
     get_cluster_6dbs_config,
+    registrar_auditoria,
     serialize_value,
 )
+import mysql.connector
 
 router = APIRouter(tags=["Replicación en anillo, DR y paralelismo"])
 
@@ -158,6 +160,12 @@ def sincronizar_enlace(enlace: dict) -> dict[str, Any]:
             cur_d.close()
         finally:
             conn_d.close()
+    if copiadas:
+        # La copia queda auditada en la BD que la recibe
+        registrar_auditoria(enlace["destino"], "SYS-REPLICA", [{
+            "tabla": enlace["tabla"], "accion": "INSERT replicación",
+            "id": f"id_origen {marca + 1}..{int(filas[-1][0])}",
+        }], {"enlace": enlace["id"], "origen": enlace["origen"], "filas_copiadas": copiadas, "replica_api": REPLICA_ID}, "")
     return {**res, "ok": True, "copiadas": copiadas, "marcaDeAgua": marca,
             "nuevaMarca": int(filas[-1][0]) if filas else marca, "ms": round((time.perf_counter() - t0) * 1000, 1)}
 
@@ -273,6 +281,57 @@ MODULO_DE_TABLA = {"facturas": "Ventas", "frag_austral_facturas": "Ventas", "com
                    "asientos": "Contabilidad", "productos": "Inventarios"}
 
 
+APP_DOCS = {
+    # tabla en la app principal -> (consulta cabecera, consulta detalle, ruta de la pantalla, módulo)
+    "RECEPCIONES": (
+        "SELECT TRIM(id_Recibo) AS recepcion, TRIM(id_Compra) AS orden_compra, rec_Descripcion AS descripcion, "
+        "rec_FechaHora AS fecha, ESTADO_REC AS estado FROM RECEPCIONES WHERE id_Recibo = %s",
+        "SELECT TRIM(D.id_Producto) AS producto, TRIM(P.pro_Descripcion) AS nombre, D.pxr_Cantidad AS solicitado, "
+        "D.pxr_Qty_Recibida AS recibido, D.pxr_Motivo AS motivo, D.ESTADO_PxREC AS estado "
+        "FROM PROxREC D LEFT JOIN PRODUCTOS P ON P.id_Producto = D.id_Producto WHERE D.id_Recibo = %s",
+        "receptions", "Bodega · Recepciones",
+    ),
+    "ENTREGAS": (
+        "SELECT TRIM(id_Entrega) AS entrega, TRIM(id_Factura) AS factura, ent_Descripcion AS descripcion, "
+        "ent_FechaHora AS fecha, ESTADO_ENT AS estado FROM ENTREGAS WHERE id_Entrega = %s",
+        "SELECT TRIM(D.id_Producto) AS producto, TRIM(P.pro_Descripcion) AS nombre, D.pxe_Cantidad AS solicitado, "
+        "D.pxe_Qty_Entregada AS entregado, D.pxe_Motivo AS motivo, D.ESTADO_PxENT AS estado "
+        "FROM PROxENT D LEFT JOIN PRODUCTOS P ON P.id_Producto = D.id_Producto WHERE D.id_Entrega = %s",
+        "deliveries", "Bodega · Entregas",
+    ),
+}
+
+
+def _app_query(sql: str, params: tuple = ()) -> list[dict[str, Any]]:
+    """Consulta la base principal de la app (la que leen las pantallas de negocio)."""
+    conn = mysql.connector.connect(
+        host=os.getenv("MARIADB_HOST", "localhost"), port=int(os.getenv("MARIADB_PORT", "3307")),
+        user=os.getenv("MARIADB_USER", "root"), password=os.getenv("MARIADB_PASSWORD", ""),
+        database=os.getenv("MARIADB_DATABASE", "licoreriadatabase"), use_pure=True, connection_timeout=4,
+    )
+    try:
+        cur = conn.cursor()
+        cur.execute(sql, params)
+        filas = _rows_as_dicts(cur)
+        cur.close()
+        return filas
+    finally:
+        conn.close()
+
+
+def _auditoria_de_operacion(sede: str, op_id: str) -> list[dict[str, Any]]:
+    patron = f'%"operacion_id": "{op_id}"%'
+    try:
+        if get_cluster_6dbs_config()[sede]["engineType"] == "postgresql":
+            return _query(sede, "SELECT fecha_hora, usuario_cloud AS usuario, evento, detalle FROM log_auditoria_cloud "
+                                "WHERE detalle LIKE %s ORDER BY id_log", (patron,))
+        return _query(sede, "SELECT log_FechaHora AS fecha_hora, id_Usuario AS usuario, log_TablaAfectada AS tabla, "
+                            "log_Accion AS accion, log_IP AS ip FROM log_auditoria WHERE log_ValorNuevo LIKE %s "
+                            "ORDER BY log_FechaHora", (patron,))
+    except Exception:
+        return []
+
+
 def _detalle_oltp(sede: str, agent_num: int, op_id: str) -> dict[str, Any]:
     tabla = TABLA_ORIGEN[sede]
     filas = _query(sede, f"SELECT * FROM {tabla} WHERE id_op = %s", (int(op_id),))
@@ -280,8 +339,29 @@ def _detalle_oltp(sede: str, agent_num: int, op_id: str) -> dict[str, Any]:
         raise HTTPException(status_code=404, detail="Operación no encontrada.")
     op = filas[0]
     documento = None
+    auditoria_app: list[dict[str, Any]] = []
     tabla_ref, doc_ref = op.get("tabla_ref"), op.get("documento_ref")
-    if tabla_ref and doc_ref and tabla_ref in DOC_KEYS[sede]:
+    if tabla_ref and doc_ref and tabla_ref.startswith("app:") and tabla_ref[4:] in APP_DOCS:
+        sql_cab, sql_det, ruta, modulo = APP_DOCS[tabla_ref[4:]]
+        try:
+            cab = _app_query(sql_cab, (doc_ref,))
+            det = _app_query(sql_det, (doc_ref,))
+            auditoria_app = _app_query(
+                "SELECT log_FechaHora AS fecha_hora, id_Usuario AS usuario, log_TablaAfectada AS tabla, log_Accion AS accion "
+                "FROM log_auditoria WHERE log_ValorNuevo LIKE %s OR log_ValorAnterior LIKE %s ORDER BY log_FechaHora DESC LIMIT 12",
+                (f"%{doc_ref}%", f"%{doc_ref}%"),
+            )
+            fila = dict(cab[0]) if cab else None
+            if fila is not None:
+                fila["productos"] = "\n".join(
+                    " · ".join(f"{k}: {v}" for k, v in d.items() if v not in (None, "")) for d in det
+                )
+            documento = {"tabla": f"{tabla_ref[4:]} (app principal)", "id": doc_ref, "modulo": modulo, "fila": fila,
+                         "consultaSql": None, "appRoute": ruta}
+        except Exception as exc:
+            documento = {"tabla": f"{tabla_ref[4:]} (app principal)", "id": doc_ref, "modulo": modulo,
+                         "fila": {"error": f"No se pudo leer la base de la app: {str(exc)[:150]}"}, "consultaSql": None, "appRoute": ruta}
+    elif tabla_ref and doc_ref and tabla_ref in DOC_KEYS[sede]:
         clave = DOC_KEYS[sede][tabla_ref]
         fila = _query(sede, f"SELECT * FROM {tabla_ref} WHERE {clave} = %s", (doc_ref,))
         documento = {
@@ -301,6 +381,7 @@ def _detalle_oltp(sede: str, agent_num: int, op_id: str) -> dict[str, Any]:
     return {
         "operacion": op,
         "documento": documento,
+        "auditoria": {"bd": _auditoria_de_operacion(sede, op_id), "app": auditoria_app},
         "replica": replicada,
         "consultaSqlOperacion": f"SELECT * FROM {tabla} WHERE id_op = {int(op_id)};",
         "sinDocumento": None if documento else _motivo_sin_documento(sede, str(op.get("modulo") or "")),
@@ -351,7 +432,8 @@ def agente_operacion_detalle(agente_id: str, op_id: str):
         return {**base, "operacion": filas[0], "documento": {
             "tabla": f"historico_transacciones · partición {filas[0]['particion']}", "id": op_id, "modulo": filas[0].get("modulo"),
             "fila": filas[0], "consultaSql": sql,
-        }, "replica": None, "consultaSqlOperacion": sql}
+        }, "auditoria": {"bd": _auditoria_de_operacion("QUITO_PARALELA", op_id), "app": []},
+            "replica": None, "consultaSqlOperacion": sql}
     # num == 5: una corrida del ETL y los hechos que cargó
     if op_id.upper().startswith("ETL-"):
         corrida = _query("GUAYAQUIL_DWH", "SELECT * FROM etl_corridas WHERE lote = %s ORDER BY id DESC LIMIT 1", (op_id,))
@@ -369,7 +451,8 @@ def agente_operacion_detalle(agente_id: str, op_id: str):
         "tabla": "fact_ventas (esquema estrella)", "id": lote, "modulo": "Ventas (análisis OLAP)",
         "fila": {"hechos_cargados": len(hechos), "hechos": json.dumps(hechos, ensure_ascii=False, default=str)},
         "consultaSql": sql,
-    }, "replica": None, "consultaSqlOperacion": "SELECT * FROM etl_corridas ORDER BY id DESC LIMIT 10;"}
+    }, "auditoria": {"bd": _auditoria_de_operacion("GUAYAQUIL_DWH", str(lote)), "app": []},
+        "replica": None, "consultaSqlOperacion": "SELECT * FROM etl_corridas ORDER BY id DESC LIMIT 10;"}
 
 
 # ------------------------------------------------------------------------------------------------

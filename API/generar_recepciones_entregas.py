@@ -61,10 +61,89 @@ def token(usuario: str) -> str:
 def como(usuario: str, metodo: str, ruta: str, cuerpo: dict | None = None):
     """Ejecuta con el usuario del módulo; si no tiene permiso, reintenta con admin."""
     st, body = llamar(metodo, ruta, usuario, cuerpo)
+    if st == 401:  # token vencido: nuevo inicio de sesión y un reintento
+        _tokens.pop(usuario, None)
+        st, body = llamar(metodo, ruta, usuario, cuerpo)
     if st == 403 and usuario != "admin":
         print(f"    (aviso: {usuario} no tiene permiso para {metodo} {ruta}; se usa admin)")
         st, body = llamar(metodo, ruta, "admin", cuerpo)
     return st, body
+
+
+def accion_bodega(rnd: random.Random | None = None) -> dict:
+    """
+    UNA acción de bodega hecha con la app como un usuario más (la usa el Agente 4 cada cierto ciclo).
+    Devuelve qué documento creó/confirmó: {usuario, modulo, tabla, id, accion, monto}.
+    """
+    rnd = rnd or random.Random()
+    _, recepciones = como("admin", "GET", "/api/recepciones")
+    _, entregas = como("admin", "GET", "/api/entregas")
+    rec_pend = [r for r in recepciones or [] if str(r.get("status")).upper() == "PEN"]
+    ent_pend = [e for e in entregas or [] if str(e.get("status")).upper() == "PEN"]
+    opciones = ["nueva_compra", "nueva_venta"] + (["confirmar_recepcion"] * 2 if rec_pend else []) + (["despachar_entrega"] * 2 if ent_pend else [])
+    eleccion = rnd.choice(opciones)
+
+    if eleccion == "confirmar_recepcion":
+        rec = rnd.choice(rec_pend)
+        con_diferencia = rnd.random() < 0.25
+        items = []
+        for j, it in enumerate(rec["items"]):
+            esperado = int(it["expectedQty"])
+            if con_diferencia and j == 0 and esperado > 1:
+                items.append({"productId": it["productId"], "receivedQty": esperado - 1, "reason": "Unidad dañada en el transporte"})
+            else:
+                items.append({"productId": it["productId"], "receivedQty": esperado, "reason": ""})
+        st, res = como("i_operador", "POST", f"/api/recepciones/{rec['id']}/confirmar", {"items": items})
+        if st != 200:
+            raise RuntimeError(f"Confirmar recepción {rec['id']}: {st} {res}")
+        return {"usuario": "i_operador", "modulo": "INVENTARIOS", "tabla": "RECEPCIONES", "id": rec["id"], "monto": 0.0,
+                "accion": f"Ingreso a bodega de la recepción {rec['id']} (OC {rec.get('poId')})" + (" con diferencia" if con_diferencia else "")}
+
+    if eleccion == "despachar_entrega":
+        ent = rnd.choice(ent_pend)
+        items = [{"productId": it["productId"], "deliveredQty": int(it["expectedQty"]), "reason": ""} for it in ent["items"]]
+        st, res = como("i_operador", "POST", f"/api/entregas/{ent['id']}/confirmar", {"items": items})
+        if st != 200:
+            raise RuntimeError(f"Despachar entrega {ent['id']}: {st} {res}")
+        return {"usuario": "i_operador", "modulo": "INVENTARIOS", "tabla": "ENTREGAS", "id": ent["id"], "monto": 0.0,
+                "accion": f"Despacho de la entrega {ent['id']} (factura {ent.get('invoiceId')})"}
+
+    _, productos = como("admin", "GET", "/api/productos")
+    if eleccion == "nueva_compra":
+        _, proveedores = como("admin", "GET", "/api/proveedores")
+        prov = rnd.choice(proveedores)
+        items = [{"idProducto": p["id"], "cantidad": rnd.randint(6, 24), "costoUnitario": max(0.01, float(p.get("cost") or 5))}
+                 for p in rnd.sample(productos, k=min(len(productos), rnd.randint(1, 3)))]
+        st, oc = como("c_operador", "POST", "/api/compras", {
+            "idProveedor": prov["id"], "fechaEntrega": str(date.today() + timedelta(days=rnd.randint(1, 5))), "tasaIVA": 15, "items": items,
+        })
+        if st not in (200, 201):
+            raise RuntimeError(f"Crear orden de compra: {st} {oc}")
+        oc_id = oc.get("id")
+        st, res = como("c_supervisor", "POST", f"/api/compras/{oc_id}/aprobar")
+        if st != 200:
+            raise RuntimeError(f"Aprobar {oc_id}: {st} {res}")
+        _, recepciones = como("admin", "GET", "/api/recepciones")
+        rec = next((r for r in recepciones if r.get("poId") == oc_id), None)
+        total = round(sum(i["cantidad"] * i["costoUnitario"] for i in items) * 1.15, 2)
+        return {"usuario": "c_operador", "modulo": "COMPRAS", "tabla": "RECEPCIONES", "id": rec["id"] if rec else oc_id, "monto": total,
+                "accion": f"Orden de compra {oc_id} a {prov.get('name', prov['id'])} aprobada: recepción {rec['id'] if rec else '?'} pendiente en bodega"}
+
+    # nueva_venta
+    _, clientes = como("admin", "GET", "/api/clientes")
+    con_stock = [p for p in productos if float(p.get("stock") or 0) >= 5] or productos
+    items = [{"idProducto": p["id"], "cantidad": rnd.randint(1, 3), "precioUnitario": float(p.get("price") or 10)}
+             for p in rnd.sample(con_stock, k=min(len(con_stock), rnd.randint(1, 3)))]
+    cli = rnd.choice(clientes)
+    st, venta = como("v_operador", "POST", "/api/ventas", {
+        "idCliente": cli["id"], "descripcion": "Venta POS registrada por Agente 4", "tasaIVA": 15,
+        "metodoPago": rnd.choice(["CASH", "CARD", "TRANSFER"]), "items": items,
+    })
+    if st not in (200, 201):
+        raise RuntimeError(f"Venta POS: {st} {venta}")
+    total = float(venta.get("total") or 0)
+    return {"usuario": "v_operador", "modulo": "VENTAS", "tabla": "ENTREGAS", "id": venta.get("deliveryId"), "monto": total,
+            "accion": f"Venta POS {venta.get('id')} a {cli.get('name', cli['id'])}: entrega {venta.get('deliveryId')} pendiente de despacho"}
 
 
 def main() -> None:

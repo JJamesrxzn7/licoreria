@@ -166,7 +166,7 @@ const AppContent = () => {
 
   const routeViews: Record<string, JSX.Element> = {
     dashboard: <Dashboard />,
-    architecture: <ArchitectureConsole />,
+    architecture: <ArchitectureConsole onNavigate={navigate} />,
     pos: <POS />,
     products: <Catalog />,
     catalog: <Catalog />,

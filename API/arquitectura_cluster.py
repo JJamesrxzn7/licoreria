@@ -348,6 +348,18 @@ DBA_PRESETS = {
 }
 
 
+for _sede in ("QUITO", "QUITO_PARALELA", "GUAYAQUIL", "GUAYAQUIL_DWH"):
+    DBA_PRESETS[_sede].append({
+        "label": "Auditoría: últimas 20 acciones registradas en esta BD (log_auditoria)",
+        "sql": "SELECT log_FechaHora, id_Usuario, log_TablaAfectada, log_Accion, log_IP, log_ValorNuevo "
+               "FROM log_auditoria ORDER BY log_FechaHora DESC LIMIT 20;",
+    })
+DBA_PRESETS["CUENCA"].append({
+    "label": "Auditoría: últimas 20 acciones registradas en Supabase (log_auditoria_cloud)",
+    "sql": "SELECT fecha_hora, usuario_cloud, sucursal_origen, evento, detalle FROM log_auditoria_cloud ORDER BY id_log DESC LIMIT 20;",
+})
+
+
 def inspect_single_bd_sync(sede_key: str) -> dict[str, Any]:
     configs = get_cluster_6dbs_config()
     cfg = configs[sede_key]
@@ -706,6 +718,70 @@ class AgentOperationRequest(BaseModel):
     operacion: str = Field(..., description="Descripción o payload de la operación")
     montoUsd: float = Field(default=0.0, description="Monto asociado en USD")
     extraJson: dict[str, Any] | None = Field(default=None, description="Payload adicional JSON para NoSQL o ETL")
+    documentoApp: dict[str, Any] | None = Field(
+        default=None,
+        description="Documento que el agente creó/confirmó en la app principal (p. ej. {'tabla': 'RECEPCIONES', 'id': 'REC-000007', 'accion': '...'}). "
+                    "Si viene, la operación se anota en la bitácora enlazada a ese documento y no se crea otro documento en la BD del clúster.",
+    )
+
+
+DDL_LOG_AUDITORIA_MARIADB = (
+    "CREATE TABLE IF NOT EXISTS log_auditoria ("
+    " id_Log VARCHAR(30) NOT NULL PRIMARY KEY, id_Usuario VARCHAR(20) NULL,"
+    " log_FechaHora DATETIME DEFAULT CURRENT_TIMESTAMP, log_TablaAfectada VARCHAR(60) NULL,"
+    " log_Accion VARCHAR(40) NULL, log_IP VARCHAR(45) NULL, log_ValorAnterior TEXT NULL, log_ValorNuevo TEXT NULL)"
+)
+_AUDIT_READY: set[str] = set()
+
+
+def _accion_auditoria(accion: str) -> str:
+    a = (accion or "").upper()
+    for k in ("INSERT", "UPDATE", "DELETE"):
+        if k in a:
+            return k
+    return "INSERT" if a.startswith(("CREA", "REGISTR", "VENTA", "OC ")) else (a.split(" ")[0][:40] or "REGISTRO")
+
+
+def registrar_auditoria(sede_key: str, usuario: str, eventos: list[dict[str, Any]], base: dict[str, Any], ip: str) -> dict[str, Any]:
+    """
+    Escribe una fila de auditoría por cada tabla afectada en la MISMA BD donde ocurrió la operación:
+      MariaDB (BD 1, 3, 4, 5) -> log_auditoria (se crea si la BD no la tenía)
+      PostgreSQL (BD 6)       -> log_auditoria_cloud
+    Nunca hace fallar la operación: si la auditoría falla, se informa en el impacto.
+    """
+    cfg = get_cluster_6dbs_config()[sede_key]
+    filas = []
+    for ev in eventos or [{"tabla": "operaciones_agentes_ia", "accion": "INSERT", "id": base.get("operacion_id")}]:
+        filas.append((str(ev.get("tabla", ""))[:60], _accion_auditoria(str(ev.get("accion", ""))),
+                      json.dumps({**base, "tabla": ev.get("tabla"), "registro": ev.get("id"), "accion_detalle": ev.get("accion")},
+                                 ensure_ascii=False, default=str)))
+    try:
+        if cfg["engineType"] == "postgresql":
+            conn, _ = connect_postgres_with_fallback(cfg)
+            with conn.cursor() as cur:
+                cur.executemany(
+                    "INSERT INTO log_auditoria_cloud (sucursal_origen, usuario_cloud, evento, detalle) VALUES (%s, %s, %s, %s)",
+                    [(sede_key, usuario[:60], f"{accion} {tabla}"[:120], valor) for tabla, accion, valor in filas],
+                )
+            conn.close()
+            destino = "log_auditoria_cloud"
+        else:
+            conn, _ = connect_mariadb_with_fallback(cfg)
+            cur = conn.cursor()
+            if sede_key not in _AUDIT_READY:
+                cur.execute(DDL_LOG_AUDITORIA_MARIADB)
+                _AUDIT_READY.add(sede_key)
+            cur.executemany(
+                "INSERT INTO log_auditoria (id_Log, id_Usuario, log_TablaAfectada, log_Accion, log_IP, log_ValorNuevo) "
+                "VALUES (%s, %s, %s, %s, %s, %s)",
+                [(f"AG-{uuid4().hex[:16].upper()}", usuario[:20], tabla, accion, ip or None, valor) for tabla, accion, valor in filas],
+            )
+            cur.close()
+            conn.close()
+            destino = "log_auditoria"
+        return {"tabla": destino, "accion": f"INSERT {len(filas)} fila(s) de auditoría", "id": None, "ok": True}
+    except Exception as exc:
+        return {"tabla": "auditoría", "accion": "INSERT", "id": None, "ok": False, "error": str(exc)[:200]}
 
 
 _REF_COLUMNS_READY: set[str] = set()
@@ -823,7 +899,16 @@ def handle_agent_routed_operation(
         iva = round(sub * 0.15, 2)
         tot = round(sub + iva, 2)
         try:
-            if sede_key == "QUITO":
+            if payload.documentoApp:
+                # El agente ya trabajó en la app principal (recepción, entrega, compra o venta POS): solo se enlaza.
+                d = payload.documentoApp
+                impacto.append({
+                    "tabla": f"app:{str(d.get('tabla', '')).upper()}"[:40],
+                    "accion": str(d.get("accion") or "REGISTRO")[:120],
+                    "id": str(d.get("id") or ""),
+                    "ok": bool(d.get("id")),
+                })
+            elif sede_key == "QUITO":
                 # BD 1 (PC Escritorio) tiene su propio esquema OLTP normalizado (ids enteros + FKs).
                 impacto.append(_impactar_modulo_quito(cur, modulo_final, short_hex, user_clean, payload, sub, iva, tot))
             elif modulo_final == "VENTAS":
@@ -967,6 +1052,15 @@ def handle_agent_routed_operation(
                 except Exception as exc:
                     impacto.append({"tabla": "frag_austral_facturas", "accion": "INSERT", "id": None, "ok": False, "error": str(exc)[:200]})
         conn.close()
+
+    # Auditoría en la propia BD de la operación (MongoDB ya la guarda en su colección logs_auditoria)
+    if sede_key != "QUITO_NOSQL":
+        ip = (request.headers.get("x-forwarded-for") or (request.client.host if request.client else "") or "")[:45]
+        auditoria = registrar_auditoria(sede_key, user_clean, [i for i in impacto if i.get("ok")], {
+            "agente": payload.agente, "rol_rbac": rol_rbac, "modulo": modulo_final, "operacion_id": str(op_id),
+            "operacion": payload.operacion[:200], "monto_usd": payload.montoUsd, "replica_api": REPLICA_ID,
+        }, ip)
+        impacto.append(auditoria)
 
     elapsed_ms = round((time.perf_counter() - t0) * 1000, 2)
     return {
