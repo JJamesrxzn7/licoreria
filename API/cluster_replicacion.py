@@ -97,14 +97,31 @@ def _naive(dt: Any) -> Any:
 # Replicación
 # ------------------------------------------------------------------------------------------------
 
+ETIQUETA_REPLICA = {
+    "QUITO": "RÉPLICA de Quito (BD 1)",
+    "GUAYAQUIL": "RÉPLICA de Guayaquil (BD 4)",
+    "CUENCA": "RÉPLICA de Cuenca (BD 6)",
+}
+_TABLAS_LISTAS: set[str] = set()
+
+
 def _asegurar_tabla_replica(enlace: dict) -> None:
+    """Crea la tabla réplica si falta y le agrega la columna etiqueta_replica («RÉPLICA de Quito (BD 1)», etc.).
+    Con DEFAULT, las filas ya copiadas reciben la etiqueta automáticamente."""
+    if enlace["id"] in _TABLAS_LISTAS:
+        return
     conn, kind = _conectar(enlace["destino"])
     try:
         cur = conn.cursor()
         cur.execute((DDL_PG if kind == "pg" else DDL_MARIADB).format(t=enlace["tabla"]))
-        if kind == "pg":
-            conn.commit() if not conn.autocommit else None
+        etiqueta = ETIQUETA_REPLICA[enlace["origen"]]
+        cur.execute(
+            f"ALTER TABLE {enlace['tabla']} ADD COLUMN IF NOT EXISTS etiqueta_replica VARCHAR(60) NOT NULL DEFAULT '{etiqueta}'"
+        )
+        if kind == "pg" and not conn.autocommit:
+            conn.commit()
         cur.close()
+        _TABLAS_LISTAS.add(enlace["id"])
     finally:
         conn.close()
 
@@ -259,13 +276,59 @@ def replicacion_leer(
     else:
         error_primaria = "Caída simulada a pedido (la primaria no se consultó)."
     try:
-        filas = _query(enlace["destino"], f"SELECT id_origen AS id_op, fecha_origen AS fecha_hora, usuario_rbac, modulo, "
+        _asegurar_tabla_replica(enlace)
+        filas = _query(enlace["destino"], f"SELECT etiqueta_replica, id_origen AS id_op, fecha_origen AS fecha_hora, usuario_rbac, modulo, "
                                           f"operacion, monto_usd, replicado_en FROM {enlace['tabla']} "
                                           f"ORDER BY id_origen DESC LIMIT %s", (limit,))
         return {"sede": sede, "servidoDesde": "REPLICA", "nodo": enlace["destino"], "tabla": enlace["tabla"],
                 "errorPrimaria": error_primaria, "ms": round((time.perf_counter() - t0) * 1000, 1), "filas": filas}
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"Primaria y réplica de {sede} sin respuesta: {error_primaria} / {exc}") from exc
+
+
+@router.get("/api/replicacion/comparar/{origen}")
+async def replicacion_comparar(origen: str, limit: int = Query(default=10, ge=1, le=50)):
+    """
+    Lado a lado: últimas operaciones en la BD de ORIGEN y lo que ya llegó a la tabla RÉPLICA del siguiente nodo.
+    Cada fila del origen dice si ya está copiada; cada fila de la réplica trae su etiqueta y cuánto tardó en llegar.
+    """
+    origen = origen.strip().upper()
+    if origen not in REPLICA_DE:
+        raise HTTPException(status_code=404, detail="Origen no válido (QUITO, GUAYAQUIL o CUENCA).")
+    enlace = REPLICA_DE[origen]
+    cfg_all = get_cluster_6dbs_config()
+    es_pg_destino = cfg_all[enlace["destino"]]["engineType"] == "postgresql"
+
+    def leer_origen():
+        t = time.perf_counter()
+        filas = _query(origen, f"SELECT id_op, fecha_hora, usuario_rbac, modulo, operacion, monto_usd "
+                               f"FROM {TABLA_ORIGEN[origen]} ORDER BY id_op DESC LIMIT %s", (limit,))
+        return filas, round((time.perf_counter() - t) * 1000, 1)
+
+    def leer_replica():
+        t = time.perf_counter()
+        _asegurar_tabla_replica(enlace)
+        retraso = ("EXTRACT(EPOCH FROM (replicado_en - fecha_origen))::int" if es_pg_destino
+                   else "TIMESTAMPDIFF(SECOND, fecha_origen, replicado_en)")
+        filas = _query(enlace["destino"], f"SELECT etiqueta_replica, id_origen, fecha_origen, replicado_en, {retraso} AS segundos_en_llegar, "
+                                          f"usuario_rbac, modulo, operacion, monto_usd FROM {enlace['tabla']} "
+                                          f"ORDER BY id_origen DESC LIMIT %s", (limit,))
+        return filas, round((time.perf_counter() - t) * 1000, 1)
+
+    (o, o_ms), (r, r_ms) = await asyncio.gather(asyncio.to_thread(leer_origen), asyncio.to_thread(leer_replica))
+    ids_replica = {int(x["id_origen"]) for x in r}
+    marca = max(ids_replica) if ids_replica else 0
+    for fila in o:
+        fila["estado_replica"] = "copiada" if int(fila["id_op"]) in ids_replica or int(fila["id_op"]) <= marca else "pendiente"
+    cfg_o, cfg_d = cfg_all[origen], cfg_all[enlace["destino"]]
+    return {
+        "enlace": enlace["id"],
+        "origen": {"sede": origen, "bd": cfg_o["bdId"], "maquina": cfg_o["machine"], "motor": cfg_o["engine"],
+                   "tabla": TABLA_ORIGEN[origen], "ms": o_ms, "filas": o},
+        "replica": {"sede": enlace["destino"], "bd": cfg_d["bdId"], "maquina": cfg_d["machine"], "motor": cfg_d["engine"],
+                    "tabla": enlace["tabla"], "etiqueta": ETIQUETA_REPLICA[origen], "ms": r_ms, "filas": r},
+        "pendientes": sum(1 for f in o if f["estado_replica"] == "pendiente"),
+    }
 
 
 # ------------------------------------------------------------------------------------------------

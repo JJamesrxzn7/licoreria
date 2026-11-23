@@ -354,6 +354,14 @@ for _sede in ("QUITO", "QUITO_PARALELA", "GUAYAQUIL", "GUAYAQUIL_DWH"):
         "sql": "SELECT log_FechaHora, id_Usuario, log_TablaAfectada, log_Accion, log_IP, log_ValorNuevo "
                "FROM log_auditoria ORDER BY log_FechaHora DESC LIMIT 20;",
     })
+for _sede, _tabla, _de in (("GUAYAQUIL", "replica_quito_operaciones", "Quito"),
+                           ("CUENCA", "replica_guayaquil_operaciones", "Guayaquil"),
+                           ("QUITO", "replica_cuenca_operaciones", "Cuenca")):
+    DBA_PRESETS[_sede].append({
+        "label": f"Réplica: datos de {_de} guardados en esta BD ({_tabla})",
+        "sql": f"SELECT etiqueta_replica, id_origen, fecha_origen, replicado_en, usuario_rbac, modulo, operacion, monto_usd "
+               f"FROM {_tabla} ORDER BY id_origen DESC LIMIT 20;",
+    })
 DBA_PRESETS["CUENCA"].append({
     "label": "Auditoría: últimas 20 acciones registradas en Supabase (log_auditoria_cloud)",
     "sql": "SELECT fecha_hora, usuario_cloud, sucursal_origen, evento, detalle FROM log_auditoria_cloud ORDER BY id_log DESC LIMIT 20;",

@@ -53,6 +53,26 @@ const fmtSeg = (s: number | null | undefined) => {
   return `${Math.round(s / 3600)} h`;
 };
 
+const colorDeEtiqueta = (texto: string) =>
+  texto.includes('Quito') ? '#782c3e' : texto.includes('Guayaquil') ? '#183a31' : '#a96b16';
+
+/** Etiqueta visible que marca un dato como copia de otra sucursal. */
+const EtiquetaReplica: React.FC<{ texto: string }> = ({ texto }) => (
+  <span style={{
+    display: 'inline-block', whiteSpace: 'nowrap', fontSize: '10px', fontWeight: 800, letterSpacing: '.03em',
+    color: '#fff', background: colorDeEtiqueta(texto), padding: '2px 8px', borderRadius: '999px',
+  }}>
+    ⧉ {texto}
+  </span>
+);
+
+interface Comparacion {
+  enlace: string;
+  origen: { sede: string; bd: string; maquina: string; motor: string; tabla: string; ms: number; filas: Array<Record<string, Celda>> };
+  replica: { sede: string; bd: string; maquina: string; motor: string; tabla: string; etiqueta: string; ms: number; filas: Array<Record<string, Celda>> };
+  pendientes: number;
+}
+
 const TablaFilas: React.FC<{ filas: Array<Record<string, Celda>>; max?: number }> = ({ filas, max = 8 }) => (
   <div className="table-scroll" style={{ maxHeight: '260px' }}>
     <table>
@@ -62,9 +82,10 @@ const TablaFilas: React.FC<{ filas: Array<Record<string, Celda>>; max?: number }
       <tbody>
         {filas.slice(0, max).map((f, i) => (
           <tr key={i}>
-            {Object.values(f).map((v, j) => (
+            {Object.entries(f).map(([k, v], j) => (
               <td key={j} style={{ whiteSpace: 'normal', maxWidth: '320px' }}>
-                {v === null ? '—' : /^\d{4}-\d{2}-\d{2}T/.test(String(v)) ? String(v).replace('T', ' ').slice(0, 19) : String(v)}
+                {k === 'etiqueta_replica' ? <EtiquetaReplica texto={String(v)} />
+                  : v === null ? '—' : /^\d{4}-\d{2}-\d{2}T/.test(String(v)) ? String(v).replace('T', ' ').slice(0, 19) : String(v)}
               </td>
             ))}
           </tr>
@@ -105,6 +126,30 @@ export const ReplicacionDR: React.FC = () => {
     const t = window.setInterval(() => void cargarEstado(), 6000);
     return () => window.clearInterval(t);
   }, [cargarEstado]);
+
+  // Visor lado a lado: origen vs réplica (por defecto Quito -> Guayaquil, la copia vive en la Laptop)
+  const [origenVisor, setOrigenVisor] = useState<'QUITO' | 'GUAYAQUIL' | 'CUENCA'>('QUITO');
+  const [comparacion, setComparacion] = useState<Comparacion | null>(null);
+  const [errorVisor, setErrorVisor] = useState('');
+
+  const cargarComparacion = useCallback(async (origen: string) => {
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/replicacion/comparar/${origen}?limit=8`);
+      const body = await res.json();
+      if (!res.ok) throw new Error(body?.detail || `HTTP ${res.status}`);
+      setComparacion(body);
+      setErrorVisor('');
+    } catch (err) {
+      setErrorVisor(err instanceof Error ? err.message : 'Error');
+    }
+  }, []);
+
+  useEffect(() => {
+    setComparacion(null);
+    void cargarComparacion(origenVisor);
+    const t = window.setInterval(() => void cargarComparacion(origenVisor), 3000);
+    return () => window.clearInterval(t);
+  }, [origenVisor, cargarComparacion]);
 
   const sincronizar = async () => {
     setSincronizando(true);
@@ -194,6 +239,88 @@ export const ReplicacionDR: React.FC = () => {
         <div style={{ textAlign: 'center', fontSize: '11px', color: '#787970', marginBottom: '12px' }}>
           ↺ El anillo se cierra: Cuenca devuelve su copia a Quito. Se actualiza cada 6 s; los agentes de la Laptop replican una vez por minuto.
           {ultimaSync && <div style={{ color: '#183a31', fontWeight: 700, marginTop: '4px' }}>Última sincronización manual: {ultimaSync}</div>}
+        </div>
+
+        {/* VISOR EN VIVO: ORIGEN vs RÉPLICA */}
+        <div style={{ border: '2px solid #183a31', borderRadius: '12px', padding: '12px', background: '#fff', marginBottom: '14px' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px', marginBottom: '8px' }}>
+            <div>
+              <strong style={{ fontSize: '13.5px', color: '#183a31' }}>Ver la replicación en vivo: el dato en su sede y su copia en la otra</strong>
+              <div style={{ fontSize: '11px', color: '#787970' }}>Se actualiza cada 3 s. Las filas en ámbar todavía no llegan a la réplica; llegan en la próxima ronda (o pulsa «Sincronizar ahora»).</div>
+            </div>
+            <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+              {(['QUITO', 'GUAYAQUIL', 'CUENCA'] as const).map(s => (
+                <button key={s} type="button" className="btn btn-outline" onClick={() => setOrigenVisor(s)}
+                  style={{ padding: '5px 10px', fontSize: '11px', background: origenVisor === s ? COLOR_SEDE[s] : '#fff', color: origenVisor === s ? '#fff' : '#25251f' }}>
+                  {s === 'QUITO' ? 'Quito → Guayaquil (recomendado)' : s === 'GUAYAQUIL' ? 'Guayaquil → Cuenca' : 'Cuenca → Quito'}
+                </button>
+              ))}
+            </div>
+          </div>
+          {errorVisor && <div style={{ fontSize: '11.5px', color: '#9a3937', marginBottom: '6px' }}>{errorVisor}</div>}
+          {comparacion ? (
+            <div className="grid-2">
+              <div>
+                <div style={{ fontSize: '12px', marginBottom: '4px' }}>
+                  <strong style={{ color: COLOR_SEDE[comparacion.origen.sede] }}>ORIGEN · {comparacion.origen.bd} {comparacion.origen.sede}</strong>{' '}
+                  <span style={{ color: '#787970' }}>{comparacion.origen.maquina} · <code>{comparacion.origen.tabla}</code> · leído en {comparacion.origen.ms} ms</span>
+                </div>
+                <div className="table-scroll" style={{ maxHeight: '300px' }}>
+                  <table>
+                    <thead><tr><th>id_op</th><th>Hora</th><th>Usuario</th><th>Módulo</th><th>Monto</th><th>¿En la réplica?</th></tr></thead>
+                    <tbody>
+                      {comparacion.origen.filas.map(f => {
+                        const pend = f.estado_replica === 'pendiente';
+                        return (
+                          <tr key={String(f.id_op)} style={{ background: pend ? '#fff3d6' : undefined }}>
+                            <td><code>{String(f.id_op)}</code></td>
+                            <td>{String(f.fecha_hora ?? '').replace('T', ' ').slice(11, 19)}</td>
+                            <td><code>{String(f.usuario_rbac ?? '')}</code></td>
+                            <td>{String(f.modulo ?? '')}</td>
+                            <td>{f.monto_usd ? `$${Number(f.monto_usd).toFixed(2)}` : '—'}</td>
+                            <td style={{ fontWeight: 800, color: pend ? '#a96b16' : '#267154' }}>{pend ? '⏳ pendiente' : '✔ copiada'}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+              <div>
+                <div style={{ fontSize: '12px', marginBottom: '4px' }}>
+                  <strong style={{ color: COLOR_SEDE[comparacion.replica.sede] }}>RÉPLICA · {comparacion.replica.bd} {comparacion.replica.sede}</strong>{' '}
+                  <span style={{ color: '#787970' }}>{comparacion.replica.maquina} · <code>{comparacion.replica.tabla}</code> · leído en {comparacion.replica.ms} ms</span>
+                </div>
+                <div className="table-scroll" style={{ maxHeight: '300px' }}>
+                  <table>
+                    <thead><tr><th>Etiqueta</th><th>id_origen</th><th>Copiada a las</th><th>Tardó</th><th>Usuario</th><th>Módulo</th></tr></thead>
+                    <tbody>
+                      {comparacion.replica.filas.map(f => (
+                        <tr key={String(f.id_origen)}>
+                          <td><EtiquetaReplica texto={String(f.etiqueta_replica)} /></td>
+                          <td><code>{String(f.id_origen)}</code></td>
+                          <td>{String(f.replicado_en ?? '').replace('T', ' ').slice(11, 19)}</td>
+                          <td>{f.segundos_en_llegar !== null && f.segundos_en_llegar !== undefined ? fmtSeg(Number(f.segundos_en_llegar)) : '—'}</td>
+                          <td><code>{String(f.usuario_rbac ?? '')}</code></td>
+                          <td>{String(f.modulo ?? '')}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          ) : (
+            !errorVisor && <div className="empty-state">Leyendo las dos bases…</div>
+          )}
+          {comparacion && (
+            <div style={{ fontSize: '11px', color: '#575950', marginTop: '6px' }}>
+              {comparacion.pendientes > 0
+                ? <>Hay <strong>{comparacion.pendientes}</strong> operación(es) en el origen que aún no llegan: es el retraso normal de una réplica asíncrona (RPO).</>
+                : <>Todo lo reciente del origen ya está copiado en la réplica.</>}
+              {' '}«Tardó» = tiempo entre que se escribió en el origen y que se copió en la réplica.
+            </div>
+          )}
         </div>
 
         <div className="grid-2" style={{ marginBottom: '14px' }}>
