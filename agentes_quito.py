@@ -64,7 +64,7 @@ async def run_cycle(cycle: int):
         u2, p2, r2, m2 = random.choice(USUARIOS_15_RBAC)
         u3, p3, r3, m3 = random.choice(USUARIOS_15_RBAC)
 
-        await asyncio.gather(
+        resultados = await asyncio.gather(
             post_with_failover(
                 client,
                 {"X-Sede": "QUITO"},
@@ -102,8 +102,15 @@ async def run_cycle(cycle: int):
                     "montoUsd": round(random.uniform(150.0, 1800.0), 2),
                 },
             ),
+            # Un agente que falla no debe tumbar a los otros dos ni al script
+            return_exceptions=True,
         )
-        print("  -> OK: Agente 1 (QUITO :3307), Agente 2 (QUITO_NOSQL :27017) y Agente 3 (QUITO_PARALELA :3308) completados.")
+        nombres = ("Agente 1 (QUITO :3307)", "Agente 2 (QUITO_NOSQL :27017)", "Agente 3 (QUITO_PARALELA :3308)")
+        for nombre, res in zip(nombres, resultados):
+            if isinstance(res, Exception):
+                print(f"  [!] {nombre}: ERROR -> {res}")
+            else:
+                print(f"  -> OK: {nombre} | réplica {res.get('apiReplica')} | {res.get('latencyMs')} ms")
 
 
 if __name__ == "__main__":
@@ -115,7 +122,10 @@ if __name__ == "__main__":
     async def loop():
         c = 1
         while True:
-            await run_cycle(c)
+            try:
+                await run_cycle(c)
+            except Exception as exc:  # p. ej. la API o el túnel caídos: se reintenta en la próxima ronda
+                print(f"  [!] Error en ronda #{c}: {exc}. Reintento en {args.interval} s.")
             if args.once:
                 break
             c += 1

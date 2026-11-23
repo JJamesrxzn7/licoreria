@@ -139,3 +139,20 @@ async def serve_frontend(full_path: str = ""):
         "replicas": [r[0] for r in REPLICAS],
         "status": "ONLINE",
     }
+
+
+if __name__ == "__main__":
+    # Arranque recomendado en Windows: `python load_balancer_8080.py [puerto]`.
+    # El bucle Proactor (el que usa uvicorn por defecto en Windows) deja de aceptar conexiones para siempre
+    # tras un WinError 64 (una conexión que se corta durante el accept): el proceso sigue vivo pero el puerto
+    # queda cerrado. Con SelectorEventLoop ese error afecta solo a esa conexión.
+    import sys
+
+    import uvicorn
+
+    puerto = int(sys.argv[1]) if len(sys.argv) > 1 else 8000
+    servidor = uvicorn.Server(uvicorn.Config(lb_app, host="0.0.0.0", port=puerto, loop="none"))
+    if sys.platform == "win32":
+        asyncio.run(servidor.serve(), loop_factory=asyncio.SelectorEventLoop)
+    else:
+        asyncio.run(servidor.serve())

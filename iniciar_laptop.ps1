@@ -43,6 +43,16 @@ function Test-Proceso([string]$Patron) {
         Where-Object { $_.CommandLine -like "*$Patron*" })
 }
 
+function Stop-Zombi([string]$Patron) {
+    # Proceso vivo cuyo puerto ya no escucha (p. ej. tras un WinError 64): se elimina antes de reencender
+    Get-CimInstance Win32_Process -Filter "Name LIKE 'python%'" |
+        Where-Object { $_.CommandLine -like "*$Patron*" } |
+        ForEach-Object {
+            Write-Host "         proceso colgado $($_.ProcessId) ($Patron) -> se cierra" -ForegroundColor DarkYellow
+            try { Stop-Process -Id $_.ProcessId -Force -ErrorAction Stop } catch {}
+        }
+}
+
 function Start-Oculto([string]$Comando, [string]$Log) {
     # powershell oculto que ejecuta el comando y vuelca la salida al log
     $full = "$Comando *>> '$Log'"
@@ -55,11 +65,14 @@ function Invoke-Revision {
         $puerto = 8000 + $i
         if (Test-Puerto $puerto) { continue }
         Write-Host "[$hora] Réplica api_lacava_$i (:$puerto) apagada -> encendiendo" -ForegroundColor Yellow
+        Stop-Zombi "--port $puerto"
         Start-Oculto "`$env:API_REPLICA_ID='api_lacava_$i'; & '$py' -m uvicorn main:app --host 127.0.0.1 --port $puerto --app-dir '$api'" (Join-Path $logs "api_lacava_$i.log")
     }
     if (-not (Test-Puerto 8000)) {
         Write-Host "[$hora] Balanceador (:8000) apagado -> encendiendo" -ForegroundColor Yellow
-        Start-Oculto "& '$py' -m uvicorn load_balancer_8080:lb_app --host 0.0.0.0 --port 8000 --app-dir '$api'" (Join-Path $logs 'balanceador.log')
+        Stop-Zombi 'load_balancer_8080'
+        # Se ejecuta el propio archivo: usa SelectorEventLoop, inmune al WinError 64 que tumbaba el accept
+        Start-Oculto "Set-Location '$api'; & '$py' -u load_balancer_8080.py 8000" (Join-Path $logs 'balanceador.log')
     }
     if (-not (Test-Proceso 'agentes_gye_cuenca.py')) {
         Write-Host "[$hora] Agentes 4-5-6 apagados -> encendiendo" -ForegroundColor Yellow

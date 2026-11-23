@@ -1426,17 +1426,23 @@ def execute_two_phase_commit_demo(payload: TwoPhaseCommitRequest):
         conn_cuenca, h_c = connect_postgres_with_fallback(configs["CUENCA"])
         conn_cuenca.autocommit = False
 
+        # BD 1 (Quito) tiene su propio esquema: id_producto / stock_actual. SELECT ... FOR UPDATE bloquea la fila
+        # hasta el COMMIT/ROLLBACK global (eso es el "voto" de la fase PREPARE).
         cur_q = conn_quito.cursor(dictionary=True)
-        cur_q.execute("SELECT id_Producto FROM productos ORDER BY id_Producto LIMIT 1")
-        row_p = cur_q.fetchone()
-        pid = row_p["id_Producto"] if row_p else payload.productId
-        cur_q.execute("UPDATE productos SET pro_Saldo_Final = COALESCE(pro_Saldo_Final, 0) + %s WHERE id_Producto = %s", (payload.quantity, pid))
+        cur_q.execute("SELECT id_producto, nombre, stock_actual FROM productos ORDER BY id_producto LIMIT 1 FOR UPDATE")
+        row_q = cur_q.fetchone()
+        if not row_q:
+            raise RuntimeError("BD 1 Quito no tiene productos.")
+        cur_q.execute("UPDATE productos SET stock_actual = stock_actual + %s WHERE id_producto = %s", (payload.quantity, row_q["id_producto"]))
         steps.append({
             "phase": "PHASE_1_PREPARE",
             "timestamp": datetime.now().strftime("%H:%M:%S.%f")[:-3],
             "node": f"BD 1: QUITO ({h_q}:3307)",
             "status": "VOTE_COMMIT",
-            "message": f"PREPARE OK en BD 1 (:3307) -> Recepción de +{payload.quantity} botellas bloqueada y lista. Voto: VOTE_COMMIT.",
+            "message": (
+                f"PREPARE OK en BD 1 (:3307) -> '{row_q['nombre']}' stock {row_q['stock_actual']} -> "
+                f"{int(row_q['stock_actual']) + payload.quantity} (+{payload.quantity}) bloqueado sin confirmar. Voto: VOTE_COMMIT."
+            ),
         })
 
         if payload.simulatePrepareFailure:
@@ -1449,14 +1455,23 @@ def execute_two_phase_commit_demo(payload: TwoPhaseCommitRequest):
             })
             raise RuntimeError("VOTE_ABORT en BD 4 Guayaquil (:3306) durante Fase PREPARE.")
 
-        cur_g = conn_gye.cursor()
-        cur_g.execute("UPDATE productos SET pro_Saldo_Final = GREATEST(0, COALESCE(pro_Saldo_Final, 50) - %s) WHERE id_Producto = %s", (payload.quantity, pid))
+        cur_g = conn_gye.cursor(dictionary=True)
+        cur_g.execute("SELECT id_Producto, pro_Descripcion, pro_Saldo_Final FROM productos ORDER BY id_Producto LIMIT 1 FOR UPDATE")
+        row_g = cur_g.fetchone()
+        if not row_g:
+            raise RuntimeError("BD 4 Guayaquil no tiene productos.")
+        if int(row_g["pro_Saldo_Final"] or 0) < payload.quantity:
+            raise RuntimeError(f"Stock insuficiente en BD 4 Guayaquil ({row_g['pro_Saldo_Final']} < {payload.quantity}).")
+        cur_g.execute("UPDATE productos SET pro_Saldo_Final = pro_Saldo_Final - %s WHERE id_Producto = %s", (payload.quantity, row_g["id_Producto"]))
         steps.append({
             "phase": "PHASE_1_PREPARE",
             "timestamp": datetime.now().strftime("%H:%M:%S.%f")[:-3],
             "node": f"BD 4: GUAYAQUIL ({h_g}:3306)",
             "status": "VOTE_COMMIT",
-            "message": f"PREPARE OK en BD 4 (:3306) -> Descuento de -{payload.quantity} botellas preparado en Guayaquil. Voto: VOTE_COMMIT.",
+            "message": (
+                f"PREPARE OK en BD 4 (:3306) -> '{row_g['pro_Descripcion']}' stock {row_g['pro_Saldo_Final']} -> "
+                f"{int(row_g['pro_Saldo_Final']) - payload.quantity} (-{payload.quantity}) bloqueado sin confirmar. Voto: VOTE_COMMIT."
+            ),
         })
 
         with conn_cuenca.cursor() as cur_c:
