@@ -5944,6 +5944,44 @@ def listar_cuentas_demo():
         }
     ]
 
+@app.get("/api/arquitecto/autorizar")
+def autorizar_arquitecto(request: Request):
+    """
+    Lo consulta el balanceador antes de ejecutar un control de infraestructura (apagar/encender réplicas, pausar agentes).
+    Solo el administrador (rol de arquitecto de SI en este proyecto) está autorizado; el DBA no.
+    """
+    auth = request.headers.get("authorization", "")
+    if not auth.lower().startswith("bearer "):
+        raise HTTPException(status_code=401, detail="Inicia sesión como administrador.")
+    user_id, _ = parse_auth_token(auth.split(" ", 1)[1].strip())
+    conn, cur = None, None
+    try:
+        conn = mysql.connector.connect(**get_db_config())
+        cur = conn.cursor(dictionary=True)
+        cur.execute("SELECT TRIM(usr_Username) AS username FROM USUARIOS WHERE id_Usuario = %s", (user_id,))
+        usuario = cur.fetchone()
+        cur.execute(
+            """
+            SELECT TRIM(r.id_Rol) AS id_rol, r.rol_Nombre AS nombre
+            FROM USUARIOSxROLES ur JOIN ROLES r ON ur.id_Rol = r.id_Rol
+            WHERE ur.id_Usuario = %s AND ur.ESTADO_UxR = 'ACT' AND r.ESTADO_ROL = 'ACT'
+            """,
+            (user_id,),
+        )
+        roles = cur.fetchall()
+    finally:
+        if cur: cur.close()
+        if conn and conn.is_connected(): conn.close()
+    es_admin = any(
+        r["id_rol"] in ("ROL-ADM", "ROL-ADMIN")
+        or str(r["nombre"] or "").strip().upper() in ("ADMIN", "ADMINISTRADOR", "SUPERADMINISTRADOR")
+        for r in roles
+    )
+    if not es_admin:
+        raise HTTPException(status_code=403, detail="Solo el administrador (arquitecto de SI) puede operar la infraestructura.")
+    return {"autorizado": True, "usuario": (usuario or {}).get("username") or user_id, "idUsuario": user_id}
+
+
 @app.get("/api/auth/roles")
 def listar_roles_catalogo(_: str = Depends(require_user_manager)):
     if database_backend() == "postgresql":
@@ -6535,7 +6573,7 @@ async def postgres_access_control(request: Request, call_next):
                            headers=headers)
 
    path = request.url.path
-   if path.startswith(('/api/arquitectura', '/api/dba', '/api/agentes', '/api/powerbi', '/api/replicacion', '/api/paralelismo')) or not path.startswith("/api/") or request.method == "OPTIONS":
+   if path.startswith(('/api/arquitectura', '/api/dba', '/api/agentes', '/api/powerbi', '/api/replicacion', '/api/paralelismo', '/api/arquitecto')) or not path.startswith("/api/") or request.method == "OPTIONS":
        return await call_next(request)
    try:
        backend = database_backend()

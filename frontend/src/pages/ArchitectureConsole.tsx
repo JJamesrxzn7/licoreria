@@ -7,6 +7,7 @@ import {
 import { useAuth } from '../context/AuthContext';
 import { isDbaUser, isSuperAdmin } from '../rolePermissions';
 import { ParalelismoReal, ReplicacionDR } from './ReplicacionDR';
+import { ArquitectoSI } from './ArquitectoSI';
 
 const configuredApiUrl = import.meta.env.VITE_API_URL?.trim();
 const isGithubPages = typeof window !== 'undefined' && window.location.hostname.endsWith('github.io');
@@ -484,7 +485,7 @@ const BRANCH_IDENTITIES = [
 export const ArchitectureConsole: React.FC<{ onNavigate?: (route: string) => void }> = ({ onNavigate }) => {
   const { user } = useAuth();
   const isStrictDba = isDbaUser(user) && !isSuperAdmin(user);
-  const [activeTab, setActiveTab] = useState<'diagram_vs' | 'powerbi_tab' | 'global_dba' | 'board' | 'dba_prompt' | 'twopc' | 'replicacion' | 'paralelismo'>('diagram_vs');
+  const [activeTab, setActiveTab] = useState<'diagram_vs' | 'powerbi_tab' | 'global_dba' | 'board' | 'dba_prompt' | 'twopc' | 'replicacion' | 'paralelismo' | 'arquitecto'>('diagram_vs');
   const [topology, setTopology] = useState<TopologyResponse | null>(null);
   const [loadingTopo, setLoadingTopo] = useState(false);
 
@@ -1315,6 +1316,7 @@ export const ArchitectureConsole: React.FC<{ onNavigate?: (route: string) => voi
           { id: 'twopc', label: '6. Simulador 2PC (Exclusivo Admin / Arquitecto)', icon: ShieldCheck, show: !isStrictDba },
           { id: 'replicacion', label: '7. Replicación en anillo y plan DR', icon: Layers, show: true },
           { id: 'paralelismo', label: '8. Paralelismo real (medido)', icon: Cpu, show: true },
+          { id: 'arquitecto', label: '9. Control del arquitecto de SI', icon: Server, show: !isStrictDba },
         ].filter(t => t.show).map(tab => {
           const Icon = tab.icon;
           const active = activeTab === tab.id;
@@ -2759,6 +2761,7 @@ export const ArchitectureConsole: React.FC<{ onNavigate?: (route: string) => voi
       {/* ==================== TAB 6: SIMULADOR 2PC (PREGUNTAS 4 Y 5) ==================== */}
       {activeTab === 'replicacion' && <ReplicacionDR />}
       {activeTab === 'paralelismo' && <ParalelismoReal />}
+      {activeTab === 'arquitecto' && !isStrictDba && <ArquitectoSI />}
 
       {activeTab === 'twopc' && (
         <div>

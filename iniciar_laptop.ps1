@@ -59,11 +59,22 @@ function Start-Oculto([string]$Comando, [string]$Log) {
     Start-Process -WindowStyle Hidden -FilePath 'powershell.exe' -ArgumentList '-NoProfile', '-Command', $full | Out-Null
 }
 
+function Get-ControlArquitecto {
+    # Lo que el arquitecto de SI apagó a propósito desde la interfaz (pestaña 9) no se reenciende
+    $archivo = Join-Path $logs 'control_arquitecto.json'
+    if (Test-Path $archivo) {
+        try { return Get-Content $archivo -Raw -Encoding UTF8 | ConvertFrom-Json } catch { }
+    }
+    return [pscustomobject]@{ replicasDesactivadas = @(); agentesPausados = $false }
+}
+
 function Invoke-Revision {
     $hora = Get-Date -Format 'HH:mm:ss'
+    $control = Get-ControlArquitecto
     foreach ($i in 1..3) {
         $puerto = 8000 + $i
         if (Test-Puerto $puerto) { continue }
+        if (@($control.replicasDesactivadas) -contains "api_lacava_$i") { continue }
         Write-Host "[$hora] Réplica api_lacava_$i (:$puerto) apagada -> encendiendo" -ForegroundColor Yellow
         Stop-Zombi "--port $puerto"
         Start-Oculto "`$env:API_REPLICA_ID='api_lacava_$i'; & '$py' -m uvicorn main:app --host 127.0.0.1 --port $puerto --app-dir '$api'" (Join-Path $logs "api_lacava_$i.log")
@@ -74,7 +85,7 @@ function Invoke-Revision {
         # Se ejecuta el propio archivo: usa SelectorEventLoop, inmune al WinError 64 que tumbaba el accept
         Start-Oculto "Set-Location '$api'; & '$py' -u load_balancer_8080.py 8000" (Join-Path $logs 'balanceador.log')
     }
-    if (-not (Test-Proceso 'agentes_gye_cuenca.py')) {
+    if (-not $control.agentesPausados -and -not (Test-Proceso 'agentes_gye_cuenca.py')) {
         Write-Host "[$hora] Agentes 4-5-6 apagados -> encendiendo" -ForegroundColor Yellow
         Start-Oculto "Set-Location '$root'; & '$py' -u '$(Join-Path $root 'agentes_gye_cuenca.py')' --interval 60" (Join-Path $logs 'agentes_gye_cuenca.log')
     }

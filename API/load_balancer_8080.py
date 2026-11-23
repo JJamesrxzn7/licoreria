@@ -36,6 +36,11 @@ lb_app.add_middleware(
 
 DIST_DIR = Path(__file__).resolve().parent.parent / "frontend" / "dist"
 
+# Control del arquitecto de SI: se registra ANTES de la ruta general /api/{path} para que no se reenvíe a las réplicas
+import control_arquitecto  # noqa: E402
+
+lb_app.include_router(control_arquitecto.router)
+
 
 def _cors_headers(request: Request) -> dict[str, str]:
     origin = request.headers.get("origin")
@@ -91,6 +96,7 @@ async def round_robin_proxy(request: Request, path: str = ""):
     caidas: list[str] = []
     for _ in range(len(REPLICAS)):
         replica_name, base_url = next(replica_cycle)
+        t_inicio = time.perf_counter()
         try:
             async with httpx.AsyncClient(timeout=15.0) as client:
                 resp = await client.request(
@@ -101,7 +107,9 @@ async def round_robin_proxy(request: Request, path: str = ""):
                 )
         except (httpx.ConnectError, httpx.ConnectTimeout):
             caidas.append(replica_name)
+            control_arquitecto.registrar_failover(replica_name)
             continue
+        control_arquitecto.registrar_peticion(replica_name, resp.status_code, (time.perf_counter() - t_inicio) * 1000)
 
         out_headers = {
             k: v for k, v in resp.headers.items()
