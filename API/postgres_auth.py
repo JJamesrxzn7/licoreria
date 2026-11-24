@@ -8,7 +8,8 @@ from postgres_connection import connect_postgres
 
 MODULES = frozenset({"COMPRAS", "INVENTARIOS", "VENTAS", "TALENTO_HUMANO", "CONTABILIDAD"})
 ACTIONS = frozenset({"CREAR", "VER", "APROBAR", "ANULAR"})
-ROLE_ACTION = {"operativo": "CREAR", "auxiliar": "APROBAR", "jefe": "ANULAR"}
+# "supervisor" es el nombre del nivel de aprobación en el ERP (Supervisor_COMPRAS, etc.)
+ROLE_ACTION = {"operativo": "CREAR", "auxiliar": "APROBAR", "supervisor": "APROBAR", "jefe": "ANULAR"}
 
 
 def grants(roles):

@@ -43,7 +43,7 @@ const COLOR_SEDE: Record<string, string> = { QUITO: '#782c3e', GUAYAQUIL: '#183a
 const NOMBRE_SEDE: Record<string, string> = {
   QUITO: 'Quito · BD 1 (PC Escritorio)',
   GUAYAQUIL: 'Guayaquil · BD 4 (Laptop)',
-  CUENCA: 'Cuenca · BD 6 (Supabase)',
+  CUENCA: 'Cuenca · BD 6 (PostgreSQL)',
 };
 
 const fmtSeg = (s: number | null | undefined) => {
@@ -195,8 +195,8 @@ export const ReplicacionDR: React.FC = () => {
         </div>
         <div className={caido ? 'lc-blink' : undefined} style={{ fontSize: '11px', fontWeight: 800, color, margin: '4px 0 6px' }}>{e.estado}</div>
         <div style={{ fontSize: '11.5px', color: '#25251f', lineHeight: 1.6 }}>
-          <div>Filas en el origen: <strong>{e.filasOrigen ?? '—'}</strong></div>
-          <div>Filas replicadas: <strong>{e.filasReplica ?? '—'}</strong> <code style={{ fontSize: '10px' }}>({e.tablaReplica})</code></div>
+          <div>Cambios en el log del origen: <strong>{e.filasOrigen ?? '—'}</strong></div>
+          <div>Cambios replicados: <strong>{e.filasReplica ?? '—'}</strong> <code style={{ fontSize: '10px' }}>({e.tablaReplica})</code></div>
           <div>Pendientes de copiar: <strong>{e.pendientes ?? '—'}</strong></div>
           <div>RPO actual (dato más viejo sin copiar): <strong>{e.pendientes ? fmtSeg(e.rpoSegundos) : '0 s'}</strong></div>
           <div>Última copia: <strong>hace {fmtSeg(e.segundosDesdeUltimaCopia)}</strong></div>
@@ -267,7 +267,7 @@ export const ReplicacionDR: React.FC = () => {
                 </div>
                 <div className="table-scroll" style={{ maxHeight: '300px' }}>
                   <table>
-                    <thead><tr><th>id_op</th><th>Hora</th><th>Usuario</th><th>Módulo</th><th>Monto</th><th>¿En la réplica?</th></tr></thead>
+                    <thead><tr><th>log_seq</th><th>Hora</th><th>Usuario</th><th>Cambio</th><th>Registro</th><th>¿En la réplica?</th></tr></thead>
                     <tbody>
                       {comparacion.origen.filas.map(f => {
                         const pend = f.estado_replica === 'pendiente';
@@ -277,7 +277,7 @@ export const ReplicacionDR: React.FC = () => {
                             <td>{String(f.fecha_hora ?? '').replace('T', ' ').slice(11, 19)}</td>
                             <td><code>{String(f.usuario_rbac ?? '')}</code></td>
                             <td>{String(f.modulo ?? '')}</td>
-                            <td>{f.monto_usd ? `$${Number(f.monto_usd).toFixed(2)}` : '—'}</td>
+                            <td><code>{String(f.documento ?? '—')}</code></td>
                             <td style={{ fontWeight: 800, color: pend ? '#a96b16' : '#267154' }}>{pend ? '⏳ pendiente' : '✔ copiada'}</td>
                           </tr>
                         );
@@ -293,7 +293,7 @@ export const ReplicacionDR: React.FC = () => {
                 </div>
                 <div className="table-scroll" style={{ maxHeight: '300px' }}>
                   <table>
-                    <thead><tr><th>Etiqueta</th><th>id_origen</th><th>Copiada a las</th><th>Tardó</th><th>Usuario</th><th>Módulo</th></tr></thead>
+                    <thead><tr><th>Etiqueta</th><th>log_seq origen</th><th>Copiada a las</th><th>Tardó</th><th>Usuario</th><th>Cambio</th><th>Registro</th></tr></thead>
                     <tbody>
                       {comparacion.replica.filas.map(f => (
                         <tr key={String(f.id_origen)}>
@@ -303,6 +303,7 @@ export const ReplicacionDR: React.FC = () => {
                           <td>{f.segundos_en_llegar !== null && f.segundos_en_llegar !== undefined ? fmtSeg(Number(f.segundos_en_llegar)) : '—'}</td>
                           <td><code>{String(f.usuario_rbac ?? '')}</code></td>
                           <td>{String(f.modulo ?? '')}</td>
+                          <td><code>{String(f.documento ?? '—')}</code></td>
                         </tr>
                       ))}
                     </tbody>
@@ -316,7 +317,7 @@ export const ReplicacionDR: React.FC = () => {
           {comparacion && (
             <div style={{ fontSize: '11px', color: '#575950', marginTop: '6px' }}>
               {comparacion.pendientes > 0
-                ? <>Hay <strong>{comparacion.pendientes}</strong> operación(es) en el origen que aún no llegan: es el retraso normal de una réplica asíncrona (RPO).</>
+                ? <>Hay <strong>{comparacion.pendientes}</strong> cambio(s) del log del origen que aún no llegan: es el retraso normal de una réplica asíncrona (RPO).</>
                 : <>Todo lo reciente del origen ya está copiado en la réplica.</>}
               {' '}«Tardó» = tiempo entre que se escribió en el origen y que se copió en la réplica.
             </div>
@@ -327,8 +328,8 @@ export const ReplicacionDR: React.FC = () => {
           <div style={{ background: '#faf9f6', border: '1px solid #e9e6de', borderRadius: '10px', padding: '12px' }}>
             <strong style={{ color: '#782c3e', fontSize: '12.5px' }}>Cómo funciona</strong>
             <ul style={{ fontSize: '11.5px', margin: '6px 0 0', paddingLeft: '18px', lineHeight: 1.55 }}>
-              <li><strong>Replicación lógica, asíncrona e incremental</strong> hecha por la API: copia las operaciones nuevas (id mayor a la marca de agua) a la tabla réplica del siguiente nodo.</li>
-              <li><strong>Idempotente:</strong> la tabla réplica usa el id de origen como llave primaria; repetir una ronda no duplica nada.</li>
+              <li><strong>Log shipping lógico, asíncrono e incremental:</strong> se copia el <code>LOG_AUDITORIA</code> del ERP de cada sede (todo INSERT/UPDATE/DELETE de cualquier tabla, con su usuario y sus valores antes/después) a la tabla réplica del siguiente nodo, en orden de <code>log_seq</code> (marca de agua).</li>
+              <li><strong>Idempotente:</strong> la tabla réplica usa el <code>log_seq</code> de origen como llave primaria; repetir una ronda no duplica nada. Si la sede cae, sus facturas se reconstruyen aplicando ese log (el último cambio gana).</li>
               <li><strong>¿Por qué no replicación nativa?</strong> El anillo cruza motores distintos (MariaDB ↔ PostgreSQL) y la replicación nativa de cada motor solo funciona entre motores iguales.</li>
               <li><strong>Asíncrona = RPO de segundos:</strong> lo escrito en el último minuto puede no estar aún en la réplica. Una síncrona daría RPO 0, pero cada escritura esperaría a la otra sede (más latencia).</li>
             </ul>
@@ -530,7 +531,7 @@ export const ParalelismoReal: React.FC = () => {
                   EXPLAIN en BD 3 para <code>WHERE id = 42</code> → particiones leídas: <strong>{String(m.intraConsulta.mariadb.explicacionPoda.partitions ?? '—')}</strong> (de p0, p1, p2, p3).
                 </div>
               )}
-              <div style={{ marginTop: '8px' }}><strong>PostgreSQL en Supabase (BD 6): posible, pero no aplica aquí.</strong> {m.intraConsulta.postgresql.conclusion ?? m.intraConsulta.postgresql.error}</div>
+              <div style={{ marginTop: '8px' }}><strong>PostgreSQL (BD 6): posible, pero no aplica aquí.</strong> {m.intraConsulta.postgresql.conclusion ?? m.intraConsulta.postgresql.error}</div>
               {m.intraConsulta.postgresql.plan && (
                 <pre style={{ background: '#132a23', color: '#e8f3ec', padding: '8px', borderRadius: '6px', fontSize: '10.5px', whiteSpace: 'pre-wrap', margin: '6px 0 0' }}>
                   {m.intraConsulta.postgresql.plan}

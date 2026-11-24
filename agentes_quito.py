@@ -4,7 +4,8 @@
 ===============================================================================
 Ejecuta los 3 agentes del Nodo QUITO en paralelo cada 60 segundos apuntando a
 la API de la Laptop (`http://100.123.81.4:8000/api`):
-- Agente 1 (`X-Sede: QUITO`): Rota entre los 15 usuarios RBAC con su contraseña real en BD 1 (:3307).
+- Agente 1 (`X-Sede: QUITO`): transacciones REALES en el ERP de Quito (BD 1 lacava_quito :3307) usando la app:
+  venta POS, compra aprobada, ingreso a bodega o despacho; todo queda en LOG_AUDITORIA de Quito.
 - Agente 2 (`X-Sede: QUITO_NOSQL`): Envía logs JSON y alertas de stock bajo a MongoDB (BD 2 :27017).
 - Agente 3 (`X-Sede: QUITO_PARALELA`): Inserta lotes históricos en la tabla particionada
   `historico_transacciones` (`PARTITION BY HASH(id) PARTITIONS 4` en BD 3 :3308).
@@ -16,9 +17,14 @@ import asyncio
 from datetime import datetime
 import os
 import random
+import sys
 import httpx
 
 IP_TS_GUAYAQUIL = os.getenv("IP_TS_GUAYAQUIL", "100.123.81.4")
+# El Agente 1 trabaja con la app (balanceador de la laptop) sobre el ERP de Quito: X-Sede-App = QUITO
+os.environ.setdefault("LACAVA_APP_URL", f"http://{IP_TS_GUAYAQUIL}:8000")
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "API"))
+import agente_erp  # noqa: E402
 API_CANDIDATES = [
     f"http://{IP_TS_GUAYAQUIL}:8000/api",
     f"http://{IP_TS_GUAYAQUIL}:8080/api",
@@ -49,7 +55,7 @@ async def post_with_failover(client: httpx.AsyncClient, headers: dict, payload: 
     for base in API_CANDIDATES:
         url = f"{base.rstrip('/')}/agentes/operacion"
         try:
-            resp = await client.post(url, headers=headers, json=payload, timeout=10.0)
+            resp = await client.post(url, headers=headers, json=payload, timeout=30.0)
             if resp.status_code == 200:
                 return resp.json()
         except Exception as exc:
@@ -57,26 +63,21 @@ async def post_with_failover(client: httpx.AsyncClient, headers: dict, payload: 
     raise RuntimeError(f"Error conectando a API: {last_err}")
 
 
+async def agente_1_erp(client: httpx.AsyncClient, cycle: int) -> dict:
+    payload = await asyncio.to_thread(agente_erp.transaccion_agente, "QUITO", "Agente-1-Quito-OLTP", cycle)
+    res = await post_with_failover(client, {"X-Sede": "QUITO"}, payload)
+    print(f"  [Agente 1 | ERP QUITO] {payload['operacion'][:110]} | Usr: {payload['usuario']}")
+    return res
+
+
 async def run_cycle(cycle: int):
     print(f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] === RONDA #{cycle}: 3 AGENTES IA NODO QUITO ===")
     async with httpx.AsyncClient() as client:
-        u1, p1, r1, m1 = random.choice(USUARIOS_15_RBAC)
         u2, p2, r2, m2 = random.choice(USUARIOS_15_RBAC)
         u3, p3, r3, m3 = random.choice(USUARIOS_15_RBAC)
 
         resultados = await asyncio.gather(
-            post_with_failover(
-                client,
-                {"X-Sede": "QUITO"},
-                {
-                    "agente": "Agente-1-Quito-OLTP",
-                    "usuario": u1,
-                    "password": p1,
-                    "modulo": m1,
-                    "operacion": f"[Quito OLTP #{cycle}] Transacción en módulo {m1} autenticada por {u1} ({r1})",
-                    "montoUsd": round(random.uniform(95.0, 1200.0), 2),
-                },
-            ),
+            agente_1_erp(client, cycle),
             post_with_failover(
                 client,
                 {"X-Sede": "QUITO_NOSQL"},

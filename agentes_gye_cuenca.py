@@ -8,14 +8,14 @@ Header obligatorio `X-Sede` y autenticándose con las credenciales reales de la
 matriz de 15 usuarios por módulo + DBA + Admin:
 
 - Agente 4 (`X-Sede: GUAYAQUIL`):
-  Rota entre los 15 usuarios RBAC (con su contraseña real) y simula operaciones
-  de los 5 módulos (`C`, `I`, `V`, `TH`, `Ctbl`) en BD 4 (MariaDB Local `:3306`).
+  Hace transacciones REALES en el ERP de Guayaquil (BD 4, MariaDB :3307) usando la app:
+  venta POS, compra aprobada, ingreso a bodega o despacho; todo queda en LOG_AUDITORIA.
 - Agente 5 (`X-Sede: GUAYAQUIL_DWH`):
   Ejecuta un mini-ETL cada minuto consolidando ventas hacia BD 5 (`db_gye_dwh`
   en MariaDB `:3309` con esquema estrella para Power BI).
 - Agente 6 (`X-Sede: CUENCA`):
-  Inserta transacciones en Supabase / PostgreSQL (BD 6 `:5432`) para medir
-  la latencia WAN en tiempo real.
+  Igual que el 4 pero en el ERP PostgreSQL de Cuenca (BD 6 `:5432` lacava_cuenca),
+  midiendo la latencia hasta el nodo.
 ===============================================================================
 """
 
@@ -28,7 +28,7 @@ import sys
 import httpx
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "API"))
-import generar_recepciones_entregas as app_flujo  # noqa: E402  (flujos reales de la app: compras, POS, bodega)
+import agente_erp  # noqa: E402  (transacciones reales en el ERP de cada sede: POS, compras, bodega)
 
 API_CANDIDATES = [
     os.getenv("API_URL_LAPTOP", "http://127.0.0.1:8000/api"),
@@ -68,108 +68,37 @@ async def post_with_failover(client: httpx.AsyncClient, headers: dict, payload: 
     raise RuntimeError(f"No se pudo conectar a la API en {API_CANDIDATES}: {last_err}")
 
 
-PROB_ACCION_BODEGA = float(os.getenv("AG4_PROB_BODEGA", "0.4"))
-
-
-async def run_agente_4_bodega(client: httpx.AsyncClient, cycle: int):
+async def run_agente_erp(client: httpx.AsyncClient, cycle: int, num: int, sede: str, agente: str):
     """
-    Agente 4 trabajando como usuario de la app: crea y aprueba una compra (-> recepción), confirma una recepción,
-    vende en el POS (-> entrega) o despacha una entrega. La app lo audita con el usuario RBAC que lo hizo, y el
-    agente lo anota en su bitácora de BD 4 enlazado al documento.
+    Agente 4 (Guayaquil) y Agente 6 (Cuenca): hacen una transacción REAL en el ERP de su sede usando la app
+    (venta POS, compra aprobada, ingreso a bodega o despacho). El ERP la guarda y la audita con el usuario RBAC;
+    luego el agente la anota en su bitácora enlazada al documento.
     """
-    doc = await asyncio.to_thread(app_flujo.accion_bodega)
-    user = doc["usuario"]
-    password, rol = next((p, r) for u, p, r, _, _ in USUARIOS_15_RBAC if u == user)
-    res = await post_with_failover(client, {"X-Sede": "GUAYAQUIL"}, {
-        "agente": "Agente-4-Guayaquil-OLTP",
-        "usuario": user,
-        "password": password,
-        "modulo": doc["modulo"],
-        "operacion": f"[Ciclo #{cycle}] [Bodega] {doc['accion']}"[:120],
-        "montoUsd": doc["monto"],
-        "documentoApp": {"tabla": doc["tabla"], "id": doc["id"], "accion": doc["accion"]},
-    })
-    print(f"  [Agente 4 | Bodega en la app] {doc['accion']} | Usr: {user} ({rol}) | bitácora BD 4 id {res['operationId']}")
-    return res
-
-
-async def run_agente_4_guayaquil(client: httpx.AsyncClient, cycle: int):
-    """Agente 4 (X-Sede: GUAYAQUIL): Opera con los 15 usuarios y sus contraseñas en BD 4 (:3306)."""
-    if random.random() < PROB_ACCION_BODEGA:
-        try:
-            return await run_agente_4_bodega(client, cycle)
-        except Exception as exc:  # si la app no responde, el agente hace su operación normal
-            print(f"  [!] Agente 4 bodega: {exc}. Hace su operación OLTP normal.")
-    user, password, rol, modulo, desc = random.choice(USUARIOS_15_RBAC)
-    monto = round(random.uniform(85.0, 1450.0), 2)
-    headers = {
-        "X-Sede": "GUAYAQUIL",
-        "X-Agent-User": user,
-        "X-Agent-Role": rol,
-    }
-    payload = {
-        "agente": "Agente-4-Guayaquil-OLTP",
-        "usuario": user,
-        "password": password,
-        "modulo": modulo,
-        "operacion": f"[Ciclo #{cycle}] {desc} (Auth: {user} / Rol: {rol})",
-        "montoUsd": monto,
-    }
-    res = await post_with_failover(client, headers, payload)
-    print(
-        f"  [Agente 4 | X-Sede: GUAYAQUIL -> {res['routedTo']} :{res['port']}] "
-        f"Usr: {user} ({rol}) | Mod: {modulo} | Replica: {res['apiReplica']} | {res['latencyMs']} ms"
-    )
+    t0 = asyncio.get_running_loop().time()
+    payload = await asyncio.to_thread(agente_erp.transaccion_agente, sede, agente, cycle)
+    res = await post_with_failover(client, {"X-Sede": sede}, payload)
+    ms = round((asyncio.get_running_loop().time() - t0) * 1000)
+    doc = payload.get("documentoApp") or {}
+    print(f"  [Agente {num} | ERP {sede}] {payload['operacion'][:110]} | Usr: {payload['usuario']} | "
+          f"doc {doc.get('tabla', '-')}:{doc.get('id', '-')} | bitácora id {res['operationId']} | {ms} ms")
     return res
 
 
 async def run_agente_5_guayaquil_dwh(client: httpx.AsyncClient, cycle: int):
-    """Agente 5 (X-Sede: GUAYAQUIL_DWH): Mini-ETL cada minuto consolidando ventas hacia BD 5 (:3309)."""
+    """Agente 5 (X-Sede: GUAYAQUIL_DWH): ETL incremental cada minuto desde el log de los 3 ERP hacia el esquema estrella de BD 5."""
     user, password, rol, _, _ = random.choice([u for u in USUARIOS_15_RBAC if u[3] in ("VENTAS", "CONTABILIDAD")])
-    monto_etl = round(random.uniform(420.0, 2850.0), 2)
-    headers = {
-        "X-Sede": "GUAYAQUIL_DWH",
-        "X-Agent-User": user,
-        "X-Agent-Role": rol,
-    }
     payload = {
         "agente": "Agente-5-Guayaquil-ETL-DWH",
         "usuario": user,
         "password": password,
         "modulo": "VENTAS",
-        "operacion": f"[Mini-ETL #{cycle}] Consolidación OLTP -> Esquema Estrella BD 5 (:3309 fact_ventas) para Power BI",
-        "montoUsd": monto_etl,
+        "operacion": f"[Mini-ETL #{cycle}] CDC: líneas de venta nuevas de los 3 ERP (LOG_AUDITORIA) -> fact_ventas de BD 5",
+        "montoUsd": 0.0,
     }
-    res = await post_with_failover(client, headers, payload)
-    print(
-        f"  [Agente 5 | X-Sede: GUAYAQUIL_DWH -> {res['routedTo']} :{res['port']}] "
-        f"ETL Power BI (${monto_etl}) | Usr: {user} | Replica: {res['apiReplica']} | {res['latencyMs']} ms"
-    )
-    return res
-
-
-async def run_agente_6_cuenca_cloud(client: httpx.AsyncClient, cycle: int):
-    """Agente 6 (X-Sede: CUENCA): Inserta transacciones en Supabase / PostgreSQL BD 6 (:5432) y mide latencia WAN."""
-    user, password, rol, modulo, _ = random.choice(USUARIOS_15_RBAC)
-    monto_cloud = round(random.uniform(110.0, 960.0), 2)
-    headers = {
-        "X-Sede": "CUENCA",
-        "X-Agent-User": user,
-        "X-Agent-Role": rol,
-    }
-    payload = {
-        "agente": "Agente-6-Cuenca-Supabase-Cloud",
-        "usuario": user,
-        "password": password,
-        "modulo": modulo,
-        "operacion": f"[Cloud WAN #{cycle}] Transacción Austral Cuenca/Loja en Supabase DBaaS (Zhumir/Cristal)",
-        "montoUsd": monto_cloud,
-    }
-    res = await post_with_failover(client, headers, payload)
-    print(
-        f"  [Agente 6 | X-Sede: CUENCA -> {res['routedTo']} :{res['port']}] "
-        f"Usr: {user} ({rol}) | Mod: {modulo} | Replica: {res['apiReplica']} | Latencia WAN: {res['latencyMs']} ms"
-    )
+    res = await post_with_failover(client, {"X-Sede": "GUAYAQUIL_DWH", "X-Agent-User": user, "X-Agent-Role": rol}, payload)
+    fuentes = [i for i in res.get("impacto", []) if str(i.get("tabla", "")).startswith("ETL ")]
+    detalle = " · ".join(f"{i['tabla'].split()[1]}: {i.get('accion', '')[:40] if i.get('ok') else 'OFFLINE'}" for i in fuentes)
+    print(f"  [Agente 5 | ETL -> BD 5 :3309] lote {res.get('operationId')} | {detalle} | {res['latencyMs']} ms")
     return res
 
 
@@ -177,9 +106,9 @@ async def run_cycle(cycle: int):
     print(f"\n[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] === RONDA #{cycle}: EJECUTANDO 3 AGENTES IA (LAPTOP: GYE + DWH + CUENCA) ===")
     async with httpx.AsyncClient() as client:
         resultados = await asyncio.gather(
-            run_agente_4_guayaquil(client, cycle),
+            run_agente_erp(client, cycle, 4, "GUAYAQUIL", "Agente-4-Guayaquil-OLTP"),
             run_agente_5_guayaquil_dwh(client, cycle),
-            run_agente_6_cuenca_cloud(client, cycle),
+            run_agente_erp(client, cycle, 6, "CUENCA", "Agente-6-Cuenca-ERP-PostgreSQL"),
             return_exceptions=True,
         )
         for nombre, res in zip(("Agente 4", "Agente 5", "Agente 6"), resultados):

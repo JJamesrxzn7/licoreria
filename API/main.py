@@ -41,6 +41,7 @@ import postgres_modulos
 import postgres_usuarios
 import postgres_ventas
 import arquitectura_cluster
+import sede_contexto
 import cluster_replicacion
 
 # Cargar variables de entorno desde .env (con fallback si python-dotenv no estuviera instalado)
@@ -148,6 +149,11 @@ def get_db_config() -> dict[str, str | int | bool]:
         "database": os.getenv("MARIADB_DATABASE", "licoreriadatabase"),
         "use_pure": True,
     }
+    # ERP por sede: Quito vive en la PC de Escritorio (Guayaquil es la configuración por defecto)
+    sede = sede_contexto.sede_app.get()
+    if sede == "QUITO":
+        config.update(sede_contexto.mariadb_destino("QUITO"))
+        config.setdefault("connection_timeout", 8)
     ca_file = os.getenv("MARIADB_SSL_CA", "").strip()
     if ca_file:
         if not Path(ca_file).is_file():
@@ -170,6 +176,9 @@ def get_db_config() -> dict[str, str | int | bool]:
 
 
 def database_backend() -> str:
+    # La sede Cuenca usa la versión PostgreSQL del ERP; Quito y Guayaquil, MariaDB
+    if sede_contexto.sede_app.get() == "CUENCA":
+        return "postgresql"
     backend = os.getenv("DATABASE_BACKEND", "mariadb").strip().lower()
     if os.getenv("APP_ENV", "").strip().lower() == "production" and backend != "postgresql":
         logger.error("La producción requiere DATABASE_BACKEND=postgresql.")
@@ -231,6 +240,19 @@ def get_user_id(cursor=None) -> str:
             status_code=500,
             detail="No se pudo identificar al usuario que realiza la operación.",
         )
+
+    # Primero el usuario REAL de la sesión: así los procedimientos (SP_REGISTRAR_LOG, SP_FACTURA_CREAR, …)
+    # registran a quien hizo la acción y no a un usuario fijo de configuración.
+    actor = audit_user_id.get()
+    if actor:
+        cursor.execute(
+            "SELECT id_Usuario FROM USUARIOS WHERE id_Usuario = %s AND ESTADO_USR = 'ACT' LIMIT 1",
+            (actor,),
+        )
+        row = cursor.fetchone()
+        if row:
+            value = row[0] if isinstance(row, (tuple, list)) else row["id_Usuario"]
+            return str(value).strip()
 
     env_user = os.getenv("MARIADB_USER_ID", "").strip()
     if env_user:
@@ -6617,6 +6639,19 @@ async def postgres_access_control(request: Request, call_next):
    if not postgres_authorization.allowed(roles, requirement):
        return rejected(403, "No tienes permiso para esta operación.")
    return await call_next(request)
+
+
+# Registrado al final = middleware más externo: fija la sede ANTES de la auditoría y del control de acceso
+@app.middleware("http")
+async def fijar_sede_app(request: Request, call_next):
+    """La app elige el ERP de la sede con el header X-Sede-App (QUITO / GUAYAQUIL / CUENCA)."""
+    marca = sede_contexto.sede_app.set(sede_contexto.normalizar(request.headers.get("x-sede-app")))
+    try:
+        respuesta = await call_next(request)
+        respuesta.headers["X-Sede-App"] = sede_contexto.sede_app.get()
+        return respuesta
+    finally:
+        sede_contexto.sede_app.reset(marca)
 
 
 if __name__ == "__main__":

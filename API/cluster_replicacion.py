@@ -21,6 +21,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from typing import Any
+from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException, Query
 
@@ -34,33 +35,37 @@ from arquitectura_cluster import (
     connect_mongo_with_fallback,
     connect_postgres_with_fallback,
     get_cluster_6dbs_config,
-    registrar_auditoria,
     serialize_value,
 )
-import mysql.connector
 
 router = APIRouter(tags=["Replicación en anillo, DR y paralelismo"])
 
 ANILLO = [
-    {"id": "QUITO->GUAYAQUIL", "origen": "QUITO", "destino": "GUAYAQUIL", "tabla": "replica_quito_operaciones"},
-    {"id": "GUAYAQUIL->CUENCA", "origen": "GUAYAQUIL", "destino": "CUENCA", "tabla": "replica_guayaquil_operaciones"},
-    {"id": "CUENCA->QUITO", "origen": "CUENCA", "destino": "QUITO", "tabla": "replica_cuenca_operaciones"},
+    {"id": "QUITO->GUAYAQUIL", "origen": "QUITO", "destino": "GUAYAQUIL", "tabla": "replica_quito_log"},
+    {"id": "GUAYAQUIL->CUENCA", "origen": "GUAYAQUIL", "destino": "CUENCA", "tabla": "replica_guayaquil_log"},
+    {"id": "CUENCA->QUITO", "origen": "CUENCA", "destino": "QUITO", "tabla": "replica_cuenca_log"},
 ]
 REPLICA_DE = {e["origen"]: e for e in ANILLO}
 TABLA_ORIGEN = {"QUITO": "operaciones_agentes_ia", "GUAYAQUIL": "operaciones_agentes_ia", "CUENCA": "operaciones_agentes_cloud"}
-LOTE_MAX = 500
+LOTE_MAX = 2000
+# Lo que se replica es el LOG DE CAMBIOS del ERP (LOG_AUDITORIA, ordenado por log_seq): cada INSERT/UPDATE/DELETE de
+# cualquier tabla de la sede, con su usuario y sus valores antes/después. Las propias filas de réplica no se reenvían
+# (si no, cada nodo devolvería al anillo lo que recibió y el log crecería sin fin).
+FILTRO_LOG = "log_tablaafectada NOT LIKE 'REPLICA%%'"
 
 DDL_MARIADB = (
     "CREATE TABLE IF NOT EXISTS {t} ("
-    " id_origen BIGINT PRIMARY KEY, sede_origen VARCHAR(20) NOT NULL, agente_nombre VARCHAR(60),"
-    " usuario_rbac VARCHAR(30), rol_rbac VARCHAR(30), modulo VARCHAR(30), operacion VARCHAR(255),"
-    " monto_usd DECIMAL(12,2), fecha_origen DATETIME, replicado_en DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP)"
+    " log_seq_origen BIGINT PRIMARY KEY, sede_origen VARCHAR(20) NOT NULL,"
+    " etiqueta_replica VARCHAR(60) NOT NULL DEFAULT '{etiqueta}', id_log_origen CHAR(15), id_usuario VARCHAR(16),"
+    " fecha_origen DATETIME, tabla VARCHAR(50), accion VARCHAR(20), valor_anterior LONGTEXT, valor_nuevo LONGTEXT,"
+    " replicado_en DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, KEY idx_{t}_tabla (tabla))"
 )
 DDL_PG = (
     "CREATE TABLE IF NOT EXISTS {t} ("
-    " id_origen BIGINT PRIMARY KEY, sede_origen VARCHAR(20) NOT NULL, agente_nombre VARCHAR(60),"
-    " usuario_rbac VARCHAR(30), rol_rbac VARCHAR(30), modulo VARCHAR(30), operacion VARCHAR(255),"
-    " monto_usd NUMERIC(12,2), fecha_origen TIMESTAMP, replicado_en TIMESTAMP NOT NULL DEFAULT now())"
+    " log_seq_origen BIGINT PRIMARY KEY, sede_origen VARCHAR(20) NOT NULL,"
+    " etiqueta_replica VARCHAR(60) NOT NULL DEFAULT '{etiqueta}', id_log_origen CHAR(15), id_usuario VARCHAR(16),"
+    " fecha_origen TIMESTAMP, tabla VARCHAR(50), accion VARCHAR(20), valor_anterior TEXT, valor_nuevo TEXT,"
+    " replicado_en TIMESTAMP NOT NULL DEFAULT now())"
 )
 
 
@@ -75,6 +80,10 @@ def _conectar(sede: str):
         return conn, "pg"
     conn, _ = connect_mariadb_with_fallback(cfg)
     return conn, "my"
+
+
+def _es_pg(sede: str) -> bool:
+    return get_cluster_6dbs_config()[sede]["engineType"] == "postgresql"
 
 
 def _query(sede: str, sql: str, params: tuple = ()) -> list[dict[str, Any]]:
@@ -93,8 +102,26 @@ def _naive(dt: Any) -> Any:
     return dt.replace(tzinfo=None) if isinstance(dt, datetime) and dt.tzinfo else dt
 
 
+def _json(texto: Any) -> dict[str, Any]:
+    """Valores del log como dict con llaves en minúsculas (MariaDB guarda id_Factura, PostgreSQL id_factura)."""
+    try:
+        d = json.loads(texto) if texto else {}
+        return {str(k).lower(): v for k, v in d.items()} if isinstance(d, dict) else {}
+    except (TypeError, ValueError):
+        return {}
+
+
+def _documento_del_cambio(valor_nuevo: Any, valor_anterior: Any) -> str | None:
+    """Primer valor del registro cambiado (su llave primaria en el ERP), para mostrar QUÉ documento cambió."""
+    d = _json(valor_nuevo) or _json(valor_anterior)
+    for v in d.values():
+        if v not in (None, ""):
+            return str(v).strip()[:40]
+    return None
+
+
 # ------------------------------------------------------------------------------------------------
-# Replicación
+# Replicación (log shipping del LOG_AUDITORIA de cada ERP)
 # ------------------------------------------------------------------------------------------------
 
 ETIQUETA_REPLICA = {
@@ -106,49 +133,53 @@ _TABLAS_LISTAS: set[str] = set()
 
 
 def _asegurar_tabla_replica(enlace: dict) -> None:
-    """Crea la tabla réplica si falta y le agrega la columna etiqueta_replica («RÉPLICA de Quito (BD 1)», etc.).
-    Con DEFAULT, las filas ya copiadas reciben la etiqueta automáticamente."""
+    """Crea en el destino la tabla réplica del log del origen, con su etiqueta «RÉPLICA de <sede>» por defecto."""
     if enlace["id"] in _TABLAS_LISTAS:
         return
     conn, kind = _conectar(enlace["destino"])
     try:
         cur = conn.cursor()
-        cur.execute((DDL_PG if kind == "pg" else DDL_MARIADB).format(t=enlace["tabla"]))
-        etiqueta = ETIQUETA_REPLICA[enlace["origen"]]
-        cur.execute(
-            f"ALTER TABLE {enlace['tabla']} ADD COLUMN IF NOT EXISTS etiqueta_replica VARCHAR(60) NOT NULL DEFAULT '{etiqueta}'"
-        )
-        if kind == "pg" and not conn.autocommit:
-            conn.commit()
+        cur.execute((DDL_PG if kind == "pg" else DDL_MARIADB).format(t=enlace["tabla"], etiqueta=ETIQUETA_REPLICA[enlace["origen"]]))
+        if kind == "pg":
+            cur.execute(f"CREATE INDEX IF NOT EXISTS idx_{enlace['tabla']}_tabla ON {enlace['tabla']} (tabla)")
         cur.close()
         _TABLAS_LISTAS.add(enlace["id"])
     finally:
         conn.close()
 
 
+def _auditar_corrida(enlace: dict, cur, kind: str, desde: int, hasta: int, copiadas: int) -> None:
+    """La replicación también queda en el LOG_AUDITORIA de la BD que recibe la copia (hecha por el usuario dba)."""
+    datos = json.dumps({"enlace": enlace["id"], "origen": enlace["origen"], "log_seq_desde": desde, "log_seq_hasta": hasta,
+                        "filas_copiadas": copiadas, "replica_api": REPLICA_ID}, ensure_ascii=False)
+    id_log = uuid4().hex[:15].upper()
+    tabla = enlace["tabla"].upper()
+    if kind == "pg":
+        cur.execute("INSERT INTO log_auditoria (id_log, id_usuario, log_fechahora, log_tablaafectada, log_accion, log_valornuevo) "
+                    "SELECT %s, (SELECT id_usuario FROM usuarios WHERE usr_username = 'dba'), now(), %s, 'INSERT', %s",
+                    (id_log, tabla, datos))
+    else:
+        cur.execute("INSERT INTO log_auditoria (id_Log, id_Usuario, log_FechaHora, log_TablaAfectada, log_Accion, log_ValorNuevo) "
+                    "SELECT %s, (SELECT id_Usuario FROM usuarios WHERE usr_Username = 'dba'), NOW(), %s, 'INSERT', %s",
+                    (id_log, tabla, datos))
+
+
 def sincronizar_enlace(enlace: dict) -> dict[str, Any]:
-    """Copia al destino las operaciones del origen con id mayor a la marca de agua del destino."""
+    """Copia al destino los cambios del log del origen con log_seq mayor a la marca de agua del destino."""
     t0 = time.perf_counter()
     res = {"enlace": enlace["id"], "origen": enlace["origen"], "destino": enlace["destino"], "tablaReplica": enlace["tabla"]}
     try:
         _asegurar_tabla_replica(enlace)
-        marca = _query(enlace["destino"], f"SELECT COALESCE(MAX(id_origen), 0) AS m FROM {enlace['tabla']}")[0]["m"]
-        marca = int(marca or 0)
+        marca = int(_query(enlace["destino"], f"SELECT COALESCE(MAX(log_seq_origen), 0) AS m FROM {enlace['tabla']}")[0]["m"] or 0)
     except Exception as exc:
         return {**res, "ok": False, "copiadas": 0, "error": f"Destino {enlace['destino']} no disponible: {str(exc)[:160]}",
                 "ms": round((time.perf_counter() - t0) * 1000, 1)}
 
     try:
-        conn_o, kind_o = _conectar(enlace["origen"])
-        cur_o = conn_o.cursor()
-        cur_o.execute(
-            f"SELECT id_op, agente_nombre, usuario_rbac, rol_rbac, modulo, operacion, monto_usd, fecha_hora "
-            f"FROM {TABLA_ORIGEN[enlace['origen']]} WHERE id_op > %s ORDER BY id_op LIMIT {LOTE_MAX}",
-            (marca,),
-        )
-        filas = cur_o.fetchall()
-        cur_o.close()
-        conn_o.close()
+        filas = [tuple(f.values()) for f in _query(
+            enlace["origen"],
+            f"SELECT log_seq, id_log, id_usuario, log_fechahora, log_tablaafectada, log_accion, log_valoranterior, log_valornuevo "
+            f"FROM log_auditoria WHERE log_seq > %s AND {FILTRO_LOG} ORDER BY log_seq LIMIT {LOTE_MAX}", (marca,))]
     except Exception as exc:
         return {**res, "ok": False, "copiadas": 0, "marcaDeAgua": marca,
                 "error": f"Origen {enlace['origen']} no disponible: {str(exc)[:160]}",
@@ -159,65 +190,46 @@ def sincronizar_enlace(enlace: dict) -> dict[str, Any]:
         conn_d, kind_d = _conectar(enlace["destino"])
         try:
             cur_d = conn_d.cursor()
-            sql = (
-                f"INSERT INTO {enlace['tabla']} (id_origen, sede_origen, agente_nombre, usuario_rbac, rol_rbac, modulo, "
-                f"operacion, monto_usd, fecha_origen) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)"
-            )
-            sql += " ON CONFLICT (id_origen) DO NOTHING" if kind_d == "pg" else ""
-            if kind_d != "pg":
-                sql = sql.replace("INSERT INTO", "INSERT IGNORE INTO", 1)
-            datos = [
-                (int(f[0]), enlace["origen"], f[1], f[2], f[3], f[4], (f[5] or "")[:255], f[6], _naive(f[7]))
-                for f in filas
-            ]
+            sql = (f"INSERT INTO {enlace['tabla']} (log_seq_origen, sede_origen, id_log_origen, id_usuario, fecha_origen, tabla, accion, "
+                   f"valor_anterior, valor_nuevo) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)")
+            sql = sql + " ON CONFLICT (log_seq_origen) DO NOTHING" if kind_d == "pg" else sql.replace("INSERT INTO", "INSERT IGNORE INTO", 1)
+            datos = [(int(f[0]), enlace["origen"], (f[1] or "").strip(), (f[2] or "").strip() or None, _naive(f[3]), f[4], f[5], f[6], f[7])
+                     for f in filas]
             cur_d.executemany(sql, datos)
             copiadas = len(datos)
-            if not getattr(conn_d, "autocommit", True):
-                conn_d.commit()
+            _auditar_corrida(enlace, cur_d, kind_d, int(filas[0][0]), int(filas[-1][0]), copiadas)
             cur_d.close()
         finally:
             conn_d.close()
-    if copiadas:
-        # La copia queda auditada en la BD que la recibe
-        registrar_auditoria(enlace["destino"], "SYS-REPLICA", [{
-            "tabla": enlace["tabla"], "accion": "INSERT replicación",
-            "id": f"id_origen {marca + 1}..{int(filas[-1][0])}",
-        }], {"enlace": enlace["id"], "origen": enlace["origen"], "filas_copiadas": copiadas, "replica_api": REPLICA_ID}, "")
     return {**res, "ok": True, "copiadas": copiadas, "marcaDeAgua": marca,
             "nuevaMarca": int(filas[-1][0]) if filas else marca, "ms": round((time.perf_counter() - t0) * 1000, 1)}
 
 
 def estado_enlace(enlace: dict) -> dict[str, Any]:
-    """Filas en el origen, filas replicadas y retraso (pendientes y antigüedad de la más vieja sin copiar = RPO actual)."""
+    """Cambios en el log del origen, cambios ya replicados y retraso (pendientes y antigüedad del más viejo sin copiar = RPO)."""
     res = {"enlace": enlace["id"], "origen": enlace["origen"], "destino": enlace["destino"], "tablaReplica": enlace["tabla"]}
     origen_ok = destino_ok = True
     try:
-        o = _query(enlace["origen"], f"SELECT COUNT(*) AS n, COALESCE(MAX(id_op), 0) AS maxid FROM {TABLA_ORIGEN[enlace['origen']]}")[0]
+        o = _query(enlace["origen"], f"SELECT COUNT(*) AS n, COALESCE(MAX(log_seq), 0) AS maxid FROM log_auditoria WHERE {FILTRO_LOG}")[0]
     except Exception as exc:
         origen_ok, o = False, {"n": None, "maxid": None}
         res["errorOrigen"] = str(exc)[:160]
     try:
         _asegurar_tabla_replica(enlace)
-        if get_cluster_6dbs_config()[enlace["destino"]]["engineType"] == "postgresql":
-            d = _query(enlace["destino"], f"SELECT COUNT(*) AS n, COALESCE(MAX(id_origen), 0) AS marca, "
-                                          f"EXTRACT(EPOCH FROM (now() - MAX(replicado_en)))::int AS hace FROM {enlace['tabla']}")[0]
-        else:
-            d = _query(enlace["destino"], f"SELECT COUNT(*) AS n, COALESCE(MAX(id_origen), 0) AS marca, "
-                                          f"TIMESTAMPDIFF(SECOND, MAX(replicado_en), NOW()) AS hace FROM {enlace['tabla']}")[0]
+        hace = ("EXTRACT(EPOCH FROM (now() - MAX(replicado_en)))::int" if _es_pg(enlace["destino"])
+                else "TIMESTAMPDIFF(SECOND, MAX(replicado_en), NOW())")
+        d = _query(enlace["destino"], f"SELECT COUNT(*) AS n, COALESCE(MAX(log_seq_origen), 0) AS marca, {hace} AS hace FROM {enlace['tabla']}")[0]
     except Exception as exc:
         destino_ok, d = False, {"n": None, "marca": None, "hace": None}
         res["errorDestino"] = str(exc)[:160]
 
     pendientes = rpo = None
     if origen_ok and destino_ok:
-        marca = int(d["marca"] or 0)
+        edad = ("EXTRACT(EPOCH FROM (now() - MIN(log_fechahora)))::int" if _es_pg(enlace["origen"])
+                else "TIMESTAMPDIFF(SECOND, MIN(log_fechahora), NOW())")
         try:
-            if get_cluster_6dbs_config()[enlace["origen"]]["engineType"] == "postgresql":
-                p = _query(enlace["origen"], f"SELECT COUNT(*) AS n, EXTRACT(EPOCH FROM (now() - MIN(fecha_hora)))::int AS rpo "
-                                             f"FROM {TABLA_ORIGEN[enlace['origen']]} WHERE id_op > %s", (marca,))[0]
-            else:
-                p = _query(enlace["origen"], f"SELECT COUNT(*) AS n, TIMESTAMPDIFF(SECOND, MIN(fecha_hora), NOW()) AS rpo "
-                                             f"FROM {TABLA_ORIGEN[enlace['origen']]} WHERE id_op > %s", (marca,))[0]
+            p = _query(enlace["origen"], f"SELECT COUNT(*) AS n, {edad} AS rpo FROM log_auditoria "
+                                         f"WHERE log_seq > %s AND {FILTRO_LOG}", (int(d["marca"] or 0),))[0]
             pendientes, rpo = int(p["n"] or 0), (int(p["rpo"]) if p["rpo"] is not None else 0)
         except Exception:
             pass
@@ -251,6 +263,25 @@ async def replicacion_estado():
     return {"timestamp": datetime.now().isoformat(), "apiReplica": REPLICA_ID, "enlaces": estados}
 
 
+def _facturas_desde_replica(enlace: dict, limit: int) -> list[dict[str, Any]]:
+    """Reconstruye el estado ACTUAL de las facturas de la sede caída aplicando su log replicado (el último cambio gana)."""
+    filas = _query(enlace["destino"], f"SELECT log_seq_origen, etiqueta_replica, accion, valor_anterior, valor_nuevo, fecha_origen "
+                                      f"FROM {enlace['tabla']} WHERE tabla = 'FACTURAS' ORDER BY log_seq_origen DESC LIMIT 3000")
+    vistas: dict[str, dict[str, Any]] = {}
+    for f in filas:  # de la más nueva a la más vieja
+        nuevo, viejo = _json(f["valor_nuevo"]), _json(f["valor_anterior"])
+        fac = str((nuevo or viejo).get("id_factura") or "").strip()
+        if not fac or fac in vistas:
+            continue
+        vistas[fac] = {
+            "etiqueta_replica": f["etiqueta_replica"], "id_factura": fac,
+            "fac_fecha": nuevo.get("fac_fecha"), "fac_total": nuevo.get("fac_total"),
+            "estado_fac": "ELIMINADA" if f["accion"] == "DELETE" else nuevo.get("estado_fac"),
+            "ultimo_cambio": f"{f['accion']} · log_seq {f['log_seq_origen']}",
+        }
+    return sorted(vistas.values(), key=lambda x: str(x["fac_fecha"] or ""), reverse=True)[:limit]
+
+
 @router.get("/api/replicacion/leer/{sede}")
 def replicacion_leer(
     sede: str,
@@ -258,7 +289,7 @@ def replicacion_leer(
     simular_caida: bool = Query(default=False, alias="simularCaida",
                                 description="Ignora la primaria a propósito para mostrar el failover sin apagar la máquina"),
 ):
-    """Lee las últimas operaciones de una sede; si su BD primaria no responde, las sirve desde su réplica."""
+    """Lee las últimas FACTURAS de una sede; si su ERP no responde, las reconstruye desde su log replicado en otra sede."""
     sede = sede.strip().upper()
     if sede not in REPLICA_DE:
         raise HTTPException(status_code=404, detail="Sede no válida (QUITO, GUAYAQUIL o CUENCA).")
@@ -267,9 +298,9 @@ def replicacion_leer(
     error_primaria = None
     if not simular_caida:
         try:
-            filas = _query(sede, f"SELECT id_op, fecha_hora, usuario_rbac, modulo, operacion, monto_usd "
-                                 f"FROM {TABLA_ORIGEN[sede]} ORDER BY id_op DESC LIMIT %s", (limit,))
-            return {"sede": sede, "servidoDesde": "PRIMARIA", "nodo": sede, "tabla": TABLA_ORIGEN[sede],
+            filas = _query(sede, "SELECT id_factura, fac_fecha, fac_total, estado_fac FROM facturas "
+                                 "ORDER BY fac_fecha DESC LIMIT %s", (limit,))
+            return {"sede": sede, "servidoDesde": "PRIMARIA", "nodo": sede, "tabla": "facturas (ERP)",
                     "ms": round((time.perf_counter() - t0) * 1000, 1), "filas": filas}
         except Exception as exc:
             error_primaria = str(exc)[:200]
@@ -277,10 +308,9 @@ def replicacion_leer(
         error_primaria = "Caída simulada a pedido (la primaria no se consultó)."
     try:
         _asegurar_tabla_replica(enlace)
-        filas = _query(enlace["destino"], f"SELECT etiqueta_replica, id_origen AS id_op, fecha_origen AS fecha_hora, usuario_rbac, modulo, "
-                                          f"operacion, monto_usd, replicado_en FROM {enlace['tabla']} "
-                                          f"ORDER BY id_origen DESC LIMIT %s", (limit,))
-        return {"sede": sede, "servidoDesde": "REPLICA", "nodo": enlace["destino"], "tabla": enlace["tabla"],
+        filas = _facturas_desde_replica(enlace, limit)
+        return {"sede": sede, "servidoDesde": "REPLICA", "nodo": enlace["destino"],
+                "tabla": f"{enlace['tabla']} (log replicado → facturas reconstruidas)",
                 "errorPrimaria": error_primaria, "ms": round((time.perf_counter() - t0) * 1000, 1), "filas": filas}
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"Primaria y réplica de {sede} sin respuesta: {error_primaria} / {exc}") from exc
@@ -289,42 +319,47 @@ def replicacion_leer(
 @router.get("/api/replicacion/comparar/{origen}")
 async def replicacion_comparar(origen: str, limit: int = Query(default=10, ge=1, le=50)):
     """
-    Lado a lado: últimas operaciones en la BD de ORIGEN y lo que ya llegó a la tabla RÉPLICA del siguiente nodo.
-    Cada fila del origen dice si ya está copiada; cada fila de la réplica trae su etiqueta y cuánto tardó en llegar.
+    Lado a lado: últimos cambios del LOG del ERP de ORIGEN y lo que ya llegó a la tabla RÉPLICA del siguiente nodo.
+    Cada cambio del origen dice si ya está copiado; cada fila de la réplica trae su etiqueta y cuánto tardó en llegar.
     """
     origen = origen.strip().upper()
     if origen not in REPLICA_DE:
         raise HTTPException(status_code=404, detail="Origen no válido (QUITO, GUAYAQUIL o CUENCA).")
     enlace = REPLICA_DE[origen]
     cfg_all = get_cluster_6dbs_config()
-    es_pg_destino = cfg_all[enlace["destino"]]["engineType"] == "postgresql"
 
     def leer_origen():
         t = time.perf_counter()
-        filas = _query(origen, f"SELECT id_op, fecha_hora, usuario_rbac, modulo, operacion, monto_usd "
-                               f"FROM {TABLA_ORIGEN[origen]} ORDER BY id_op DESC LIMIT %s", (limit,))
-        return filas, round((time.perf_counter() - t) * 1000, 1)
+        filas = _query(origen, f"SELECT log_seq, log_fechahora, id_usuario, log_tablaafectada, log_accion, log_valoranterior, "
+                               f"log_valornuevo FROM log_auditoria WHERE {FILTRO_LOG} ORDER BY log_seq DESC LIMIT %s", (limit,))
+        salida = [{"id_op": f["log_seq"], "fecha_hora": f["log_fechahora"], "usuario_rbac": (f["id_usuario"] or "").strip(),
+                   "modulo": f"{f['log_accion']} {f['log_tablaafectada']}",
+                   "documento": _documento_del_cambio(f["log_valornuevo"], f["log_valoranterior"])} for f in filas]
+        return salida, round((time.perf_counter() - t) * 1000, 1)
 
     def leer_replica():
         t = time.perf_counter()
         _asegurar_tabla_replica(enlace)
-        retraso = ("EXTRACT(EPOCH FROM (replicado_en - fecha_origen))::int" if es_pg_destino
+        retraso = ("EXTRACT(EPOCH FROM (replicado_en - fecha_origen))::int" if _es_pg(enlace["destino"])
                    else "TIMESTAMPDIFF(SECOND, fecha_origen, replicado_en)")
-        filas = _query(enlace["destino"], f"SELECT etiqueta_replica, id_origen, fecha_origen, replicado_en, {retraso} AS segundos_en_llegar, "
-                                          f"usuario_rbac, modulo, operacion, monto_usd FROM {enlace['tabla']} "
-                                          f"ORDER BY id_origen DESC LIMIT %s", (limit,))
-        return filas, round((time.perf_counter() - t) * 1000, 1)
+        filas = _query(enlace["destino"], f"SELECT etiqueta_replica, log_seq_origen, fecha_origen, replicado_en, {retraso} AS segundos_en_llegar, "
+                                          f"id_usuario, tabla, accion, valor_anterior, valor_nuevo FROM {enlace['tabla']} "
+                                          f"ORDER BY log_seq_origen DESC LIMIT %s", (limit,))
+        salida = [{"etiqueta_replica": f["etiqueta_replica"], "id_origen": f["log_seq_origen"], "fecha_origen": f["fecha_origen"],
+                   "replicado_en": f["replicado_en"], "segundos_en_llegar": f["segundos_en_llegar"],
+                   "usuario_rbac": (f["id_usuario"] or "").strip(), "modulo": f"{f['accion']} {f['tabla']}",
+                   "documento": _documento_del_cambio(f["valor_nuevo"], f["valor_anterior"])} for f in filas]
+        return salida, round((time.perf_counter() - t) * 1000, 1)
 
     (o, o_ms), (r, r_ms) = await asyncio.gather(asyncio.to_thread(leer_origen), asyncio.to_thread(leer_replica))
-    ids_replica = {int(x["id_origen"]) for x in r}
-    marca = max(ids_replica) if ids_replica else 0
+    marca = max((int(x["id_origen"]) for x in r), default=0)
     for fila in o:
-        fila["estado_replica"] = "copiada" if int(fila["id_op"]) in ids_replica or int(fila["id_op"]) <= marca else "pendiente"
+        fila["estado_replica"] = "copiada" if int(fila["id_op"]) <= marca else "pendiente"
     cfg_o, cfg_d = cfg_all[origen], cfg_all[enlace["destino"]]
     return {
         "enlace": enlace["id"],
         "origen": {"sede": origen, "bd": cfg_o["bdId"], "maquina": cfg_o["machine"], "motor": cfg_o["engine"],
-                   "tabla": TABLA_ORIGEN[origen], "ms": o_ms, "filas": o},
+                   "tabla": "log_auditoria (ERP)", "ms": o_ms, "filas": o},
         "replica": {"sede": enlace["destino"], "bd": cfg_d["bdId"], "maquina": cfg_d["machine"], "motor": cfg_d["engine"],
                     "tabla": enlace["tabla"], "etiqueta": ETIQUETA_REPLICA[origen], "ms": r_ms, "filas": r},
         "pendientes": sum(1 for f in o if f["estado_replica"] == "pendiente"),
@@ -335,17 +370,9 @@ async def replicacion_comparar(origen: str, limit: int = Query(default=10, ge=1,
 # Detalle de UNA operación de un agente (qué hizo exactamente y dónde quedó)
 # ------------------------------------------------------------------------------------------------
 
-DOC_KEYS = {
-    "QUITO": {"facturas": "numero_factura", "compras": "numero_orden", "asientos": "codigo_asiento", "productos": "id_producto"},
-    "GUAYAQUIL": {"facturas": "id_Factura", "compras": "id_Compra", "asientos": "id_Asiento", "productos": "id_Producto"},
-    "CUENCA": {"frag_austral_facturas": "id_factura"},
-}
-MODULO_DE_TABLA = {"facturas": "Ventas", "frag_austral_facturas": "Ventas", "compras": "Compras",
-                   "asientos": "Contabilidad", "productos": "Inventarios"}
-
-
 APP_DOCS = {
-    # tabla en la app principal -> (consulta cabecera, consulta detalle, ruta de la pantalla, módulo)
+    # documento del ERP -> (consulta cabecera, consulta detalle, ruta de la pantalla, módulo).
+    # Sin comillas en los nombres: valen igual en el ERP MariaDB (Quito, Guayaquil) y en el PostgreSQL (Cuenca).
     "RECEPCIONES": (
         "SELECT TRIM(id_Recibo) AS recepcion, TRIM(id_Compra) AS orden_compra, rec_Descripcion AS descripcion, "
         "rec_FechaHora AS fecha, ESTADO_REC AS estado FROM RECEPCIONES WHERE id_Recibo = %s",
@@ -365,32 +392,23 @@ APP_DOCS = {
 }
 
 
-def _app_query(sql: str, params: tuple = ()) -> list[dict[str, Any]]:
-    """Consulta la base principal de la app (la que leen las pantallas de negocio)."""
-    conn = mysql.connector.connect(
-        host=os.getenv("MARIADB_HOST", "localhost"), port=int(os.getenv("MARIADB_PORT", "3307")),
-        user=os.getenv("MARIADB_USER", "root"), password=os.getenv("MARIADB_PASSWORD", ""),
-        database=os.getenv("MARIADB_DATABASE", "licoreriadatabase"), use_pure=True, connection_timeout=4,
-    )
+def _auditoria_de_operacion(sede: str, patron: str) -> list[dict[str, Any]]:
+    """Filas del LOG_AUDITORIA del ERP de la sede que mencionan el documento o la operación (quién, qué tabla, qué acción)."""
     try:
-        cur = conn.cursor()
-        cur.execute(sql, params)
-        filas = _rows_as_dicts(cur)
-        cur.close()
-        return filas
-    finally:
-        conn.close()
+        return _query(sede, "SELECT log_seq, log_fechahora AS fecha_hora, id_usuario AS usuario, log_tablaafectada AS tabla, "
+                            "log_accion AS accion, log_ip AS ip FROM log_auditoria "
+                            "WHERE log_valornuevo LIKE %s OR log_valoranterior LIKE %s ORDER BY log_seq DESC LIMIT 25",
+                      (f"%{patron}%", f"%{patron}%"))
+    except Exception:
+        return []
 
 
-def _auditoria_de_operacion(sede: str, op_id: str) -> list[dict[str, Any]]:
-    patron = f'%"operacion_id": "{op_id}"%'
+def _auditoria_bd_apoyo(sede: str, op_id: str) -> list[dict[str, Any]]:
+    """BD 3 y BD 5 (no son ERP): la API deja su propia fila en log_auditoria con el id de la operación."""
     try:
-        if get_cluster_6dbs_config()[sede]["engineType"] == "postgresql":
-            return _query(sede, "SELECT fecha_hora, usuario_cloud AS usuario, evento, detalle FROM log_auditoria_cloud "
-                                "WHERE detalle LIKE %s ORDER BY id_log", (patron,))
         return _query(sede, "SELECT log_FechaHora AS fecha_hora, id_Usuario AS usuario, log_TablaAfectada AS tabla, "
                             "log_Accion AS accion, log_IP AS ip FROM log_auditoria WHERE log_ValorNuevo LIKE %s "
-                            "ORDER BY log_FechaHora", (patron,))
+                            "ORDER BY log_FechaHora", (f'%"operacion_id": "{op_id}"%',))
     except Exception:
         return []
 
@@ -402,62 +420,54 @@ def _detalle_oltp(sede: str, agent_num: int, op_id: str) -> dict[str, Any]:
         raise HTTPException(status_code=404, detail="Operación no encontrada.")
     op = filas[0]
     documento = None
-    auditoria_app: list[dict[str, Any]] = []
-    tabla_ref, doc_ref = op.get("tabla_ref"), op.get("documento_ref")
-    if tabla_ref and doc_ref and tabla_ref.startswith("app:") and tabla_ref[4:] in APP_DOCS:
-        sql_cab, sql_det, ruta, modulo = APP_DOCS[tabla_ref[4:]]
+    auditoria_doc: list[dict[str, Any]] = []
+    tabla_ref = str(op.get("tabla_ref") or "").upper().removeprefix("APP:")
+    doc_ref = op.get("documento_ref")
+    if tabla_ref in APP_DOCS and doc_ref:
+        sql_cab, sql_det, ruta, modulo = APP_DOCS[tabla_ref]
         try:
-            cab = _app_query(sql_cab, (doc_ref,))
-            det = _app_query(sql_det, (doc_ref,))
-            auditoria_app = _app_query(
-                "SELECT log_FechaHora AS fecha_hora, id_Usuario AS usuario, log_TablaAfectada AS tabla, log_Accion AS accion "
-                "FROM log_auditoria WHERE log_ValorNuevo LIKE %s OR log_ValorAnterior LIKE %s ORDER BY log_FechaHora DESC LIMIT 12",
-                (f"%{doc_ref}%", f"%{doc_ref}%"),
-            )
+            cab = _query(sede, sql_cab, (doc_ref,))
+            det = _query(sede, sql_det, (doc_ref,))
+            auditoria_doc = _auditoria_de_operacion(sede, doc_ref)
             fila = dict(cab[0]) if cab else None
             if fila is not None:
                 fila["productos"] = "\n".join(
                     " · ".join(f"{k}: {v}" for k, v in d.items() if v not in (None, "")) for d in det
                 )
-            documento = {"tabla": f"{tabla_ref[4:]} (app principal)", "id": doc_ref, "modulo": modulo, "fila": fila,
-                         "consultaSql": None, "appRoute": ruta}
+            documento = {"tabla": f"{tabla_ref} (ERP {sede.title()})", "id": doc_ref, "modulo": modulo, "fila": fila,
+                         "consultaSql": sql_cab.replace("%s", f"'{doc_ref}'") + ";", "appRoute": ruta}
         except Exception as exc:
-            documento = {"tabla": f"{tabla_ref[4:]} (app principal)", "id": doc_ref, "modulo": modulo,
-                         "fila": {"error": f"No se pudo leer la base de la app: {str(exc)[:150]}"}, "consultaSql": None, "appRoute": ruta}
-    elif tabla_ref and doc_ref and tabla_ref in DOC_KEYS[sede]:
-        clave = DOC_KEYS[sede][tabla_ref]
-        fila = _query(sede, f"SELECT * FROM {tabla_ref} WHERE {clave} = %s", (doc_ref,))
-        documento = {
-            "tabla": tabla_ref, "clave": clave, "id": doc_ref, "modulo": MODULO_DE_TABLA.get(tabla_ref),
-            "fila": fila[0] if fila else None,
-            "consultaSql": f"SELECT * FROM {tabla_ref} WHERE {clave} = '{doc_ref}';",
-        }
-    # ¿Ya está replicada en el siguiente nodo del anillo?
+            documento = {"tabla": f"{tabla_ref} (ERP {sede.title()})", "id": doc_ref, "modulo": modulo,
+                         "fila": {"error": f"No se pudo leer el ERP de {sede}: {str(exc)[:150]}"}, "consultaSql": None, "appRoute": ruta}
+    # ¿Ya llegó al siguiente nodo del anillo? (se busca el documento en el log replicado)
     enlace = REPLICA_DE[sede]
     replicada = None
-    try:
-        r = _query(enlace["destino"], f"SELECT replicado_en FROM {enlace['tabla']} WHERE id_origen = %s", (int(op_id),))
-        replicada = {"nodo": enlace["destino"], "tabla": enlace["tabla"], "presente": bool(r),
-                     "replicadoEn": r[0]["replicado_en"] if r else None}
-    except Exception as exc:
-        replicada = {"nodo": enlace["destino"], "tabla": enlace["tabla"], "presente": None, "error": str(exc)[:120]}
+    if doc_ref:
+        try:
+            r = _query(enlace["destino"], f"SELECT MIN(replicado_en) AS replicado_en, COUNT(*) AS cambios FROM {enlace['tabla']} "
+                                          f"WHERE valor_nuevo LIKE %s OR valor_anterior LIKE %s", (f"%{doc_ref}%", f"%{doc_ref}%"))
+            presente = bool(r and r[0]["cambios"])
+            replicada = {"nodo": enlace["destino"], "tabla": enlace["tabla"], "presente": presente,
+                         "replicadoEn": r[0]["replicado_en"] if presente else None,
+                         "cambiosReplicados": int(r[0]["cambios"] or 0) if r else 0}
+        except Exception as exc:
+            replicada = {"nodo": enlace["destino"], "tabla": enlace["tabla"], "presente": None, "error": str(exc)[:120]}
     return {
         "operacion": op,
         "documento": documento,
-        "auditoria": {"bd": _auditoria_de_operacion(sede, op_id), "app": auditoria_app},
+        # bd = cómo quedó auditado el documento en el ERP; app se mantiene por compatibilidad con la GUI
+        "auditoria": {"bd": auditoria_doc, "app": []},
         "replica": replicada,
         "consultaSqlOperacion": f"SELECT * FROM {tabla} WHERE id_op = {int(op_id)};",
-        "sinDocumento": None if documento else _motivo_sin_documento(sede, str(op.get("modulo") or "")),
+        "sinDocumento": None if documento else _motivo_sin_documento(op),
     }
 
 
-def _motivo_sin_documento(sede: str, modulo: str) -> str:
-    if sede == "CUENCA" and modulo != "VENTAS":
-        return (f"En Cuenca solo las operaciones de VENTAS crean un documento (factura en frag_austral_facturas). "
-                f"Esta es de {modulo}: queda registrada únicamente en la bitácora operaciones_agentes_cloud.")
-    if modulo == "TALENTO_HUMANO":
-        return "Talento Humano no crea un documento de negocio: la operación queda registrada solo en la bitácora del agente."
-    return "Operación registrada antes de que se enlazara cada operación con su documento (las nuevas ya traen el enlace)."
+def _motivo_sin_documento(op: dict[str, Any]) -> str:
+    if "FALLÓ" in str(op.get("operacion") or ""):
+        return "La transacción no se pudo completar en el ERP; la bitácora deja constancia del intento y del error."
+    return ("Operación anterior a que los agentes trabajaran sobre el ERP de su sede "
+            "(las nuevas siempre enlazan el documento que crearon o confirmaron).")
 
 
 @router.get("/api/agentes/{agente_id}/operacion/{op_id}")
@@ -495,7 +505,7 @@ def agente_operacion_detalle(agente_id: str, op_id: str):
         return {**base, "operacion": filas[0], "documento": {
             "tabla": f"historico_transacciones · partición {filas[0]['particion']}", "id": op_id, "modulo": filas[0].get("modulo"),
             "fila": filas[0], "consultaSql": sql,
-        }, "auditoria": {"bd": _auditoria_de_operacion("QUITO_PARALELA", op_id), "app": []},
+        }, "auditoria": {"bd": _auditoria_bd_apoyo("QUITO_PARALELA", op_id), "app": []},
             "replica": None, "consultaSqlOperacion": sql}
     # num == 5: una corrida del ETL y los hechos que cargó
     if op_id.upper().startswith("ETL-"):
@@ -514,7 +524,7 @@ def agente_operacion_detalle(agente_id: str, op_id: str):
         "tabla": "fact_ventas (esquema estrella)", "id": lote, "modulo": "Ventas (análisis OLAP)",
         "fila": {"hechos_cargados": len(hechos), "hechos": json.dumps(hechos, ensure_ascii=False, default=str)},
         "consultaSql": sql,
-    }, "auditoria": {"bd": _auditoria_de_operacion("GUAYAQUIL_DWH", str(lote)), "app": []},
+    }, "auditoria": {"bd": _auditoria_bd_apoyo("GUAYAQUIL_DWH", str(lote)), "app": []},
         "replica": None, "consultaSqlOperacion": "SELECT * FROM etl_corridas ORDER BY id DESC LIMIT 10;"}
 
 

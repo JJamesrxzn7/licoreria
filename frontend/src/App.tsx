@@ -17,6 +17,7 @@ import { Customers, Dashboard, EmployeeFile, PayrollManagement, Suppliers } from
 import { Adjustments, Catalog, Deliveries, PurchaseOrders, Receptions } from './pages/InventoryPages';
 import { UnitsOfMeasure } from './pages/UnitsOfMeasure';
 import { Accounting, Reports, Sales } from './pages/FinancialPages';
+import { sedeActual } from './api';
 
 const navItems = [
   { id: 'dashboard', label: 'Resumen', icon: LayoutDashboard, group: 'GENERAL' },
@@ -43,6 +44,7 @@ const navItems = [
 
 const AppContent = () => {
   const { user, isAuthenticated, logout, isLoading } = useAuth();
+  const sedeApp = sedeActual();
   const isAdministrator = Boolean(
     user?.roleIds.includes('ROL-ADMIN')
       || user?.roleIds.includes('ROL-ADM')
@@ -256,9 +258,23 @@ const AppContent = () => {
                 <strong>Rol:</strong> {user?.primaryRole}
               </span>
               <span style={{ color: '#bbb9b1' }}>|</span>
-              <span style={{ color: '#782c3e', fontWeight: 700 }}>
-                Clúster 3 Sedes: UIO · GYE · CUE
-              </span>
+              <label style={{ color: '#782c3e', fontWeight: 700, display: 'flex', alignItems: 'center', gap: '5px' }}>
+                Sede:
+                <select
+                  aria-label="Sede en la que trabajan las pantallas"
+                  title="ERP de la sede sobre el que trabajan Ventas, Compras, Bodega, etc."
+                  value={sedeApp}
+                  onChange={e => {
+                    try { localStorage.setItem('licoreria_sede', e.target.value); } catch { /* sin almacenamiento */ }
+                    window.location.reload();
+                  }}
+                  style={{ border: '1px solid #d9d4c7', borderRadius: '6px', padding: '2px 4px', fontSize: '11px', fontWeight: 700, color: '#782c3e', background: '#fff' }}
+                >
+                  <option value="QUITO">Quito · MariaDB (PC)</option>
+                  <option value="GUAYAQUIL">Guayaquil · MariaDB (Laptop)</option>
+                  <option value="CUENCA">Cuenca · PostgreSQL</option>
+                </select>
+              </label>
             </div>
 
             <button type="button" className="notification-button" aria-label="Ver alertas de inventario" onClick={() => navigate('products')}><Bell size={18} /></button>

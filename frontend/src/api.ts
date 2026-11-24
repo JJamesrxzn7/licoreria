@@ -71,11 +71,25 @@ export class ApiError extends Error {
   }
 }
 
+export type SedeApp = 'QUITO' | 'GUAYAQUIL' | 'CUENCA';
+
+/** Sede cuyo ERP usan las pantallas (se elige en la barra superior). Guayaquil es el ERP original. */
+export function sedeActual(): SedeApp {
+  try {
+    const v = localStorage.getItem('licoreria_sede');
+    if (v === 'QUITO' || v === 'GUAYAQUIL' || v === 'CUENCA') return v;
+  } catch {
+    // almacenamiento no disponible
+  }
+  return 'GUAYAQUIL';
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   let response: Response;
   try {
     const headers = new Headers(init?.headers);
     headers.set('Content-Type', 'application/json');
+    headers.set('X-Sede-App', sedeActual());
     const token = localStorage.getItem('licoreria_token');
     if (token && !headers.has('Authorization')) {
       headers.set('Authorization', `Bearer ${token}`);

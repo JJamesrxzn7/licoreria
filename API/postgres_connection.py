@@ -58,7 +58,34 @@ def _validate_database_role(connection: psycopg.Connection) -> None:
         )
 
 
+def _connect_cuenca() -> psycopg.Connection:
+    """ERP de la sede Cuenca (PostgreSQL en la Laptop). Sin TLS solo si es local; el rol se valida igual."""
+    from urllib.parse import urlparse
+
+    database_url = os.getenv("CUENCA_DATABASE_URL", "").strip()
+    if not database_url:
+        raise ValueError("Falta configurar CUENCA_DATABASE_URL para la sede Cuenca.")
+    local = urlparse(database_url).hostname in ("127.0.0.1", "localhost", "::1")
+    ca_path = os.getenv("POSTGRES_SSL_ROOT_CERT", "").strip()
+    if local:
+        connection = psycopg.connect(database_url, sslmode="disable", connect_timeout=10)
+    elif ca_path and Path(ca_path).is_file():
+        connection = psycopg.connect(database_url, sslmode="verify-full", sslrootcert=ca_path, connect_timeout=15)
+    else:
+        raise ValueError("Una sede Cuenca remota requiere un certificado CA válido.")
+    try:
+        _validate_database_role(connection)
+    except (psycopg.Error, ValueError):
+        connection.close()
+        raise
+    return connection
+
+
 def connect_postgres() -> psycopg.Connection:
+    import sede_contexto
+
+    if sede_contexto.sede_app.get() == "CUENCA":
+        return _connect_cuenca()
     database_url = os.getenv("DATABASE_URL", "").strip()
     ca_path = os.getenv("POSTGRES_SSL_ROOT_CERT", "").strip()
     if not database_url:

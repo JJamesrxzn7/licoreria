@@ -252,11 +252,11 @@ const AGENT_DETAILS: Record<
     script: 'agentes_quito.py (corre en la PC de Escritorio)',
     headerXSede: 'QUITO',
     targetDbId: 'quito-sql',
-    targetDbName: 'BD 1 · MariaDB Quito (:3307)',
+    targetDbName: 'BD 1 · ERP MariaDB Quito (:3307 lacava_quito)',
     whatItDoes:
-      'Cada 60 s elige uno de los 15 usuarios RBAC y un módulo al azar, y hace POST /api/agentes/operacion con X-Sede: QUITO. La API guarda la operación en `operaciones_agentes_ia` y además escribe en la tabla de negocio del módulo: VENTAS → `facturas`, COMPRAS → `compras`, CONTABILIDAD → `asientos`, INVENTARIOS → +2 de stock en `productos`. TALENTO HUMANO solo queda en la bitácora.',
+      'Cada 60 s hace UNA transacción real en el ERP de Quito usando la app como un usuario más (header X-Sede-App: QUITO): vende en el POS (crea factura + entrega), crea y aprueba una compra (crea la recepción), confirma el ingreso a bodega o despacha una entrega. Los procedimientos y triggers del ERP la guardan y la auditan en LOG_AUDITORIA con el usuario que la hizo (v_operador, c_supervisor, i_supervisor…). Luego anota en `operaciones_agentes_ia` qué documento tocó (tabla_ref, documento_ref).',
     whereToSeeIt:
-      'No escribe en la interfaz: escribe en BD 1. Lo ves aquí (tabla de abajo), en la pestaña 4 "Monitor Global" y en la Terminal DBA sobre BD 1. Las filas que crea llevan prefijo AGF-Q-, AGC-Q- y AGA-Q-.',
+      'Aquí (clic en una fila → el documento, su auditoría y si ya llegó a la réplica), en las pantallas de Ventas, Compras, Recepciones y Entregas eligiendo la sede Quito arriba, y en la Terminal DBA sobre BD 1 (consultas 1, 2 y 4).',
     credentialsUsed: 'Rota entre los 15 usuarios operativos (c_*, i_*, v_*, th_*, ctbl_*) con su contraseña real',
     accent: '#782c3e',
   },
@@ -297,11 +297,11 @@ const AGENT_DETAILS: Record<
     script: 'agentes_gye_cuenca.py (corre en la Laptop)',
     headerXSede: 'GUAYAQUIL',
     targetDbId: 'guayaquil-sql',
-    targetDbName: 'BD 4 · MariaDB Guayaquil (:3306)',
+    targetDbName: 'BD 4 · ERP MariaDB Guayaquil (:3307 licoreriadatabase)',
     whatItDoes:
-      'Igual que el Agente 1 pero contra BD 4: cada 60 s un usuario RBAC registra una operación en `operaciones_agentes_ia` y la API la refleja en `facturas`, `compras`, `asientos` o el stock de `productos`. En ~40 % de los ciclos trabaja en BODEGA usando la app como un usuario: crea y aprueba una compra (genera una recepción), confirma una recepción, vende en el POS (genera una entrega) o despacha una entrega.',
+      'Cada 60 s hace UNA transacción real en el ERP de Guayaquil usando la app como un usuario más (header X-Sede-App: GUAYAQUIL): vende en el POS (crea factura + entrega), crea y aprueba una compra (crea la recepción), confirma el ingreso a bodega o despacha una entrega. Los procedimientos y triggers del ERP la guardan y la auditan en LOG_AUDITORIA con el usuario que la hizo (v_operador, c_supervisor, i_supervisor…). Luego anota en `operaciones_agentes_ia` qué documento tocó (tabla_ref, documento_ref).',
     whereToSeeIt:
-      'Aquí, en el Monitor Global y en la Terminal DBA sobre BD 4 (prefijos AGF-G-, AGC-G-, AGA-G-). Sus acciones de bodega aparecen en las pantallas Recepciones y Entregas, y en la pantalla Auditoría con el usuario que las hizo.',
+      'Aquí (clic en una fila → el documento, su auditoría y si ya llegó a la réplica), en las pantallas de Ventas, Compras, Recepciones y Entregas eligiendo la sede Guayaquil arriba, y en la Terminal DBA sobre BD 4 (consultas 1, 2 y 4).',
     credentialsUsed: 'Rota entre los 15 usuarios operativos con su contraseña real',
     accent: '#183a31',
   },
@@ -314,7 +314,7 @@ const AGENT_DETAILS: Record<
     targetDbId: 'guayaquil-replica',
     targetDbName: 'BD 5 · MariaDB DWH (:3309)',
     whatItDoes:
-      'Cada 60 s ejecuta un ETL incremental real: EXTRAE las ventas nuevas de BD 1, BD 4 y BD 6 (id_op > marca de agua guardada en `etl_control`), las TRANSFORMA (producto, botellas = monto / precio, IVA 15 %, mes) y las CARGA en `fact_ventas`. Si un nodo está caído, lo salta y lo recupera en la siguiente corrida.',
+      'Cada 60 s ejecuta un ETL incremental real desde los 3 ERP: EXTRAE del LOG_AUDITORIA de cada sede las líneas de venta nuevas (INSERT en PROxFAC con log_seq > marca de agua en `etl_control`), las TRANSFORMA (producto real del ERP con categoría y marca en dim_producto, cantidad, subtotal, IVA 15 %, mes, usuario que vendió) y las CARGA en `fact_ventas` con su factura de origen. UNIQUE(sede, log_seq) evita duplicados. Si un ERP está caído, lo salta y lo recupera en la siguiente corrida.',
     whereToSeeIt:
       'Lo ves aquí (lotes ETL y marcas de agua), en la pestaña 2 "Power BI" y en Power BI Desktop, que lee `fact_ventas` + `dim_*`.',
     credentialsUsed: 'Usuarios de Ventas y Contabilidad (v_*, ctbl_*)',
@@ -322,17 +322,17 @@ const AGENT_DETAILS: Record<
   },
   'agente-6': {
     code: 'AG 6',
-    short: 'Cloud WAN',
-    name: 'Agente 6 — Transacciones en la nube (Cuenca)',
+    short: 'ERP Cuenca',
+    name: 'Agente 6 — Transaccional ERP Cuenca (PostgreSQL)',
     script: 'agentes_gye_cuenca.py (corre en la Laptop)',
     headerXSede: 'CUENCA',
     targetDbId: 'cuenca-cloud',
-    targetDbName: 'BD 6 · PostgreSQL Supabase (:5432)',
+    targetDbName: 'BD 6 · ERP PostgreSQL 18 Cuenca (:5432 lacava_cuenca)',
     whatItDoes:
-      'Cada 60 s inserta una operación en `operaciones_agentes_cloud` de Supabase y mide la latencia WAN (latencia_wan_ms). Si el módulo es VENTAS, además crea una factura en `frag_austral_facturas`.',
+      'Cada 60 s hace UNA transacción real en el ERP de Cuenca usando la app como un usuario más (header X-Sede-App: CUENCA): vende en el POS (crea factura + entrega), crea y aprueba una compra (crea la recepción), confirma el ingreso a bodega o despacha una entrega. Los procedimientos y triggers del ERP la guardan y la auditan en LOG_AUDITORIA con el usuario que la hizo (v_operador, c_supervisor, i_supervisor…). Luego anota en `operaciones_agentes_cloud` qué documento tocó (tabla_ref, documento_ref). Mide la latencia hasta el nodo (latencia_wan_ms).',
     whereToSeeIt:
-      'Lo ves aquí, en el Monitor Global y en la Terminal DBA sobre BD 6. Compara su latencia con la de los nodos por Tailscale.',
-    credentialsUsed: '15 usuarios RBAC replicados en Cuenca Cloud',
+      'Aquí (clic en una fila → el documento, su auditoría y si ya llegó a la réplica), en las pantallas de Ventas, Compras, Recepciones y Entregas eligiendo la sede Cuenca arriba, y en la Terminal DBA sobre BD 6 (consultas 1, 2 y 4).',
+    credentialsUsed: 'Usuarios de la app del ERP de Cuenca (v_operador, v_supervisor, c_*, i_supervisor)',
     accent: '#a96b16',
   },
 };
@@ -409,7 +409,7 @@ const AGENT_SITE: Record<AgentId, SiteKey> = {
 const SITE_SUMMARY: Array<{ id: SiteKey; label: string; accent: string; agents: AgentId[] }> = [
   { id: 'QUITO', label: '🖥️ Quito · PC Escritorio', accent: '#782c3e', agents: ['agente-1', 'agente-2', 'agente-3'] },
   { id: 'GUAYAQUIL', label: '💻 Guayaquil · Laptop', accent: '#183a31', agents: ['agente-4', 'agente-5'] },
-  { id: 'CUENCA', label: '☁️ Cuenca · Supabase', accent: '#a96b16', agents: ['agente-6'] },
+  { id: 'CUENCA', label: '🐘 Cuenca · PostgreSQL', accent: '#a96b16', agents: ['agente-6'] },
 ];
 
 const LIVE_CSS = `
@@ -466,18 +466,18 @@ const BRANCH_IDENTITIES = [
     bg: '#eff5f1',
     emblem: '⚓ Hub Logístico Puerto Marítimo & Data Warehouse BI',
     specialty: 'Importación de Contenedores SENAE, Distribución Cervecería Nacional, Rones Añejos y Cubo Estrella Power BI.',
-    databases: '2 Bases de Datos: BD 4 MariaDB Local OLTP (:3306) · BD 5 MariaDB DWH Estrella (:3309)',
+    databases: '2 Bases de Datos: BD 4 ERP MariaDB (:3307 licoreriadatabase) · BD 5 MariaDB DWH Estrella (:3309)',
     agents: 'Agente 4 (BD 4) · Agente 5 Mini-ETL (BD 5) + Nginx LB & 3 Réplicas API',
   },
   {
     code: 'CUE',
     city: 'SUCURSAL AUSTRAL CUENCA & LOJA (Cloud DBaaS)',
-    machine: 'Nube Administrada · Supabase PostgreSQL (:5432)',
+    machine: 'Laptop · PostgreSQL 18 (:5432)',
     accent: '#a96b16',
     bg: '#fbf4e6',
     emblem: '🏔️ Destilerías Tradicionales del Sur (Azuay & Loja)',
     specialty: 'Productores y Destilerías Australes: Aguardiente Zhumir (Azende), Cristal (EASA), Ron San Miguel y Cantaclaro.',
-    databases: '1 Base de Datos Cloud: BD 6 PostgreSQL 18 / Supabase DBaaS (:5432 cloud_cuenca_loja)',
+    databases: '1 Base de Datos: BD 6 ERP PostgreSQL 18 (:5432 lacava_cuenca)',
     agents: 'Agente 6 (BD 6) · Medición de Latencia WAN en Tiempo Real',
   },
 ];
@@ -863,7 +863,6 @@ export const ArchitectureConsole: React.FC<{ onNavigate?: (route: string) => voi
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          productId: 'PRO-004',
           quantity: twoPcQty,
           sourceNode: 'GUAYAQUIL',
           targetNode: 'QUITO',
@@ -1500,7 +1499,7 @@ export const ArchitectureConsole: React.FC<{ onNavigate?: (route: string) => voi
                     </div>
                     {renderSite({
                       label: '☁️ NUBE — SEDE CUENCA',
-                      sub: 'Supabase DBaaS · 1 BD',
+                      sub: 'PostgreSQL 18 · 1 BD',
                       accent: '#a96b16',
                       bg: '#fdf8ee',
                       dbs: [['cuenca-cloud', 'agente-6', 'BD 6', 'Cloud', '5432']],
@@ -2197,7 +2196,7 @@ export const ArchitectureConsole: React.FC<{ onNavigate?: (route: string) => voi
                   Consola Global del DBA — Consulta Paralela de las 6 BDs (`GET /api/dba/global`)
                 </h2>
                 <p>
-                  Unifica en tiempo real los registros de <strong>MariaDB (:3307, :3308, :3306, :3309)</strong>, <strong>MongoDB (:27017)</strong> y <strong>Supabase PostgreSQL (:5432)</strong> agregando <code>origen_nodo</code> y latencia en <code>ms</code>.
+                  Unifica en tiempo real los registros de <strong>MariaDB (:3307, :3308, :3309)</strong>, <strong>MongoDB (:27017)</strong> y <strong>PostgreSQL 18 (:5432)</strong> agregando <code>origen_nodo</code> y latencia en <code>ms</code>.
                 </p>
               </div>
               <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
@@ -2270,9 +2269,9 @@ export const ArchitectureConsole: React.FC<{ onNavigate?: (route: string) => voi
                   <option value="QUITO">BD 1 · QUITO (MariaDB :3307)</option>
                   <option value="QUITO_NOSQL">BD 2 · QUITO_NOSQL (MongoDB :27017)</option>
                   <option value="QUITO_PARALELA">BD 3 · QUITO_PARALELA (Hash :3308)</option>
-                  <option value="GUAYAQUIL">BD 4 · GUAYAQUIL (MariaDB Local :3306)</option>
+                  <option value="GUAYAQUIL">BD 4 · GUAYAQUIL (ERP MariaDB :3307)</option>
                   <option value="GUAYAQUIL_DWH">BD 5 · GUAYAQUIL_DWH (Estrella :3309)</option>
-                  <option value="CUENCA">BD 6 · CUENCA (Supabase :5432)</option>
+                  <option value="CUENCA">BD 6 · CUENCA (ERP PostgreSQL :5432)</option>
                 </select>
               </div>
 
@@ -2770,7 +2769,7 @@ export const ArchitectureConsole: React.FC<{ onNavigate?: (route: string) => voi
               <div>
                 <h2 style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                   <ShieldCheck size={19} color="#183a31" />
-                  Simulador del Protocolo Two-Phase Commit (2PC) — BD 1 Quito (:3307), BD 4 Guayaquil (:3306) y BD 6 Cuenca (:5432)
+                  Two-Phase Commit (2PC) real sobre los 3 ERP — BD 1 Quito (:3307), BD 4 Guayaquil (:3307) y BD 6 Cuenca (:5432)
                 </h2>
                 <p>
                   Demuestra transacciones atómicas entre las máquinas y el manejo de <code>GLOBAL_ROLLBACK</code> si un nodo cae durante la Fase <code>PREPARE</code> (Pregunta 5).
@@ -2782,7 +2781,7 @@ export const ArchitectureConsole: React.FC<{ onNavigate?: (route: string) => voi
             <div style={{ display: 'flex', gap: '16px', alignItems: 'center', flexWrap: 'wrap', background: '#faf9f6', padding: '16px', borderRadius: '10px', border: '1px solid #e9e6de' }}>
               <div>
                 <label className="form-group" style={{ margin: 0 }}>
-                  Botellas a transferir (BD 4 Guayaquil :3306 → BD 1 Quito :3307):
+                  Unidades a trasladar entre bodegas (BD 4 Guayaquil → BD 1 Quito; Cuenca registra el traslado):
                   <input
                     className="input"
                     type="number"

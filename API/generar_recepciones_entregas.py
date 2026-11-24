@@ -16,28 +16,35 @@ Uso (con la API encendida en :8000):
 
 import argparse
 import json
+import os
 import random
 import urllib.error
 import urllib.request
+import uuid
 from datetime import date, timedelta
 
-BASE = "http://127.0.0.1:8000"
+BASE = os.getenv("LACAVA_APP_URL", "http://127.0.0.1:8000")  # la PC de Quito apunta al balanceador de la laptop
 CREDENCIALES = {
     "admin": "LaCavaAdmin2026*",
     "c_operador": "ComprasOpe2026*",
     "c_supervisor": "ComprasSup2026*",
     "i_operador": "InveOpe2026*",
+    "i_supervisor": "InveSup2026*",
     "v_operador": "VentasOpe2026*",
+    "v_supervisor": "VentasSup2026*",
 }
-_tokens: dict[str, str] = {}
+_tokens: dict[tuple[str, str], str] = {}  # (sede, usuario) -> token
 
 
-def llamar(metodo: str, ruta: str, usuario: str | None = None, cuerpo: dict | None = None):
+def llamar(metodo: str, ruta: str, usuario: str | None = None, cuerpo: dict | None = None, sede: str = "GUAYAQUIL"):
     datos = json.dumps(cuerpo).encode() if cuerpo is not None else None
     req = urllib.request.Request(BASE + ruta, data=datos, method=metodo)
     req.add_header("Content-Type", "application/json")
+    req.add_header("X-Sede-App", sede)  # la API enruta al ERP de esa sede (Quito, Guayaquil o Cuenca)
+    if metodo == "POST" and ruta == "/api/ventas":
+        req.add_header("Idempotency-Key", uuid.uuid4().hex)  # el POS no duplica la venta si se reintenta
     if usuario:
-        req.add_header("Authorization", f"Bearer {token(usuario)}")
+        req.add_header("Authorization", f"Bearer {token(usuario, sede)}")
     try:
         with urllib.request.urlopen(req, timeout=60) as r:
             return r.status, json.loads(r.read() or b"null")
@@ -49,33 +56,42 @@ def llamar(metodo: str, ruta: str, usuario: str | None = None, cuerpo: dict | No
         return e.code, detalle
 
 
-def token(usuario: str) -> str:
-    if usuario not in _tokens:
-        st, body = llamar("POST", "/api/auth/login", None, {"username": usuario, "password": CREDENCIALES[usuario]})
+def token(usuario: str, sede: str = "GUAYAQUIL") -> str:
+    if (sede, usuario) not in _tokens:
+        st, body = llamar("POST", "/api/auth/login", None, {"username": usuario, "password": CREDENCIALES[usuario]}, sede)
         if st != 200 or not body or not body.get("token"):
-            raise SystemExit(f"No se pudo iniciar sesión como {usuario}: {st} {body}")
-        _tokens[usuario] = body["token"]
-    return _tokens[usuario]
+            raise RuntimeError(f"No se pudo iniciar sesión como {usuario} en {sede}: {st} {body}")
+        _tokens[(sede, usuario)] = body["token"]
+    return _tokens[(sede, usuario)]
 
 
-def como(usuario: str, metodo: str, ruta: str, cuerpo: dict | None = None):
-    """Ejecuta con el usuario del módulo; si no tiene permiso, reintenta con admin."""
-    st, body = llamar(metodo, ruta, usuario, cuerpo)
+def como(usuario: str, metodo: str, ruta: str, cuerpo: dict | None = None, sede: str = "GUAYAQUIL"):
+    """Ejecuta con el usuario del módulo en el ERP de `sede`; si no tiene permiso, reintenta con admin."""
+    st, body = llamar(metodo, ruta, usuario, cuerpo, sede)
     if st == 401:  # token vencido: nuevo inicio de sesión y un reintento
-        _tokens.pop(usuario, None)
-        st, body = llamar(metodo, ruta, usuario, cuerpo)
+        _tokens.pop((sede, usuario), None)
+        st, body = llamar(metodo, ruta, usuario, cuerpo, sede)
     if st == 403 and usuario != "admin":
-        print(f"    (aviso: {usuario} no tiene permiso para {metodo} {ruta}; se usa admin)")
-        st, body = llamar(metodo, ruta, "admin", cuerpo)
+        print(f"    (aviso: {usuario} no tiene permiso para {metodo} {ruta} en {sede}; se usa admin)")
+        st, body = llamar(metodo, ruta, "admin", cuerpo, sede)
     return st, body
 
 
-def accion_bodega(rnd: random.Random | None = None) -> dict:
+_como = como
+
+
+def accion_bodega(rnd: random.Random | None = None, sede: str = "GUAYAQUIL") -> dict:
     """
-    UNA acción de bodega hecha con la app como un usuario más (la usa el Agente 4 cada cierto ciclo).
+    UNA transacción real del ERP de `sede`, hecha con la app como un usuario más (la usan los agentes 1, 4 y 6):
+    venta POS (-> entrega), compra aprobada (-> recepción), ingreso a bodega o despacho.
+    Los triggers del ERP la auditan con el usuario RBAC que la hizo.
     Devuelve qué documento creó/confirmó: {usuario, modulo, tabla, id, accion, monto}.
     """
     rnd = rnd or random.Random()
+
+    def como(usuario, metodo, ruta, cuerpo=None):  # noqa: F811  (misma función, fijada a la sede)
+        return _como(usuario, metodo, ruta, cuerpo, sede)
+
     _, recepciones = como("admin", "GET", "/api/recepciones")
     _, entregas = como("admin", "GET", "/api/entregas")
     rec_pend = [r for r in recepciones or [] if str(r.get("status")).upper() == "PEN"]
@@ -93,19 +109,23 @@ def accion_bodega(rnd: random.Random | None = None) -> dict:
                 items.append({"productId": it["productId"], "receivedQty": esperado - 1, "reason": "Unidad dañada en el transporte"})
             else:
                 items.append({"productId": it["productId"], "receivedQty": esperado, "reason": ""})
-        st, res = como("i_operador", "POST", f"/api/recepciones/{rec['id']}/confirmar", {"items": items})
+        # Confirmar el ingreso es una APROBACIÓN de bodega: la hace el supervisor de inventarios
+        st, res = como("i_supervisor", "POST", f"/api/recepciones/{rec['id']}/confirmar", {"items": items})
         if st != 200:
             raise RuntimeError(f"Confirmar recepción {rec['id']}: {st} {res}")
-        return {"usuario": "i_operador", "modulo": "INVENTARIOS", "tabla": "RECEPCIONES", "id": rec["id"], "monto": 0.0,
+        return {"usuario": "i_supervisor", "modulo": "INVENTARIOS", "tabla": "RECEPCIONES", "id": rec["id"], "monto": 0.0,
                 "accion": f"Ingreso a bodega de la recepción {rec['id']} (OC {rec.get('poId')})" + (" con diferencia" if con_diferencia else "")}
 
     if eleccion == "despachar_entrega":
         ent = rnd.choice(ent_pend)
         items = [{"productId": it["productId"], "deliveredQty": int(it["expectedQty"]), "reason": ""} for it in ent["items"]]
-        st, res = como("i_operador", "POST", f"/api/entregas/{ent['id']}/confirmar", {"items": items})
+        if ent.get("invoiceId"):
+            # Algunos ERP (Cuenca) exigen la factura APROBADA antes de despachar; si ya lo está, la API lo indica y se sigue
+            como("v_supervisor", "POST", f"/api/ventas/{ent['invoiceId']}/aprobar")
+        st, res = como("i_supervisor", "POST", f"/api/entregas/{ent['id']}/confirmar", {"items": items})
         if st != 200:
             raise RuntimeError(f"Despachar entrega {ent['id']}: {st} {res}")
-        return {"usuario": "i_operador", "modulo": "INVENTARIOS", "tabla": "ENTREGAS", "id": ent["id"], "monto": 0.0,
+        return {"usuario": "i_supervisor", "modulo": "INVENTARIOS", "tabla": "ENTREGAS", "id": ent["id"], "monto": 0.0,
                 "accion": f"Despacho de la entrega {ent['id']} (factura {ent.get('invoiceId')})"}
 
     _, productos = como("admin", "GET", "/api/productos")
@@ -136,7 +156,7 @@ def accion_bodega(rnd: random.Random | None = None) -> dict:
              for p in rnd.sample(con_stock, k=min(len(con_stock), rnd.randint(1, 3)))]
     cli = rnd.choice(clientes)
     st, venta = como("v_operador", "POST", "/api/ventas", {
-        "idCliente": cli["id"], "descripcion": "Venta POS registrada por Agente 4", "tasaIVA": 15,
+        "idCliente": cli["id"], "descripcion": f"Venta POS registrada por el agente de {sede.title()}", "tasaIVA": 15,
         "metodoPago": rnd.choice(["CASH", "CARD", "TRANSFER"]), "items": items,
     })
     if st not in (200, 201):

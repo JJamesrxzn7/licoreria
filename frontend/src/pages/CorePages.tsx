@@ -142,7 +142,7 @@ export const Dashboard = () => {
               <span className="badge badge-APR" style={{ fontSize: '10px' }}>
                 SUCURSAL 2 · GUAYAQUIL COSTA (GYE)
               </span>
-              <code style={{ fontSize: '10.5px', color: '#183a31', fontWeight: 700 }}>100.123.81.4 · :3306 OLTP / :3309 DWH</code>
+              <code style={{ fontSize: '10.5px', color: '#183a31', fontWeight: 700 }}>100.123.81.4 · :3307 ERP / :3309 DWH</code>
             </div>
             <h3 style={{ fontFamily: "'Playfair Display', Georgia, serif", fontSize: '17px', margin: '0 0 4px', color: '#25251f' }}>
               ⚓ Guayaquil — Hub Puerto Marítimo & BI
@@ -162,7 +162,7 @@ export const Dashboard = () => {
               <span className="badge badge-ABI" style={{ fontSize: '10px' }}>
                 SUCURSAL 3 · CUENCA & LOJA (CUE)
               </span>
-              <code style={{ fontSize: '10.5px', color: '#183a31', fontWeight: 700 }}>Supabase Cloud · :5432 PG18</code>
+              <code style={{ fontSize: '10.5px', color: '#183a31', fontWeight: 700 }}>PostgreSQL 18 · :5432 ERP</code>
             </div>
             <h3 style={{ fontFamily: "'Playfair Display', Georgia, serif", fontSize: '17px', margin: '0 0 4px', color: '#25251f' }}>
               🏔️ Cuenca & Loja — Destilerías del Sur
@@ -189,7 +189,7 @@ export const Dashboard = () => {
         <div className="grid-3" style={{ marginBottom: '18px' }}>
           {[
             { title: 'Últimas Facturas — Quito (:3307)', list: quito?.recentInvoices || [], accent: '#782c3e' },
-            { title: 'Últimas Facturas — Guayaquil (:3306)', list: gye?.recentInvoices || [], accent: '#183a31' },
+            { title: 'Últimas Facturas — Guayaquil (:3307)', list: gye?.recentInvoices || [], accent: '#183a31' },
             { title: 'Últimas Facturas — Cuenca Cloud (:5432)', list: cue?.recentInvoices || [], accent: '#a96b16' },
           ].map(box => (
             <section key={box.title} className="card" style={{ marginBottom: 0 }}>
