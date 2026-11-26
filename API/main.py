@@ -5398,11 +5398,21 @@ def get_audit_actor(request: Request) -> str | None:
         return None
 
 
+MONITOREO_SIN_AUDITORIA = (
+    "/api/arquitectura", "/api/agentes", "/api/dba", "/api/powerbi",
+    "/api/replicacion", "/api/paralelismo", "/api/arquitecto",
+)
+
+
 @app.middleware("http")
 async def audit_api_activity(request: Request, call_next):
     path = request.url.path
     login_request = path == "/api/auth/login" and request.method == "POST"
-    should_log = path.startswith("/api/") and (
+    # Las pantallas de monitoreo (diagrama, feed de agentes, Terminal DBA, Power BI, réplicas) se refrescan solas
+    # cada pocos segundos: no son acciones de una persona y llenaban el log (~358 filas/hora). Se auditan las
+    # consultas de negocio, los inicios de sesión fallidos y TODOS los cambios (estos los registran los triggers).
+    es_monitoreo = path.startswith(MONITOREO_SIN_AUDITORIA)
+    should_log = path.startswith("/api/") and not es_monitoreo and (
         request.method == "GET" or login_request
     )
     actor_token = audit_user_id.set(
