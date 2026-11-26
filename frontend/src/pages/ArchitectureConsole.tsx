@@ -936,7 +936,7 @@ export const ArchitectureConsole: React.FC<{ onNavigate?: (route: string) => voi
     problemas.length === 0 ? (
       <div style={{ display: 'flex', alignItems: 'center', gap: '7px', padding: compacto ? '5px 12px' : '8px 12px', borderRadius: '999px', background: '#eff5f1', border: '1px solid #cde0d3', color: '#183a31', fontSize: '11px', fontWeight: 700 }}>
         <span className="lc-dot-live" style={{ width: 8, height: 8, borderRadius: '50%', background: '#267154', color: '#267154' }} />
-        Todo operativo · API {replicasOnline ?? '?'}/{lbStatus?.replicasTotal ?? 3} réplicas · 6/6 BDs · 6/6 agentes activos
+        Todo operativo · API {replicasOnline ?? '?'}/{lbStatus?.replicasTotal ?? 3} · 6/6 bases · 6/6 agentes
       </div>
     ) : (
       <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', padding: '8px 12px', borderRadius: '10px', background: problemas.some(p => p.nivel === 'rojo') ? '#f8e9e8' : '#fdf3df', border: `1.5px solid ${problemas.some(p => p.nivel === 'rojo') ? '#9a3937' : '#c98a14'}`, maxWidth: '760px' }}>
@@ -977,6 +977,9 @@ export const ArchitectureConsole: React.FC<{ onNavigate?: (route: string) => voi
       <div style={{ ...base, width: `${thick}px`, height: opts.length ?? '100%', flex: opts.grow ? 1 : undefined }} />
     );
   };
+
+  /** 149.94 ms -> "150 ms" · 3710.38 ms -> "3,7 s": la cifra exacta no aporta, el orden de magnitud sí */
+  const fmtLatencia = (ms: number) => (ms < 1000 ? `${Math.round(ms)} ms` : `${(ms / 1000).toFixed(1).replace('.', ',')} s`);
 
   const renderDbBox = (nodeId: InteractiveElementId, agentId: AgentId, bdLabel: string, roleShort: string, portStr: string) => {
     const n = findNode(nodeId);
@@ -1031,7 +1034,7 @@ export const ArchitectureConsole: React.FC<{ onNavigate?: (route: string) => voi
         </div>
         <span style={{ fontSize: '12px', fontWeight: 700, color: '#25251f' }}>{roleShort}</span>
         <span className={alarma ? 'lc-blink' : undefined} style={{ fontSize: '10px', fontWeight: 800, color: unknown ? '#9e9d95' : isOnline ? '#267154' : '#d23a33' }}>
-          {unknown ? 'sin datos (API)' : !isOnline ? '● CAÍDA' : n ? `${n.latencyMs} ms` : '…'}
+          {unknown ? 'sin datos (API)' : !isOnline ? '● CAÍDA' : n ? fmtLatencia(n.latencyMs) : '…'}
         </span>
       </button>
     );
@@ -1274,89 +1277,84 @@ export const ArchitectureConsole: React.FC<{ onNavigate?: (route: string) => voi
           </div>
         </div>
       )}
-      {/* ENCABEZADO CON LA ESTÉTICA DE LA CAVA */}
-      <div className="page-heading">
+      {/* ENCABEZADO: título corto + una sola instrucción (el estado vive en el banner del diagrama, una sola vez) */}
+      <div className="page-heading" style={{ marginBottom: '14px' }}>
         <div>
-          <span className="eyebrow">
-            TOPOLOGÍA INTERACTIVA EN VIVO · TÚNEL VPN TAILSCALE · 6 BDs + 6 AGENTES IA ({globalData?.apiReplica || topology?.apiReplica || 'api_lacava_1'})
-          </span>
-          <h1>Diagrama en Vivo del Clúster Híbrido "La Cava"</h1>
-          <p>
-            Haz clic en cualquiera de las <strong>6 BDs</strong>, en cualquiera de los <strong>6 Agentes IA (`AG 1..AG 6`)</strong>, en la <strong>API</strong> o en la <strong>GUI</strong> para ver abajo qué datos está ingresando y consultar sus tablas en vivo.
-          </p>
+          <span className="eyebrow">ARQUITECTURA · EN VIVO</span>
+          <h1>Clúster La Cava</h1>
+          <p>3 sedes · 6 bases de datos · 6 agentes. Toca una base, un agente o la API para ver su detalle; el fondo muestra toda la actividad.</p>
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
-          <span className="demo-badge">
-            {topology ? `${topology.onlineNodes}/${topology.totalNodes} BDs CONECTADAS POR TAILSCALE` : 'CONECTANDO...'}
-          </span>
-          <button
-            type="button"
-            className="btn btn-outline"
-            onClick={() => {
-              void fetchTopology();
-              void fetchGlobalDbaConsole();
-              void fetchPowerBiStar();
-            }}
-            disabled={loadingTopo || loadingGlobal}
-          >
-            <RefreshCw size={14} />
-            {loadingTopo || loadingGlobal ? 'Sincronizando...' : 'Refrescar Clúster'}
-          </button>
-        </div>
+        <button
+          type="button"
+          className="btn btn-outline"
+          onClick={() => {
+            void fetchTopology();
+            void fetchGlobalDbaConsole();
+            void fetchPowerBiStar();
+          }}
+          disabled={loadingTopo || loadingGlobal}
+          title="Vuelve a leer las 6 bases de datos ahora"
+        >
+          <RefreshCw size={14} />
+          {loadingTopo || loadingGlobal ? 'Actualizando…' : 'Actualizar'}
+        </button>
       </div>
 
-      {/* PESTAÑAS CON LOS COLORES BORGOÑA Y VERDE BOSQUE DE LA CAVA */}
-      <div style={{ display: 'flex', gap: '9px', marginBottom: '20px', flexWrap: 'wrap' }}>
+      {/* PESTAÑAS: 3 grupos por tarea (operar · ver datos · distribución) con nombres de 1–3 palabras */}
+      <nav aria-label="Secciones de arquitectura" style={{ display: 'flex', gap: '18px', flexWrap: 'wrap', alignItems: 'flex-end', marginBottom: '18px', borderBottom: '1px solid #e9e6de', paddingBottom: '12px' }}>
         {[
-          { id: 'diagram_vs', label: '1. Diagrama Interactivo (6 BDs + 6 Agentes IA + Túnel Tailscale + API + GUI)', icon: GitCompare, show: true },
-          { id: 'powerbi_tab', label: '2. Dashboard OLAP & Configuración Power BI (BD 5 Estrella :3309)', icon: BarChart3, show: true },
-          { id: 'dba_prompt', label: '3. Terminal Read-Only del DBA (Consultas 3 Sucursales / 6 BDs)', icon: Terminal, show: true },
-          { id: 'global_dba', label: '4. Monitor Global Unificado (6 BDs en Paralelo)', icon: Filter, show: true },
-          { id: 'board', label: '5. Identidad por Sucursal & Tarjetas de Nodos', icon: Network, show: true },
-          { id: 'twopc', label: '6. Simulador 2PC (Exclusivo Admin / Arquitecto)', icon: ShieldCheck, show: !isStrictDba },
-          { id: 'replicacion', label: '7. Replicación en anillo y plan DR', icon: Layers, show: true },
-          { id: 'paralelismo', label: '8. Paralelismo real (medido)', icon: Cpu, show: true },
-          { id: 'arquitecto', label: '9. Control del arquitecto de SI', icon: Server, show: !isStrictDba },
-        ].filter(t => t.show).map(tab => {
-          const Icon = tab.icon;
-          const active = activeTab === tab.id;
-          return (
-            <button
-              key={tab.id}
-              type="button"
-              onClick={() => setActiveTab(tab.id as typeof activeTab)}
-              className="btn"
-              style={{
-                background: active ? '#183a31' : '#ffffff',
-                color: active ? '#ffffff' : '#25251f',
-                border: active ? '1px solid #183a31' : '1px solid #e9e6de',
-                boxShadow: active ? '0 4px 12px rgba(24,58,49,0.14)' : 'none',
-              }}
-            >
-              <Icon size={15} />
-              {tab.label}
-            </button>
-          );
-        })}
-      </div>
+          { grupo: 'Operación', tabs: [
+            { id: 'diagram_vs', label: 'Diagrama', tip: '6 bases, 6 agentes, el túnel Tailscale y la API en vivo', icon: GitCompare, show: true },
+            { id: 'global_dba', label: 'Monitor global', tip: 'Las 6 bases consultadas en paralelo en una sola tabla', icon: Filter, show: true },
+            { id: 'board', label: 'Sedes', tip: 'Identidad y tarjetas de cada sucursal', icon: Network, show: true },
+          ] },
+          { grupo: 'Datos', tabs: [
+            { id: 'powerbi_tab', label: 'Estrella y Power BI', tip: 'Esquema estrella de BD 5 y conexión con Power BI Desktop', icon: BarChart3, show: true },
+            { id: 'dba_prompt', label: 'Terminal DBA', tip: 'Consultas de solo lectura sobre cualquiera de las 6 bases', icon: Terminal, show: true },
+          ] },
+          { grupo: 'Distribución', tabs: [
+            { id: 'replicacion', label: 'Réplicas y DR', tip: 'Anillo de replicación y plan de recuperación', icon: Layers, show: true },
+            { id: 'twopc', label: '2PC', tip: 'Transacción distribuida con commit en dos fases (solo admin / arquitecto)', icon: ShieldCheck, show: !isStrictDba },
+            { id: 'paralelismo', label: 'Paralelismo', tip: 'Paralelismo medido entre nodos y entre consultas', icon: Cpu, show: true },
+            { id: 'arquitecto', label: 'Control SI', tip: 'Encender o apagar réplicas y agentes (arquitecto de SI)', icon: Server, show: !isStrictDba },
+          ] },
+        ].map(g => (
+          <div key={g.grupo} style={{ display: 'flex', flexDirection: 'column', gap: '5px' }}>
+            <span style={{ fontSize: '10px', fontWeight: 800, letterSpacing: '.1em', color: '#9e9d95', textTransform: 'uppercase' }}>{g.grupo}</span>
+            <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+              {g.tabs.filter(t => t.show).map(tab => {
+                const Icon = tab.icon;
+                const active = activeTab === tab.id;
+                return (
+                  <button
+                    key={tab.id}
+                    type="button"
+                    title={tab.tip}
+                    aria-current={active ? 'page' : undefined}
+                    onClick={() => setActiveTab(tab.id as typeof activeTab)}
+                    className="btn"
+                    style={{
+                      padding: '7px 12px',
+                      fontSize: '13px',
+                      background: active ? '#183a31' : '#ffffff',
+                      color: active ? '#ffffff' : '#25251f',
+                      border: active ? '1px solid #183a31' : '1px solid #e9e6de',
+                    }}
+                  >
+                    <Icon size={14} />
+                    {tab.label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        ))}
+      </nav>
 
       {/* ==================== TAB 1: DIAGRAMA VISUAL LIMPIO Y CUADRADO (EXACTAMENTE COMO EL BOCETO) ==================== */}
       {activeTab === 'diagram_vs' && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '18px' }}>
           <section className="card" style={{ padding: '22px' }}>
-            <div className="section-heading" style={{ marginBottom: '14px' }}>
-              <div>
-                <h2 style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '18px' }}>
-                  <Network size={20} color="#782c3e" />
-                  Flujo en Vivo: 3 BDs Quito (Izq) · 2 BDs Guayaquil (Arriba) · 1 BD Cuenca (Der) ↔ Túnel Tailscale ↔ API ↔ GUI
-                </h2>
-                <p>
-                  Cada Base de Datos tiene su propio <strong>Agente IA independiente (`AG 1` a `AG 6`)</strong> justo debajo. Haz clic en una <strong>BD</strong>, un <strong>Agente</strong>, la <strong>API</strong> o el <strong>fondo</strong> del diagrama: el detalle en vivo aparece {isSplit ? 'en el panel de la derecha' : 'debajo del diagrama'} sin perder de vista las líneas.
-                </p>
-              </div>
-              <span className="demo-badge">1 AGENTE IA POR CADA BASE DE DATOS</span>
-            </div>
-
             {/* ==================== DIAGRAMA (IZQUIERDA, ESCALADO) + PANEL LATERAL FIJO (DERECHA) ==================== */}
             <div
               ref={splitRef}
@@ -1371,7 +1369,6 @@ export const ArchitectureConsole: React.FC<{ onNavigate?: (route: string) => voi
             <div style={{ zoom: Math.max(canvasScale, 0.6) }}>
               <div
                 onClick={handleCanvasClick}
-                title="Clic en el fondo: actividad en vivo de las 3 sedes"
                 style={{
                   width: `${CANVAS_W}px`,
                   position: 'relative',
@@ -1396,22 +1393,19 @@ export const ArchitectureConsole: React.FC<{ onNavigate?: (route: string) => voi
                   {apiDown ? 'SIN CONEXIÓN CON LA API' : 'EN VIVO'} · {new Date(nowMs).toLocaleTimeString('es-EC')}
                   <span style={{ fontWeight: 500, color: elapsedSinceFeed > 10 ? '#d23a33' : undefined }}>· datos de hace {elapsedSinceFeed} s</span>
                 </div>
-                <div style={{ position: 'absolute', top: '12px', left: '14px', fontSize: '10.5px', color: '#787970' }}>
-                  Clic en el fondo = actividad de todas las sedes
-                </div>
 
                 {/* BANNER DE ALARMAS: verde si todo funciona; luces parpadeantes si algo falla */}
                 <div style={{ marginBottom: '12px', display: 'flex', justifyContent: 'center' }}>{renderAlarmas(true)}</div>
 
                 {/* FILA SUPERIOR: LAPTOP GUAYAQUIL (su eje central baja hasta la API) */}
                 {renderSite({
-                  label: '💻 LAPTOP — SEDE GUAYAQUIL',
+                  label: '💻 SEDE GUAYAQUIL · Laptop',
                   sub: `${findNode('guayaquil-sql')?.machine || 'Laptop (100.123.81.4)'} · 2 BDs`,
                   accent: '#183a31',
                   bg: '#f4f9f6',
                   spine: true,
                   dbs: [
-                    ['guayaquil-sql', 'agente-4', 'BD 4', 'OLTP', '3306'],
+                    ['guayaquil-sql', 'agente-4', 'BD 4', 'ERP', '3307'],
                     ['guayaquil-replica', 'agente-5', 'BD 5', 'DWH', '3309'],
                   ],
                 })}
@@ -1420,31 +1414,27 @@ export const ArchitectureConsole: React.FC<{ onNavigate?: (route: string) => voi
                 <div style={{ width: '100%', display: 'grid', gridTemplateColumns: '1fr auto 1fr', alignItems: 'start' }}>
                   <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'flex-end' }}>
                     {renderSite({
-                      label: '🖥️ PC ESCRITORIO — SEDE QUITO',
+                      label: '🖥️ SEDE QUITO · PC escritorio',
                       sub: `${findNode('quito-sql')?.machine || 'PC Escritorio (100.77.220.102)'} · 3 BDs`,
                       accent: '#782c3e',
                       bg: '#fcf6f4',
                       dbs: [
-                        ['quito-sql', 'agente-1', 'BD 1', 'SQL OLTP', '3307'],
+                        ['quito-sql', 'agente-1', 'BD 1', 'ERP', '3307'],
                         ['quito-nosql', 'agente-2', 'BD 2', 'NoSQL', '27017'],
-                        ['quito-otras', 'agente-3', 'BD 3', 'Hash', '3308'],
+                        ['quito-otras', 'agente-3', 'BD 3', 'Particionada', '3308'],
                       ],
                     })}
                     <div style={{ flex: 1, minWidth: '70px', marginTop: '74px', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
                       <span style={{ fontSize: '9px', fontWeight: 800, color: '#782c3e', background: '#fbf3f0', padding: '3px 8px', borderRadius: '999px', border: '1px solid #ead6cf', marginBottom: '5px', whiteSpace: 'nowrap' }}>
-                        🔒 Túnel Tailscale
+                        🔒 Tailscale
                       </span>
                       {renderFlowLine({ dir: 'h', color: '#782c3e', active: anyPulsing(['agente-1', 'agente-2', 'agente-3']) })}
-                      <span style={{ fontSize: '8.5px', color: '#575950', fontWeight: 700, marginTop: '5px' }}>:3307 · :27017 · :3308</span>
                     </div>
                   </div>
 
                   {/* COLUMNA CENTRAL: continuación del eje de Guayaquil → API → GUI */}
                   <div style={{ alignSelf: 'stretch', display: 'flex', flexDirection: 'column', alignItems: 'center', position: 'relative' }}>
                     {renderFlowLine({ dir: 'v', color: '#183a31', active: anyPulsing(['agente-4', 'agente-5']), length: '44px' })}
-                    <span style={{ position: 'absolute', top: '12px', left: 'calc(50% + 10px)', fontSize: '9px', fontWeight: 700, color: '#183a31', background: '#eff5f1', padding: '2px 8px', borderRadius: '8px', whiteSpace: 'nowrap' }}>
-                      X-Sede: GUAYAQUIL · GUAYAQUIL_DWH (local)
-                    </span>
                     <button
                       type="button"
                       className={focusedElement === 'api-gateway' ? undefined : apiDown ? 'lc-alert-red' : apiDegraded ? 'lc-alert-amber' : undefined}
@@ -1469,7 +1459,7 @@ export const ArchitectureConsole: React.FC<{ onNavigate?: (route: string) => voi
                         <Cpu size={21} color={focusedElement === 'api-gateway' ? '#e7c6a8' : '#782c3e'} />
                         <span style={{ fontFamily: "'Playfair Display', Georgia, serif", fontSize: '22px', fontWeight: 700 }}>API</span>
                       </span>
-                      <span style={{ fontSize: '10.5px', fontWeight: 700 }}>Balanceador :8000 / :8080</span>
+                      <span style={{ fontSize: '10.5px', fontWeight: 700 }}>Balanceador :8000</span>
                       {/* Una luz por réplica: verde encendida, roja parpadeante apagada */}
                       <span style={{ display: 'flex', alignItems: 'center', gap: '7px', fontSize: '9.5px', fontWeight: 700 }}>
                         {(lbStatus?.replicas ?? [1, 2, 3].map(i => ({ replica: `api_lacava_${i}`, online: !lbError }))).map((r, i) => (
@@ -1493,24 +1483,23 @@ export const ArchitectureConsole: React.FC<{ onNavigate?: (route: string) => voi
                   <div style={{ display: 'flex', alignItems: 'flex-start' }}>
                     <div style={{ flex: 1, minWidth: '70px', marginTop: '74px', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
                       <span style={{ fontSize: '9px', fontWeight: 800, color: '#a96b16', background: '#fbf4e6', padding: '3px 8px', borderRadius: '999px', border: '1px solid #ead8b8', marginBottom: '5px', whiteSpace: 'nowrap' }}>
-                        ☁️ TLS WAN Internet
+                        Local
                       </span>
                       {renderFlowLine({ dir: 'h', color: '#a96b16', active: isPulsing('agente-6'), reverse: true })}
-                      <span style={{ fontSize: '8.5px', color: '#575950', fontWeight: 700, marginTop: '5px' }}>X-Sede: CUENCA · :5432</span>
                     </div>
                     {renderSite({
-                      label: '☁️ NUBE — SEDE CUENCA',
-                      sub: 'PostgreSQL 18 · 1 BD',
+                      label: '🐘 SEDE CUENCA · PostgreSQL',
+                      sub: 'Laptop · 1 BD',
                       accent: '#a96b16',
                       bg: '#fdf8ee',
-                      dbs: [['cuenca-cloud', 'agente-6', 'BD 6', 'Cloud', '5432']],
+                      dbs: [['cuenca-cloud', 'agente-6', 'BD 6', 'ERP', '5432']],
                     })}
                   </div>
                 </div>
 
                 <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
                   {renderFlowLine({ dir: 'v', color: '#25251f', active: false, length: '14px' })}
-                  <span style={{ fontSize: '9px', fontWeight: 700, color: '#575950', margin: '3px 0' }}>▼ HTTPS / JSON · la GUI consulta cada 2 s ▼</span>
+                  <span style={{ fontSize: '9px', fontWeight: 700, color: '#575950', margin: '3px 0' }}>▼ la interfaz lee cada 2 s</span>
                 </div>
 
                 {/* FILA INFERIOR: GUI + POWER BI */}
@@ -1595,14 +1584,12 @@ export const ArchitectureConsole: React.FC<{ onNavigate?: (route: string) => voi
                     <div>
                       <span style={{ fontSize: '10px', fontWeight: 800, color: '#183a31', letterSpacing: '.12em', display: 'flex', alignItems: 'center', gap: '6px' }}>
                         <span className="lc-dot-live" style={{ width: 8, height: 8, borderRadius: '50%', background: '#267154', color: '#267154' }} />
-                        EN VIVO · SE ACTUALIZA CADA 2 s
+                        EN VIVO · CADA 2 s
                       </span>
-                      <h3 style={{ margin: '3px 0 0', fontSize: '19px', fontFamily: "'Playfair Display', Georgia, serif", color: '#183a31' }}>
-                        Actividad de todas las sedes (6 agentes · 6 BDs)
+                      <h3 style={{ margin: '3px 0 0', fontSize: '19px', fontFamily: "'Playfair Display', Georgia, serif", color: '#183a31' }}
+                        title="Cada fila es una escritura real leída de su base de datos; las nuevas aparecen arriba resaltadas">
+                        Actividad de las 3 sedes
                       </h3>
-                      <p style={{ margin: '3px 0 0', fontSize: '12px', color: '#575950' }}>
-                        Cada fila es una escritura real leída de su base de datos. Las nuevas aparecen arriba resaltadas.
-                      </p>
                     </div>
                     <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
                       {(['TODAS', 'QUITO', 'GUAYAQUIL', 'CUENCA'] as const).map(f => (
@@ -1624,7 +1611,7 @@ export const ArchitectureConsole: React.FC<{ onNavigate?: (route: string) => voi
                     </div>
                   </div>
 
-                  <div style={{ marginBottom: '12px' }}>{renderAlarmas(false)}</div>
+                  {problemas.length > 0 && <div style={{ marginBottom: '12px' }}>{renderAlarmas(false)}</div>}
 
                   {/* RESUMEN POR SEDE: cada agente con su cronómetro y su última acción */}
                   <div className="grid-3" style={{ marginBottom: '14px' }}>
