@@ -1,8 +1,10 @@
 """
 Transacción real de un agente en el ERP de SU sede (lo usan los agentes 1 Quito, 4 Guayaquil y 6 Cuenca).
 
-El agente trabaja como un usuario más de la app "La Cava" (header X-Sede-App):
-    venta POS (-> entrega) · compra aprobada (-> recepción) · ingreso a bodega · despacho
+El agente trabaja como un usuario más de la app "La Cava" (header X-Sede-App), con el rol que corresponde a cada acción:
+    Operativo  (VER + CREAR):   venta POS, orden de compra, cliente nuevo, edición de cliente, consulta (SELECT)
+    Supervisor (VER + APROBAR): aprobar factura, aprobar orden de compra, ingreso a bodega, despacho
+    Jefe       (VER + ANULAR):  anular factura, anular orden de compra
 Los procedimientos y triggers del ERP de esa sede guardan el documento y lo auditan en LOG_AUDITORIA con el usuario
 RBAC que lo hizo. Después el agente anota en su bitácora (operaciones_agentes_ia / _cloud) qué documento tocó.
 """
@@ -29,5 +31,6 @@ def transaccion_agente(sede: str, agente: str, ciclo: int, rnd: random.Random | 
         "modulo": doc["modulo"],
         "operacion": f"[Ciclo #{ciclo}] {doc['accion']}"[:255],
         "montoUsd": doc["monto"],
-        "documentoApp": {"tabla": doc["tabla"], "id": doc["id"], "accion": doc["accion"]},
+        # Una consulta (SELECT) no crea ni cambia un documento: no se envía enlace
+        "documentoApp": {"tabla": doc["tabla"], "id": doc["id"], "accion": doc["accion"]} if doc.get("id") else None,
     }

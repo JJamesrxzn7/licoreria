@@ -225,6 +225,9 @@ def connect_database():
             "SET @auditoria_usuario = %s, @auditoria_ip = %s",
             (audit_user_id.get(), audit_client_ip.get()),
         )
+        # Si la red se corta a mitad de una petición (VPN, suspensión), el servidor no se entera y la sesión queda
+        # "zombi" reteniendo bloqueos hasta wait_timeout (8 h por defecto). Con 5 min se cierra sola y hace ROLLBACK.
+        cur.execute("SET SESSION wait_timeout = 300, SESSION innodb_lock_wait_timeout = 20")
     except mysql.connector.Error:
         conn.close()
         raise

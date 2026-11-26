@@ -389,6 +389,28 @@ APP_DOCS = {
         "FROM PROxENT D LEFT JOIN PRODUCTOS P ON P.id_Producto = D.id_Producto WHERE D.id_Entrega = %s",
         "deliveries", "Bodega · Entregas",
     ),
+    "FACTURAS": (
+        "SELECT TRIM(id_Factura) AS factura, TRIM(id_Cliente) AS cliente, fac_Fecha AS fecha, fac_Subtotal AS subtotal, "
+        "fac_IVA AS iva, fac_Total AS total, ESTADO_FAC AS estado FROM FACTURAS WHERE id_Factura = %s",
+        "SELECT TRIM(D.id_Producto) AS producto, TRIM(P.pro_Descripcion) AS nombre, D.pxf_Cantidad AS cantidad, "
+        "D.pxf_Precio AS precio, D.pxf_Subtotal AS subtotal, D.ESTADO_PxFAC AS estado "
+        "FROM PROxFAC D LEFT JOIN PRODUCTOS P ON P.id_Producto = D.id_Producto WHERE D.id_Factura = %s",
+        "sales", "Ventas · Facturas",
+    ),
+    "COMPRAS": (
+        "SELECT TRIM(id_Compra) AS orden_compra, TRIM(id_Proveedor) AS proveedor, oc_Fecha AS fecha, oc_FechaEntrega AS entrega, "
+        "oc_Total AS total, ESTADO_OC AS estado FROM COMPRAS WHERE id_Compra = %s",
+        "SELECT TRIM(D.id_Producto) AS producto, TRIM(P.pro_Descripcion) AS nombre, D.pxo_Cantidad AS cantidad, "
+        "D.pxo_Valor AS costo, D.pxo_Subtotal AS subtotal, D.ESTADO_PxOC AS estado "
+        "FROM PROxOC D LEFT JOIN PRODUCTOS P ON P.id_Producto = D.id_Producto WHERE D.id_Compra = %s",
+        "pos_orders", "Compras · Órdenes de compra",
+    ),
+    "CLIENTES": (
+        "SELECT TRIM(id_Cliente) AS cliente, TRIM(cli_Nombre) AS nombre, TRIM(cli_RUC_CED) AS ruc_cedula, "
+        "TRIM(cli_Telefono) AS telefono, TRIM(cli_Mail) AS correo, ESTADO_CLI AS estado FROM CLIENTES WHERE id_Cliente = %s",
+        "SELECT 1 AS sin_detalle FROM CLIENTES WHERE 1 = 0 AND id_Cliente = %s",
+        "customers", "Ventas · Clientes",
+    ),
 }
 
 
@@ -464,6 +486,8 @@ def _detalle_oltp(sede: str, agent_num: int, op_id: str) -> dict[str, Any]:
 
 
 def _motivo_sin_documento(op: dict[str, Any]) -> str:
+    if "[VER]" in str(op.get("operacion") or ""):
+        return "Fue una consulta (SELECT): leyó facturas sin modificar nada, así que no hay un documento nuevo; queda en la bitácora."
     if "FALLÓ" in str(op.get("operacion") or ""):
         return "La transacción no se pudo completar en el ERP; la bitácora deja constancia del intento y del error."
     return ("Operación anterior a que los agentes trabajaran sobre el ERP de su sede "

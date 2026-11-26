@@ -32,6 +32,8 @@ CREDENCIALES = {
     "i_supervisor": "InveSup2026*",
     "v_operador": "VentasOpe2026*",
     "v_supervisor": "VentasSup2026*",
+    "v_jefe": "VentasJefe2026*",
+    "c_jefe": "ComprasJefe2026*",
 }
 _tokens: dict[tuple[str, str], str] = {}  # (sede, usuario) -> token
 
@@ -80,24 +82,125 @@ def como(usuario: str, metodo: str, ruta: str, cuerpo: dict | None = None, sede:
 _como = como
 
 
-def accion_bodega(rnd: random.Random | None = None, sede: str = "GUAYAQUIL") -> dict:
+def _sin_permiso_es_error(st: int, body, que: str) -> None:
+    if st not in (200, 201):
+        raise RuntimeError(f"{que}: {st} {body}")
+
+
+# Peso de cada acción en el sorteo del ciclo (las que no tienen documento elegible se descartan solas)
+PESOS_ACCIONES = {
+    "nueva_venta": 22, "nueva_compra": 14, "aprobar_compra": 10, "aprobar_factura": 9, "confirmar_recepcion": 9,
+    "despachar_entrega": 9, "consultar": 8, "anular_factura": 5, "anular_compra": 5, "nuevo_cliente": 5, "editar_cliente": 4,
+}
+# Rol que ejecuta cada acción (la matriz del ERP: Operativo = VER + CREAR · Supervisor = VER + APROBAR · Jefe = VER + ANULAR)
+ROL_DE_ACCION = {
+    "nueva_venta": ("v_operador", "VENTAS", "CREAR"), "nuevo_cliente": ("v_operador", "VENTAS", "CREAR"),
+    "editar_cliente": ("v_operador", "VENTAS", "EDITAR"), "consultar": ("v_operador", "VENTAS", "VER"),
+    "nueva_compra": ("c_operador", "COMPRAS", "CREAR"),
+    "aprobar_factura": ("v_supervisor", "VENTAS", "APROBAR"), "aprobar_compra": ("c_supervisor", "COMPRAS", "APROBAR"),
+    "confirmar_recepcion": ("i_supervisor", "INVENTARIOS", "APROBAR"), "despachar_entrega": ("i_supervisor", "INVENTARIOS", "APROBAR"),
+    "anular_factura": ("v_jefe", "VENTAS", "ANULAR"), "anular_compra": ("c_jefe", "COMPRAS", "ANULAR"),
+}
+# Cuenca (API PostgreSQL) todavía no expone alta/edición de clientes: allí esas dos acciones no se sortean
+SOLO_MARIADB = {"nuevo_cliente", "editar_cliente"}
+PREFIJO_CLIENTE_AGENTE = "Cliente Agente"
+
+
+def accion_bodega(rnd: random.Random | None = None, sede: str = "GUAYAQUIL", forzar: str | None = None) -> dict:
     """
-    UNA transacción real del ERP de `sede`, hecha con la app como un usuario más (la usan los agentes 1, 4 y 6):
-    venta POS (-> entrega), compra aprobada (-> recepción), ingreso a bodega o despacho.
-    Los triggers del ERP la auditan con el usuario RBAC que la hizo.
-    Devuelve qué documento creó/confirmó: {usuario, modulo, tabla, id, accion, monto}.
+    UNA acción real en el ERP de `sede`, hecha con la app por el usuario RBAC que le corresponde
+    (la usan los agentes 1, 4 y 6). El ciclo de vida completo de los documentos:
+      Operativo  (VER + CREAR):   venta POS, orden de compra, cliente nuevo, edición de un cliente, consulta (SELECT)
+      Supervisor (VER + APROBAR): aprobar factura, aprobar orden de compra, ingreso a bodega, despacho
+      Jefe       (VER + ANULAR):  anular factura, anular orden de compra (en el ERP no se borra un documento: se ANULA)
+    Los triggers del ERP auditan cada cambio con ese usuario.
+    Devuelve: {usuario, modulo, tabla, id, accion, monto, tipo}.
     """
     rnd = rnd or random.Random()
 
-    def como(usuario, metodo, ruta, cuerpo=None):  # noqa: F811  (misma función, fijada a la sede)
-        return _como(usuario, metodo, ruta, cuerpo, sede)
+    def como(usuario, metodo, ruta, cuerpo=None):  # noqa: F811  (misma función, fijada a la sede y SIN plan B con admin)
+        st, body = llamar(metodo, ruta, usuario, cuerpo, sede)
+        if st == 401:
+            _tokens.pop((sede, usuario), None)
+            st, body = llamar(metodo, ruta, usuario, cuerpo, sede)
+        return st, body
 
-    _, recepciones = como("admin", "GET", "/api/recepciones")
-    _, entregas = como("admin", "GET", "/api/entregas")
-    rec_pend = [r for r in recepciones or [] if str(r.get("status")).upper() == "PEN"]
-    ent_pend = [e for e in entregas or [] if str(e.get("status")).upper() == "PEN"]
-    opciones = ["nueva_compra", "nueva_venta"] + (["confirmar_recepcion"] * 2 if rec_pend else []) + (["despachar_entrega"] * 2 if ent_pend else [])
-    eleccion = rnd.choice(opciones)
+    def lista(usuario, ruta):
+        st, body = como(usuario, "GET", ruta)
+        _sin_permiso_es_error(st, body, f"{usuario} no pudo consultar {ruta}")
+        return body or []
+
+    # Lo que hay pendiente en este ERP (cada rol consulta lo de su módulo)
+    facturas = lista("v_supervisor", "/api/ventas")
+    compras = lista("c_supervisor", "/api/compras")
+    recepciones = lista("i_supervisor", "/api/recepciones")
+    entregas = lista("i_supervisor", "/api/entregas")
+    clientes = lista("v_operador", "/api/clientes")
+    fac_abiertas = [f for f in facturas if str(f.get("status")).upper() == "ABI"]
+    oc_pendientes = [o for o in compras if str(o.get("estado")).upper() not in ("APR", "ANU")]
+    rec_pend = [r for r in recepciones if str(r.get("status")).upper() == "PEN"]
+    ent_pend = [e for e in entregas if str(e.get("status")).upper() == "PEN"]
+    fac_con_entrega_pend = {str(e.get("invoiceId")) for e in ent_pend}
+    # Se anula solo lo que todavía no salió de bodega: factura abierta cuya entrega sigue pendiente
+    fac_anulables = [f for f in fac_abiertas if str(f.get("id")) in fac_con_entrega_pend]
+    clientes_agente = [c for c in clientes if str(c.get("name", "")).startswith(PREFIJO_CLIENTE_AGENTE)]
+
+    disponibles = {
+        "nueva_venta": True, "nueva_compra": True, "consultar": True, "nuevo_cliente": True,
+        "aprobar_factura": bool(fac_abiertas), "aprobar_compra": bool(oc_pendientes),
+        "confirmar_recepcion": bool(rec_pend), "despachar_entrega": bool(ent_pend),
+        "anular_factura": bool(fac_anulables), "anular_compra": bool(oc_pendientes),
+        "editar_cliente": bool(clientes_agente),
+    }
+    if sede == "CUENCA":
+        for a in SOLO_MARIADB:
+            disponibles[a] = False
+    opciones = [a for a, ok in disponibles.items() if ok]
+    if forzar:  # pruebas: ejecutar una acción concreta
+        if forzar not in opciones:
+            raise RuntimeError(f"La acción {forzar} no está disponible ahora en {sede}")
+        eleccion = forzar
+    else:
+        eleccion = rnd.choices(opciones, weights=[PESOS_ACCIONES[a] for a in opciones])[0]
+    usuario, modulo, tipo = ROL_DE_ACCION[eleccion]
+
+    def resultado(tabla, doc_id, accion, monto=0.0):
+        return {"usuario": usuario, "modulo": modulo, "tabla": tabla, "id": doc_id, "monto": monto, "tipo": tipo,
+                "accion": f"[{tipo}] {accion}"}
+
+    if eleccion == "consultar":
+        st, res = como(usuario, "GET", "/api/ventas")
+        _sin_permiso_es_error(st, res, "Consultar facturas")
+        abiertas = sum(1 for f in res if str(f.get("status")).upper() == "ABI")
+        total = round(sum(float(f.get("total") or 0) for f in res if str(f.get("status")).upper() != "ANU"), 2)
+        return resultado("FACTURAS", None, f"Consulta (SELECT) de {len(res)} facturas de {sede.title()}: {abiertas} abiertas, "
+                                           f"ventas vigentes ${total}")
+
+    if eleccion == "aprobar_factura":
+        fac = rnd.choice(fac_abiertas)
+        st, res = como(usuario, "POST", f"/api/ventas/{fac['id']}/aprobar")
+        _sin_permiso_es_error(st, res, f"Aprobar factura {fac['id']}")
+        return resultado("FACTURAS", fac["id"], f"Factura {fac['id']} de {fac.get('customerName') or fac.get('customerId')} aprobada",
+                         float(fac.get("total") or 0))
+
+    if eleccion == "anular_factura":
+        fac = rnd.choice(fac_anulables)
+        st, res = como(usuario, "POST", f"/api/ventas/{fac['id']}/anular")
+        _sin_permiso_es_error(st, res, f"Anular factura {fac['id']}")
+        return resultado("FACTURAS", fac["id"], f"Factura {fac['id']} ANULADA (no se había despachado)", float(fac.get("total") or 0))
+
+    if eleccion == "aprobar_compra":
+        oc = rnd.choice(oc_pendientes)
+        st, res = como(usuario, "POST", f"/api/compras/{oc['id']}/aprobar")
+        _sin_permiso_es_error(st, res, f"Aprobar orden {oc['id']}")
+        return resultado("COMPRAS", oc["id"], f"Orden de compra {oc['id']} a {oc.get('proveedor') or oc.get('proveedorId')} aprobada: "
+                                              f"se genera su recepción en bodega", float(oc.get("total") or 0))
+
+    if eleccion == "anular_compra":
+        oc = rnd.choice(oc_pendientes)
+        st, res = como(usuario, "POST", f"/api/compras/{oc['id']}/anular")
+        _sin_permiso_es_error(st, res, f"Anular orden {oc['id']}")
+        return resultado("COMPRAS", oc["id"], f"Orden de compra {oc['id']} ANULADA antes de aprobarse", float(oc.get("total") or 0))
 
     if eleccion == "confirmar_recepcion":
         rec = rnd.choice(rec_pend)
@@ -109,61 +212,70 @@ def accion_bodega(rnd: random.Random | None = None, sede: str = "GUAYAQUIL") -> 
                 items.append({"productId": it["productId"], "receivedQty": esperado - 1, "reason": "Unidad dañada en el transporte"})
             else:
                 items.append({"productId": it["productId"], "receivedQty": esperado, "reason": ""})
-        # Confirmar el ingreso es una APROBACIÓN de bodega: la hace el supervisor de inventarios
-        st, res = como("i_supervisor", "POST", f"/api/recepciones/{rec['id']}/confirmar", {"items": items})
-        if st != 200:
-            raise RuntimeError(f"Confirmar recepción {rec['id']}: {st} {res}")
-        return {"usuario": "i_supervisor", "modulo": "INVENTARIOS", "tabla": "RECEPCIONES", "id": rec["id"], "monto": 0.0,
-                "accion": f"Ingreso a bodega de la recepción {rec['id']} (OC {rec.get('poId')})" + (" con diferencia" if con_diferencia else "")}
+        st, res = como(usuario, "POST", f"/api/recepciones/{rec['id']}/confirmar", {"items": items})
+        _sin_permiso_es_error(st, res, f"Confirmar recepción {rec['id']}")
+        return resultado("RECEPCIONES", rec["id"], f"Ingreso a bodega de la recepción {rec['id']} (OC {rec.get('poId')})"
+                         + (" con diferencia" if con_diferencia else ""))
 
     if eleccion == "despachar_entrega":
         ent = rnd.choice(ent_pend)
         items = [{"productId": it["productId"], "deliveredQty": int(it["expectedQty"]), "reason": ""} for it in ent["items"]]
         if ent.get("invoiceId"):
-            # Algunos ERP (Cuenca) exigen la factura APROBADA antes de despachar; si ya lo está, la API lo indica y se sigue
+            # Algunos ERP (Cuenca) exigen la factura APROBADA antes de despachar: la aprueba el supervisor de ventas
             como("v_supervisor", "POST", f"/api/ventas/{ent['invoiceId']}/aprobar")
-        st, res = como("i_supervisor", "POST", f"/api/entregas/{ent['id']}/confirmar", {"items": items})
-        if st != 200:
-            raise RuntimeError(f"Despachar entrega {ent['id']}: {st} {res}")
-        return {"usuario": "i_supervisor", "modulo": "INVENTARIOS", "tabla": "ENTREGAS", "id": ent["id"], "monto": 0.0,
-                "accion": f"Despacho de la entrega {ent['id']} (factura {ent.get('invoiceId')})"}
+        st, res = como(usuario, "POST", f"/api/entregas/{ent['id']}/confirmar", {"items": items})
+        _sin_permiso_es_error(st, res, f"Despachar entrega {ent['id']}")
+        return resultado("ENTREGAS", ent["id"], f"Despacho de la entrega {ent['id']} (factura {ent.get('invoiceId')})")
 
-    _, productos = como("admin", "GET", "/api/productos")
+    if eleccion == "nuevo_cliente":
+        n = rnd.randint(1000, 9999)
+        cedula = f"17{rnd.randint(10_000_000, 99_999_999)}"
+        st, res = como(usuario, "POST", "/api/clientes", {
+            "nombre": f"{PREFIJO_CLIENTE_AGENTE} {sede.title()} {n}", "ciRuc": cedula, "telefono": f"09{rnd.randint(10_000_000, 99_999_999)}",
+            "email": f"cliente{n}@lacava.ec", "idCiudad": {"QUITO": "UIO", "CUENCA": "CUE"}.get(sede, "GYE"),
+            "direccion": f"Av. Principal {n}", "cupoCredito": 500, "descuento": 0,
+        })
+        _sin_permiso_es_error(st, res, "Registrar cliente")
+        return resultado("CLIENTES", res.get("id"), f"Cliente nuevo {res.get('id')} registrado ({PREFIJO_CLIENTE_AGENTE} {sede.title()} {n})")
+
+    if eleccion == "editar_cliente":
+        cli = rnd.choice(clientes_agente)
+        nuevo_tel = f"09{rnd.randint(10_000_000, 99_999_999)}"
+        # PUT con los datos que ya tenía (la API no cambia ciudad ni celular en una edición): solo cambia el teléfono
+        st, res = como(usuario, "PUT", f"/api/clientes/{cli['id']}", {
+            "nombre": cli["name"], "ciRuc": cli["ciRuc"], "telefono": nuevo_tel, "email": cli.get("email") or "",
+            "direccion": cli.get("address") or "", "cupoCredito": cli.get("creditLimit") or 0, "descuento": cli.get("discountRate") or 0,
+        })
+        _sin_permiso_es_error(st, res, f"Editar cliente {cli['id']}")
+        return resultado("CLIENTES", cli["id"], f"Cliente {cli['id']} editado: teléfono {cli.get('contact')} -> {nuevo_tel}")
+
+    productos = lista("v_operador", "/api/productos")
     if eleccion == "nueva_compra":
-        _, proveedores = como("admin", "GET", "/api/proveedores")
+        proveedores = lista("c_operador", "/api/proveedores")
         prov = rnd.choice(proveedores)
         items = [{"idProducto": p["id"], "cantidad": rnd.randint(6, 24), "costoUnitario": max(0.01, float(p.get("cost") or 5))}
                  for p in rnd.sample(productos, k=min(len(productos), rnd.randint(1, 3)))]
-        st, oc = como("c_operador", "POST", "/api/compras", {
+        st, oc = como(usuario, "POST", "/api/compras", {
             "idProveedor": prov["id"], "fechaEntrega": str(date.today() + timedelta(days=rnd.randint(1, 5))), "tasaIVA": 15, "items": items,
         })
-        if st not in (200, 201):
-            raise RuntimeError(f"Crear orden de compra: {st} {oc}")
-        oc_id = oc.get("id")
-        st, res = como("c_supervisor", "POST", f"/api/compras/{oc_id}/aprobar")
-        if st != 200:
-            raise RuntimeError(f"Aprobar {oc_id}: {st} {res}")
-        _, recepciones = como("admin", "GET", "/api/recepciones")
-        rec = next((r for r in recepciones if r.get("poId") == oc_id), None)
+        _sin_permiso_es_error(st, oc, "Crear orden de compra")
         total = round(sum(i["cantidad"] * i["costoUnitario"] for i in items) * 1.15, 2)
-        return {"usuario": "c_operador", "modulo": "COMPRAS", "tabla": "RECEPCIONES", "id": rec["id"] if rec else oc_id, "monto": total,
-                "accion": f"Orden de compra {oc_id} a {prov.get('name', prov['id'])} aprobada: recepción {rec['id'] if rec else '?'} pendiente en bodega"}
+        return resultado("COMPRAS", oc.get("id"), f"Orden de compra {oc.get('id')} a {prov.get('name', prov['id'])} creada: "
+                                                  f"espera aprobación del supervisor", total)
 
     # nueva_venta
-    _, clientes = como("admin", "GET", "/api/clientes")
     con_stock = [p for p in productos if float(p.get("stock") or 0) >= 5] or productos
     items = [{"idProducto": p["id"], "cantidad": rnd.randint(1, 3), "precioUnitario": float(p.get("price") or 10)}
              for p in rnd.sample(con_stock, k=min(len(con_stock), rnd.randint(1, 3)))]
     cli = rnd.choice(clientes)
-    st, venta = como("v_operador", "POST", "/api/ventas", {
+    st, venta = como(usuario, "POST", "/api/ventas", {
         "idCliente": cli["id"], "descripcion": f"Venta POS registrada por el agente de {sede.title()}", "tasaIVA": 15,
         "metodoPago": rnd.choice(["CASH", "CARD", "TRANSFER"]), "items": items,
     })
-    if st not in (200, 201):
-        raise RuntimeError(f"Venta POS: {st} {venta}")
-    total = float(venta.get("total") or 0)
-    return {"usuario": "v_operador", "modulo": "VENTAS", "tabla": "ENTREGAS", "id": venta.get("deliveryId"), "monto": total,
-            "accion": f"Venta POS {venta.get('id')} a {cli.get('name', cli['id'])}: entrega {venta.get('deliveryId')} pendiente de despacho"}
+    _sin_permiso_es_error(st, venta, "Venta POS")
+    return resultado("ENTREGAS", venta.get("deliveryId"), f"Venta POS {venta.get('id')} a {cli.get('name', cli['id'])}: "
+                                                          f"entrega {venta.get('deliveryId')} pendiente de despacho",
+                     float(venta.get("total") or 0))
 
 
 def main() -> None:

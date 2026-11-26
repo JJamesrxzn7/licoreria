@@ -234,7 +234,7 @@ def serialize_value(val: Any) -> Any:
 def connect_mariadb_with_fallback(cfg: dict[str, Any]):
     # Si el nodo pertenece a la PC de Escritorio (QUITO: 100.77.220.102), NO ocultamos su caída:
     # use_pure=True evita bloqueos de DNS inverso en el conector C de Windows sobre Tailscale.
-    return mysql.connector.connect(
+    conn = mysql.connector.connect(
         host=cfg["host"],
         port=cfg["port"],
         user=cfg["user"],
@@ -243,7 +243,12 @@ def connect_mariadb_with_fallback(cfg: dict[str, Any]):
         connection_timeout=3,
         autocommit=True,
         use_pure=True,
-    ), cfg["host"]
+    )
+    # Una sesión cortada por la red no debe retener bloqueos horas (wait_timeout por defecto = 8 h)
+    cur = conn.cursor()
+    cur.execute("SET SESSION wait_timeout = 300, SESSION innodb_lock_wait_timeout = 20")
+    cur.close()
+    return conn, cfg["host"]
 
 
 SEDES_ERP = ("QUITO", "GUAYAQUIL", "CUENCA")
