@@ -270,10 +270,10 @@ const AGENT_DETAILS: Record<
     targetDbId: 'quito-nosql',
     targetDbName: 'BD 2 · MongoDB Quito (:27017)',
     whatItDoes:
-      'Cada 60 s envía un documento JSON sin esquema fijo (alerta STOCK_BAJO, usuario, ciclo). La API lo inserta en las colecciones `eventos_agentes` y `logs_auditoria` de MongoDB.',
+      'Cada 60 s sincroniza en MongoDB los hechos REALES de los 3 ERP, leídos de su LOG_AUDITORIA (incremental por log_seq): en `eventos_negocio` guarda un documento por venta, orden de compra, aprobación, anulación, despacho, recepción o cliente, y cada tipo trae campos distintos (una venta lleva su arreglo de productos embebido; una edición de cliente, solo los campos que cambiaron). En `alertas_stock` deja un documento por producto de Quito bajo el umbral de reposición, con su historial embebido. Su propia corrida queda en `eventos_agentes` y en `logs_auditoria`.',
     whereToSeeIt:
-      'Lo ves aquí (columna documento_json), en el Monitor Global y en la Terminal DBA → BD 2 → MONGO_COLLECTION:eventos_agentes.',
-    credentialsUsed: 'Rota entre los 15 usuarios operativos',
+      'En MongoDB Compass (mongodb://100.77.220.102:27017 → quito_nosql_mongo → eventos_negocio / alertas_stock), aquí (columna documento_json) y en la Terminal DBA → BD 2.',
+    credentialsUsed: 'Lee los 3 ERP con la cuenta del clúster; queda auditado con el usuario RBAC del ciclo',
     accent: '#782c3e',
   },
   'agente-3': {

@@ -25,6 +25,7 @@ from typing import Any
 from uuid import uuid4
 
 import mysql.connector
+import nosql_eventos
 import psycopg
 from pymongo import MongoClient
 from fastapi import APIRouter, Header, HTTPException, Query, Request
@@ -291,6 +292,14 @@ def connect_postgres_with_fallback(cfg: dict[str, Any]):
 
 DBA_PRESETS = {
     "QUITO_NOSQL": [
+        {
+            "label": "Eventos de negocio REALES de los 3 ERP (`eventos_negocio`: cada tipo con campos distintos)",
+            "sql": "MONGO_COLLECTION:eventos_negocio"
+        },
+        {
+            "label": "Alertas de reposición de Quito con historial embebido (`alertas_stock`)",
+            "sql": "MONGO_COLLECTION:alertas_stock"
+        },
         {
             "label": "1. Consultar Colección `eventos_agentes` (Agente 2 MongoDB :27017)",
             "sql": "MONGO_COLLECTION:eventos_agentes"
@@ -892,25 +901,28 @@ def handle_agent_routed_operation(
         conn.close()
 
     elif sede_key == "QUITO_NOSQL":
+        # BD 2 deja de recibir un JSON de relleno: el agente dispara una sincronización documental con datos REALES
+        # de los 3 ERP (eventos de negocio con esquema flexible + alertas de stock con historial embebido).
         cli, active_host = connect_mongo_with_fallback(cfg)
         db = cli[cfg["database"]]
-        doc = {
-            "evento_id": f"AGT2-{uuid4().hex[:8].upper()}",
-            "agente": payload.agente,
-            "header_x_sede": "QUITO_NOSQL",
-            "usuario_rbac": user_clean,
-            "rol_rbac": rol_rbac,
-            "modulo": modulo_final,
-            "mensaje": payload.operacion,
-            "detalle": payload.extraJson or {"monto_usd": payload.montoUsd, "replica": REPLICA_ID},
-            "timestamp": datetime.now().isoformat(),
-        }
-        db["eventos_agentes"].insert_one(dict(doc))
-        db["logs_auditoria"].insert_one({**doc, "accion": "LOG_AGENTE_NOSQL"})
+
+        def _erp(sede: str):
+            c = configs[sede]
+            if c["engineType"] == "postgresql":
+                return connect_postgres_with_fallback(c)[0], True
+            return connect_mariadb_with_fallback(c)[0], False
+
+        ip_nosql = (request.headers.get("x-forwarded-for") or (request.client.host if request.client else "") or "")[:45]
+        res_nosql = nosql_eventos.sincronizar(db, _erp, user_clean, rol_rbac, ip_nosql)
         cli.close()
-        op_id = doc["evento_id"]
-        impacto.append({"tabla": "eventos_agentes (colección)", "accion": "insertOne", "id": op_id, "ok": True})
-        impacto.append({"tabla": "logs_auditoria (colección)", "accion": "insertOne", "id": op_id, "ok": True})
+        op_id = res_nosql["evento_id"]
+        for tipo, n in sorted(res_nosql["resumen"]["eventos_por_tipo"].items()):
+            impacto.append({"tabla": "eventos_negocio (colección)", "accion": f"upsert {n} × {tipo}", "id": op_id, "ok": True})
+        impacto.append({"tabla": "alertas_stock (colección)", "accion": f"upsert {res_nosql['resumen']['alertas_stock']} alertas",
+                        "id": op_id, "ok": True})
+        impacto.append({"tabla": "eventos_agentes + logs_auditoria (colecciones)", "accion": "insertOne", "id": op_id, "ok": True})
+        for sede_err, err in res_nosql["resumen"]["errores"].items():
+            impacto.append({"tabla": f"ERP {sede_err}", "accion": "leer log", "id": None, "ok": False, "error": err})
 
     elif sede_key == "QUITO_PARALELA":
         conn, active_host = connect_mariadb_with_fallback(cfg)
@@ -1263,18 +1275,20 @@ async def execute_dba_query(payload: DbaQueryRequest):
                 col_name = sql_clean.split(":", 1)[1].strip()
             elif "logs_auditoria" in sql_clean:
                 col_name = "logs_auditoria"
-            docs = list(db[col_name].find().sort("_id", -1).limit(50))
+            # Cada colección ordena por su propia fecha (los _id de eventos_negocio son "SEDE-TIPO-documento", no cronológicos)
+            orden = {"eventos_negocio": "log_seq", "alertas_stock": "ultima_revision"}.get(col_name, "_id")
+            docs = list(db[col_name].find().sort(orden, -1).limit(50))
             cli.close()
-            columns = ["_id", "coleccion", "usuario_rbac", "rol_rbac", "modulo", "documento_json", "timestamp"]
+            columns = ["_id", "coleccion", "tipo", "sede", "usuario", "documento_json", "fecha"]
             rows = [
                 [
                     str(d.get("_id")),
                     col_name,
-                    d.get("usuario_rbac", "i_supervisor"),
-                    d.get("rol_rbac", "rol_supervisor"),
-                    d.get("modulo", "INVENTARIOS"),
+                    d.get("tipo") or d.get("accion") or d.get("modulo") or d.get("nivel"),
+                    d.get("sede") or d.get("header_x_sede"),
+                    d.get("usuario") or d.get("usuario_rbac"),
                     json.dumps({k: serialize_value(v) for k, v in d.items() if k != "_id"}, ensure_ascii=False),
-                    str(d.get("timestamp", "")),
+                    str(d.get("fecha") or d.get("timestamp") or d.get("ultima_revision") or ""),
                 ]
                 for d in docs
             ]
