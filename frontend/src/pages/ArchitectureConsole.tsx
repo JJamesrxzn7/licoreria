@@ -7,6 +7,7 @@ import {
 import { useAuth } from '../context/AuthContext';
 import { isDbaUser, isSuperAdmin } from '../rolePermissions';
 import { ParalelismoReal, ReplicacionDR } from './ReplicacionDR';
+import { EsquemaEstrella } from './EsquemaEstrella';
 import { ArquitectoSI } from './ArquitectoSI';
 
 const configuredApiUrl = import.meta.env.VITE_API_URL?.trim();
@@ -2079,6 +2080,7 @@ export const ArchitectureConsole: React.FC<{ onNavigate?: (route: string) => voi
       {/* ==================== TAB 2: DASHBOARD OLAP & CONFIGURACIÓN POWER BI DESKTOP ==================== */}
       {activeTab === 'powerbi_tab' && (
         <div>
+          <EsquemaEstrella />
           <section className="card">
             <div className="section-heading">
               <div>

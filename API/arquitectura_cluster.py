@@ -317,11 +317,11 @@ DBA_PRESETS = {
     "GUAYAQUIL_DWH": [
         {
             "label": "1. Esquema Estrella Power BI: Hechos + Dimensiones (:3309 `db_gye_dwh`)",
-            "sql": "SELECT f.id_fact, s.nombre_sede, p.nombre_producto, p.categoria, t.nombre_mes, f.usuario_rbac, f.rol_rbac, f.cantidad_botellas, f.total_venta_usd, f.etl_lote, f.fecha_carga_etl FROM fact_ventas f JOIN dim_sede s ON f.id_sede = s.id_sede JOIN dim_producto p ON f.id_producto = p.id_producto JOIN dim_tiempo t ON f.id_tiempo = t.id_tiempo ORDER BY f.id_fact DESC LIMIT 20;"
+            "sql": "SELECT f.id_fact, s.nombre_sede, p.nombre_producto, p.categoria, t.nombre_mes, f.usuario_rbac, f.rol_rbac, f.cantidad_botellas, f.total_venta_usd, f.etl_lote, f.fecha_carga_etl FROM fact_ventas f JOIN dim_sede s ON f.id_sede = s.id_sede JOIN dim_producto p ON f.id_producto = p.id_producto JOIN dim_tiempo t ON f.id_tiempo = t.id_tiempo WHERE f.fuente_dato = 'ERP' ORDER BY f.id_fact DESC LIMIT 20;"
         },
         {
             "label": "2. Consolidado OLAP por Sede para Dashboard Power BI (:3309)",
-            "sql": "SELECT s.id_sede, s.nombre_sede, s.maquina_fisica, COUNT(f.id_fact) AS lotes_etl, SUM(f.cantidad_botellas) AS botellas_totales, SUM(f.total_venta_usd) AS ingresos_usd FROM fact_ventas f JOIN dim_sede s ON f.id_sede = s.id_sede GROUP BY s.id_sede, s.nombre_sede, s.maquina_fisica ORDER BY ingresos_usd DESC;"
+            "sql": "SELECT s.id_sede, s.nombre_sede, s.maquina_fisica, COUNT(f.id_fact) AS lotes_etl, SUM(f.cantidad_botellas) AS botellas_totales, SUM(f.total_venta_usd) AS ingresos_usd FROM fact_ventas f JOIN dim_sede s ON f.id_sede = s.id_sede WHERE f.fuente_dato = 'ERP' GROUP BY s.id_sede, s.nombre_sede, s.maquina_fisica ORDER BY ingresos_usd DESC;"
         },
         {
             "label": "3. Ver Dimensiones del Estrella (`dim_sede`, `dim_producto`, `dim_tiempo`)",
@@ -997,6 +997,8 @@ def get_powerbi_star_schema_dataset():
     """
     Endpoint OLAP listo para Power BI Desktop (Obtener datos -> Web -> http://127.0.0.1:8000/api/powerbi/estrella)
     y para el Dashboard Gerencial en la interfaz web.
+    Solo ventas REALES de los 3 ERP (fuente_dato = 'ERP'); los hechos viejos de la bitácora de agentes
+    (montos inventados) quedan en la tabla como historial pero no se suman.
     Devuelve la tabla de hechos desnormalizada con sus 3 dimensiones (`dim_sede`, `dim_producto`, `dim_tiempo`)
     desde BD 5 (`db_gye_dwh` en MariaDB :3309).
     """
@@ -1031,6 +1033,7 @@ def get_powerbi_star_schema_dataset():
         LEFT JOIN dim_sede s ON f.id_sede = s.id_sede
         LEFT JOIN dim_producto p ON f.id_producto = p.id_producto
         LEFT JOIN dim_tiempo t ON f.id_tiempo = t.id_tiempo
+        WHERE f.fuente_dato = 'ERP'
         ORDER BY f.id_fact DESC
         LIMIT 100
     """)
@@ -1043,6 +1046,7 @@ def get_powerbi_star_schema_dataset():
             COALESCE(SUM(f.cantidad_botellas), 0) AS botellas,
             COALESCE(SUM(f.total_venta_usd), 0) AS total_usd
         FROM fact_ventas f
+        WHERE f.fuente_dato = 'ERP'
         GROUP BY f.id_sede
         ORDER BY total_usd DESC
     """)
@@ -1055,6 +1059,7 @@ def get_powerbi_star_schema_dataset():
             COALESCE(SUM(f.total_venta_usd), 0) AS total_usd
         FROM fact_ventas f
         LEFT JOIN dim_producto p ON f.id_producto = p.id_producto
+        WHERE f.fuente_dato = 'ERP'
         GROUP BY COALESCE(p.categoria, 'Licores')
         ORDER BY total_usd DESC
     """)
@@ -2019,12 +2024,55 @@ def _dwh_select(sql: str) -> list[dict[str, Any]]:
     return rows
 
 
+@router.get("/api/powerbi/estrella/esquema")
+def powerbi_esquema_estrella():
+    """
+    La estructura REAL del esquema estrella de BD 5, leída del catálogo del motor (information_schema):
+    la tabla de hechos en el centro, las 3 dimensiones alrededor, sus columnas con PK/FK, filas y una muestra.
+    """
+    configs = get_cluster_6dbs_config()
+    conn, _ = connect_mariadb_with_fallback(configs["GUAYAQUIL_DWH"])
+    cur = conn.cursor(dictionary=True)
+    tablas = {}
+    for t in ("fact_ventas", "dim_sede", "dim_producto", "dim_tiempo"):
+        cur.execute("SELECT COLUMN_NAME AS nombre, COLUMN_TYPE AS tipo, COLUMN_KEY AS llave FROM information_schema.COLUMNS "
+                    "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s ORDER BY ORDINAL_POSITION", (t,))
+        columnas = [{"nombre": c["nombre"], "tipo": c["tipo"],
+                     "pk": c["llave"] == "PRI", "fk": t == "fact_ventas" and c["nombre"] in ("id_sede", "id_producto", "id_tiempo")}
+                    for c in cur.fetchall()]
+        cur.execute(f"SELECT COUNT(*) AS n FROM {t}")
+        filas = int(cur.fetchone()["n"])
+        orden = "id_fact DESC" if t == "fact_ventas" else "1"
+        cur.execute(f"SELECT * FROM {t} ORDER BY {orden} LIMIT 5")
+        muestra = [{k: serialize_value(v) for k, v in r.items()} for r in cur.fetchall()]
+        tablas[t] = {"columnas": columnas, "filas": filas, "muestra": muestra}
+    # De dónde salió cada hecho: ventas reales de los ERP (ETL por CDC) o la bitácora antigua de los agentes
+    try:
+        cur.execute("SELECT fuente_dato, COUNT(*) AS hechos, ROUND(SUM(total_venta_usd), 2) AS total FROM fact_ventas GROUP BY fuente_dato")
+        fuentes = [{k: serialize_value(v) for k, v in r.items()} for r in cur.fetchall()]
+    except Exception:
+        fuentes = []
+    cur.close()
+    conn.close()
+    return {
+        "baseDatos": configs["GUAYAQUIL_DWH"]["database"],
+        "tablas": tablas,
+        "relaciones": [
+            {"desde": "fact_ventas", "columna": "id_sede", "hacia": "dim_sede", "cardinalidad": "N:1"},
+            {"desde": "fact_ventas", "columna": "id_producto", "hacia": "dim_producto", "cardinalidad": "N:1"},
+            {"desde": "fact_ventas", "columna": "id_tiempo", "hacia": "dim_tiempo", "cardinalidad": "N:1"},
+        ],
+        "fuentes": fuentes,
+    }
+
+
 @router.get("/api/powerbi/fact_ventas")
 def powerbi_fact_ventas():
     """Tabla de hechos completa de BD 5 (sin joins: Power BI arma las relaciones del esquema estrella)."""
     return _dwh_select(
         "SELECT id_fact, id_sede, id_producto, id_tiempo, usuario_rbac, rol_rbac, cantidad_botellas, "
-        "subtotal_usd, iva_usd, total_venta_usd, etl_lote, fecha_carga_etl FROM fact_ventas ORDER BY id_fact"
+        "subtotal_usd, iva_usd, total_venta_usd, etl_lote, fecha_carga_etl, id_factura FROM fact_ventas "
+        "WHERE fuente_dato = 'ERP' ORDER BY id_fact"
     )
 
 
