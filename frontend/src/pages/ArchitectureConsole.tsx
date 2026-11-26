@@ -483,6 +483,28 @@ const BRANCH_IDENTITIES = [
   },
 ];
 
+// Terminal DBA: bases agrupadas por sede con rótulos cortos (el nombre completo va en el tooltip)
+const TERMINAL_SEDES: Array<{ sede: string; nodos: Array<[string, string, string]> }> = [
+  { sede: 'Quito', nodos: [['quito-sql', 'BD 1', 'ERP'], ['quito-nosql', 'BD 2', 'NoSQL'], ['quito-otras', 'BD 3', 'Particionada']] },
+  { sede: 'Guayaquil', nodos: [['guayaquil-sql', 'BD 4', 'ERP'], ['guayaquil-replica', 'BD 5', 'DWH']] },
+  { sede: 'Cuenca', nodos: [['cuenca-cloud', 'BD 6', 'ERP']] },
+];
+
+/** "4. Auditoría total: últimos 20 cambios del log de Cuenca (log_seq = orden del cambio)" -> "Auditoría total: últimos 20 cambios del log de Cuenca" */
+const rotuloCorto = (label: string) => label.replace(/^\d+\.\s*/, '').replace(/\s*\([^)]*\)/g, '').replace(/`/g, '').trim();
+
+/** Fechas ISO -> "26/11 09:30:03"; textos muy largos se recortan (el valor completo queda en el tooltip de la celda). */
+const celdaLegible = (val: unknown): string => {
+  const t = String(val);
+  if (/^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}/.test(t)) {
+    const d = new Date(t.replace(' ', 'T'));
+    if (!Number.isNaN(d.getTime())) {
+      return `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')} ${d.toLocaleTimeString('es-EC', { hour12: false })}`;
+    }
+  }
+  return t.length > 160 ? `${t.slice(0, 157)}…` : t;
+};
+
 export const ArchitectureConsole: React.FC<{ onNavigate?: (route: string) => void }> = ({ onNavigate }) => {
   const { user } = useAuth();
   const isStrictDba = isDbaUser(user) && !isSuperAdmin(user);
@@ -2485,67 +2507,86 @@ export const ArchitectureConsole: React.FC<{ onNavigate?: (route: string) => voi
               <div>
                 <h2 style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                   <Terminal size={19} color="#782c3e" />
-                  Terminal de Diagnóstico Read-Only del DBA — Consultas Multi-Sucursal (Quito, Guayaquil y Cuenca)
+                  Terminal DBA
                 </h2>
-                <p>
-                  Modo seguro de <strong>SOLO LECTURA</strong>: Permite ejecutar <code>SELECT</code>, <code>SHOW</code>, <code>DESCRIBE</code>, <code>EXPLAIN</code> y <code>MONGO_COLLECTION</code> en las 6 BDs. Comandos <code>INSERT</code>, <code>UPDATE</code>, <code>DELETE</code> y <code>DROP</code> están bloqueados.
-                </p>
+                <p>Elige una base, toca una consulta rápida o escribe la tuya.</p>
               </div>
-              <span className="badge badge-APR" style={{ gap: '5px', padding: '6px 11px' }}>
-                <Lock size={12} /> READ-ONLY TERMINAL
+              <span className="badge badge-APR" style={{ gap: '5px', padding: '6px 11px', cursor: 'help' }}
+                title="Permite SELECT, SHOW, DESCRIBE, EXPLAIN y MONGO_COLLECTION. INSERT, UPDATE, DELETE, DROP y demás escrituras se bloquean en la API antes de llegar a la base.">
+                <Lock size={12} /> Solo lectura
               </span>
             </div>
 
-            <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '14px' }}>
-              {topology?.nodes.map(n => {
-                const isSelected = selectedNodeId === n.id;
-                return (
-                  <button
-                    key={n.id}
-                    type="button"
-                    onClick={() => {
-                      setSelectedNodeId(n.id);
-                      if (n.presets.length > 0) {
-                        setSqlText(n.presets[0].sql);
-                        void runDbaQuery(n.id, n.presets[0].sql);
-                      }
-                    }}
-                    className="btn"
-                    style={{
-                      background: isSelected ? '#183a31' : '#faf9f6',
-                      color: isSelected ? '#ffffff' : '#25251f',
-                      border: isSelected ? '1px solid #183a31' : '1px solid #d9d4c7',
-                    }}
-                  >
-                    <Database size={13} />
-                    {n.shortName}
-                  </button>
-                );
-              })}
-              <button
-                type="button"
-                onClick={() => {
-                  const fedSql = "-- GLOBAL (Consulta Federada Read-Only de las 3 Sucursales: Quito + Guayaquil + Cuenca)\nSELECT id, origen_nodo, sede, modulo, usuario_rbac, rol_rbac, detalle, monto_usd, fecha_hora FROM vista_global_6_bds;";
-                  setSelectedNodeId('global-federated');
-                  setSqlText(fedSql);
-                  void runDbaQuery('global-federated', fedSql);
-                }}
-                className="btn"
-                style={{
-                  background: selectedNodeId === 'global-federated' ? '#782c3e' : '#fbf3f0',
-                  color: selectedNodeId === 'global-federated' ? '#ffffff' : '#782c3e',
-                  border: '1px solid #ead6cf',
-                }}
-              >
-                <Network size={13} />
-                Consultar las 3 Sucursales Unidas (Quito + Guayaquil + Cuenca)
-              </button>
+            <div style={{ display: 'flex', gap: '18px', flexWrap: 'wrap', alignItems: 'flex-end', marginBottom: '14px' }}>
+              {TERMINAL_SEDES.map(grupo => (
+                <div key={grupo.sede} style={{ display: 'flex', flexDirection: 'column', gap: '5px' }}>
+                  <span style={{ fontSize: '10px', fontWeight: 800, letterSpacing: '.1em', color: '#9e9d95', textTransform: 'uppercase' }}>{grupo.sede}</span>
+                  <div style={{ display: 'flex', gap: '6px' }}>
+                    {grupo.nodos.map(([nodeId, bd, rol]) => {
+                      const n = topology?.nodes.find(x => x.id === nodeId);
+                      if (!n) return null;
+                      const isSelected = selectedNodeId === n.id;
+                      return (
+                        <button
+                          key={n.id}
+                          type="button"
+                          title={`${n.name} · ${n.engine}`}
+                          aria-pressed={isSelected}
+                          onClick={() => {
+                            setSelectedNodeId(n.id);
+                            if (n.presets.length > 0) {
+                              setSqlText(n.presets[0].sql);
+                              void runDbaQuery(n.id, n.presets[0].sql);
+                            }
+                          }}
+                          className="btn"
+                          style={{
+                            padding: '7px 12px',
+                            fontSize: '13px',
+                            background: isSelected ? '#183a31' : '#ffffff',
+                            color: isSelected ? '#ffffff' : '#25251f',
+                            border: isSelected ? '1px solid #183a31' : '1px solid #e9e6de',
+                          }}
+                        >
+                          <Database size={13} />
+                          {bd} · {rol}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '5px' }}>
+                <span style={{ fontSize: '10px', fontWeight: 800, letterSpacing: '.1em', color: '#9e9d95', textTransform: 'uppercase' }}>Todas</span>
+                <button
+                  type="button"
+                  title="Consulta federada: las 3 sedes (6 bases) en paralelo en una sola tabla"
+                  aria-pressed={selectedNodeId === 'global-federated'}
+                  onClick={() => {
+                    const fedSql = "-- GLOBAL (Consulta Federada Read-Only de las 3 Sucursales: Quito + Guayaquil + Cuenca)\nSELECT id, origen_nodo, sede, modulo, usuario_rbac, rol_rbac, detalle, monto_usd, fecha_hora FROM vista_global_6_bds;";
+                    setSelectedNodeId('global-federated');
+                    setSqlText(fedSql);
+                    void runDbaQuery('global-federated', fedSql);
+                  }}
+                  className="btn"
+                  style={{
+                    padding: '7px 12px',
+                    fontSize: '13px',
+                    background: selectedNodeId === 'global-federated' ? '#782c3e' : '#ffffff',
+                    color: selectedNodeId === 'global-federated' ? '#ffffff' : '#782c3e',
+                    border: selectedNodeId === 'global-federated' ? '1px solid #782c3e' : '1px solid #ead6cf',
+                  }}
+                >
+                  <Network size={13} />
+                  Las 3 sedes
+                </button>
+              </div>
             </div>
 
             {currentNode && currentNode.presets.length > 0 && (
               <div style={{ marginBottom: '14px' }}>
-                <div style={{ fontSize: '11.5px', fontWeight: 700, color: '#575950', marginBottom: '6px' }}>
-                  Consultas Rápidas para {currentNode.name}:
+                <div style={{ fontSize: '10px', fontWeight: 800, letterSpacing: '.1em', color: '#9e9d95', textTransform: 'uppercase', marginBottom: '6px' }}>
+                  Consultas rápidas
                 </div>
                 <div style={{ display: 'flex', gap: '7px', flexWrap: 'wrap' }}>
                   {currentNode.presets.map((preset, idx) => (
@@ -2553,13 +2594,15 @@ export const ArchitectureConsole: React.FC<{ onNavigate?: (route: string) => voi
                       key={idx}
                       type="button"
                       className="btn btn-outline"
+                      title={preset.label}
                       onClick={() => {
                         setSqlText(preset.sql);
                         void runDbaQuery(currentNode.id, preset.sql);
                       }}
-                      style={{ padding: '6px 11px', fontSize: '11.5px', background: '#faf9f6' }}
+                      style={{ padding: '5px 11px', fontSize: '12px', background: sqlText === preset.sql ? '#eff5f1' : '#ffffff',
+                        borderColor: sqlText === preset.sql ? '#183a31' : undefined, fontWeight: sqlText === preset.sql ? 700 : 400 }}
                     >
-                      {preset.label}
+                      {rotuloCorto(preset.label)}
                     </button>
                   ))}
                 </div>
@@ -2584,13 +2627,7 @@ export const ArchitectureConsole: React.FC<{ onNavigate?: (route: string) => voi
                   resize: 'vertical',
                 }}
               />
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
-                <span style={{ fontSize: '12px', color: '#575950' }}>
-                  Nodo destino:{' '}
-                  <strong style={{ color: '#183a31' }}>
-                    {currentNode ? `${currentNode.name} (Header X-Sede: ${currentNode.xSede} · Puerto :${currentNode.actualPort})` : 'Consulta Federada Multi-Sucursal (6 BDs)'}
-                  </strong>
-                </span>
+              <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
                 <button
                   type="button"
                   className="btn btn-primary"
@@ -2598,7 +2635,7 @@ export const ArchitectureConsole: React.FC<{ onNavigate?: (route: string) => voi
                   disabled={runningQuery}
                 >
                   <Play size={15} />
-                  {runningQuery ? 'Ejecutando...' : 'Ejecutar Consulta Read-Only'}
+                  {runningQuery ? 'Ejecutando…' : 'Ejecutar'}
                 </button>
               </div>
             </div>
@@ -2632,8 +2669,8 @@ export const ArchitectureConsole: React.FC<{ onNavigate?: (route: string) => voi
                     </code>
                   </div>
                   <div style={{ display: 'flex', gap: '14px' }}>
-                    <span><strong>Filas:</strong> {queryResult.rowCount}</span>
-                    <span style={{ color: '#9ce2b9' }}><strong>Latencia:</strong> {queryResult.executionTimeMs} ms</span>
+                    <span>{queryResult.rowCount} filas</span>
+                    <span style={{ color: '#9ce2b9' }}>{Math.round(queryResult.executionTimeMs)} ms</span>
                   </div>
                 </div>
 
@@ -2650,8 +2687,8 @@ export const ArchitectureConsole: React.FC<{ onNavigate?: (route: string) => voi
                       {queryResult.rows.map((row, rIdx) => (
                         <tr key={rIdx}>
                           {row.map((val, cIdx) => (
-                            <td key={cIdx} style={{ whiteSpace: 'normal', maxWidth: '360px' }}>
-                              {val === null ? <em style={{ color: '#96968d' }}>NULL</em> : String(val)}
+                            <td key={cIdx} style={{ whiteSpace: 'normal', maxWidth: '360px' }} title={val === null ? undefined : String(val)}>
+                              {val === null ? <em style={{ color: '#96968d' }}>NULL</em> : celdaLegible(val)}
                             </td>
                           ))}
                         </tr>
